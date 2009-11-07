@@ -13,6 +13,7 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
+REPOSITORY=svn+ssh://mark.heily.com/$$HOME/svn/$(PROGRAM)
 INSTALL=/usr/bin/install
 SOURCES=filter.c kevent.c knote.c kqueue.c
 MANS=kqueue.2
@@ -32,6 +33,7 @@ build:
 install:
 	$(INSTALL) -d -m 755 $(INCLUDEDIR)/kqueue/sys
 	$(INSTALL) -m 644 sys/event.h $(INCLUDEDIR)/kqueue/sys/event.h
+	$(INSTALL) -d -m 755 $(LIBDIR) 
 	$(INSTALL) -m 644 libkqueue.so $(LIBDIR)/libkqueue.so
 	$(INSTALL) -d -m 755 $(LIBDIR)/pkgconfig
 	$(INSTALL) -m 644 libkqueue.pc $(LIBDIR)/pkgconfig
@@ -61,10 +63,16 @@ dist:
 	rm -rf $(PROGRAM)-$(VERSION)
 
 publish-www:
-	rm -rf ~/public_html/libkqueue/ ; cp -R www ~/public_html/libkqueue/
+	rm ~/public_html/libkqueue/*.html ; cp -R www/*.html ~/public_html/libkqueue/
 
 clean:
 	rm -f a.out *.a *.o *.so
+
+merge:
+	svn diff $(REPOSITORY)/branches/stable $(REPOSITORY)/trunk | gvim -
+	@printf "Merge changes from the trunk to the stable branch [y/N]? "
+	@read x && test "$$x" = "y"
+	echo "ok"
 
 distclean: clean
 	rm -f *.tar.gz config.mk config.h libkqueue.pc $(FILTERS)
