@@ -18,6 +18,7 @@
 
 #include "common.h"
 
+int testnum = 1;
 char *cur_test_id = "undef";
 int kqfd;
 
@@ -25,6 +26,10 @@ extern void test_evfilt_read();
 extern void test_evfilt_signal();
 extern void test_evfilt_vnode();
 extern void test_evfilt_timer();
+extern void test_evfilt_proc();
+#if HAVE_EVFILT_USER
+extern void test_evfilt_user();
+#endif
 
 /* Checks if any events are pending, which is an error. */
 void 
@@ -68,18 +73,18 @@ kevent_fflags_dump(struct kevent *kev)
 
 #define KEVFFL_DUMP(attrib) \
     if (kev->fflags & attrib) \
-	strcat(buf, #attrib" ");
+	strncat(buf, #attrib" ", 64);
 
     if ((buf = calloc(1, 1024)) == NULL)
 	abort();
 
     /* Not every filter has meaningful fflags */
     if (kev->filter != EVFILT_VNODE) {
-    	sprintf(buf, "fflags = %d", kev->flags);
+    	snprintf(buf, 1024, "fflags = %d", kev->flags);
 	return (buf);
     }
 
-    sprintf(buf, "fflags = %d (", kev->fflags);
+    snprintf(buf, 1024, "fflags = %d (", kev->fflags);
     KEVFFL_DUMP(NOTE_DELETE);
     KEVFFL_DUMP(NOTE_WRITE);
     KEVFFL_DUMP(NOTE_EXTEND);
@@ -104,12 +109,12 @@ kevent_flags_dump(struct kevent *kev)
 
 #define KEVFL_DUMP(attrib) \
     if (kev->flags & attrib) \
-	strcat(buf, #attrib" ");
+	strncat(buf, #attrib" ", 64);
 
     if ((buf = calloc(1, 1024)) == NULL)
 	abort();
 
-    sprintf(buf, "flags = %d (", kev->flags);
+    snprintf(buf, 1024, "flags = %d (", kev->flags);
     KEVFL_DUMP(EV_ADD);
     KEVFL_DUMP(EV_ENABLE);
     KEVFL_DUMP(EV_DISABLE);
@@ -157,7 +162,6 @@ kevent_cmp(struct kevent *k1, struct kevent *k2)
 void
 test_begin(const char *func)
 {
-    static int testnum = 1;
     cur_test_id = (char *) func;
     printf("\n\nTest %d: %s\n", testnum++, func);
 }
@@ -184,21 +188,22 @@ test_kqueue_close(void)
     test_begin("close(kq)");
     if (close(kqfd) < 0)
         err(1, "close()");
-#if LIBKQUEUE
-    kqueue_free(kqfd);
-#endif
     success("kqueue_close()");
 }
 
 int 
 main(int argc, char **argv)
 {
+    int test_proc = 1;
     int test_socket = 1;
-    int test_signal = 1;//XXX-FIXME
+    int test_signal = 1;
     int test_vnode = 1;
     int test_timer = 1;
+    int test_user = 1;
 
     while (argc) {
+        if (strcmp(argv[0], "--no-proc") == 0)
+            test_proc = 0;
         if (strcmp(argv[0], "--no-socket") == 0)
             test_socket = 0;
         if (strcmp(argv[0], "--no-timer") == 0)
@@ -207,6 +212,8 @@ main(int argc, char **argv)
             test_signal = 0;
         if (strcmp(argv[0], "--no-vnode") == 0)
             test_vnode = 0;
+        if (strcmp(argv[0], "--no-user") == 0)
+            test_user = 0;
         argv++;
         argc--;
     }
@@ -214,15 +221,27 @@ main(int argc, char **argv)
     test_kqueue();
     test_kqueue_close();
 
+#if FIXME
+    if (test_proc) 
+        test_evfilt_proc();
+    puts("All proc tests OK");
+    exit(0);
+#endif
+
     if (test_socket) 
         test_evfilt_read();
     if (test_signal) 
         test_evfilt_signal();
     if (test_vnode) 
         test_evfilt_vnode();
+#if HAVE_EVFILT_USER
+    if (test_user) 
+        test_evfilt_user();
+#endif
     if (test_timer) 
         test_evfilt_timer();
 
-    puts("all tests completed.");
+    printf("\n---\n"
+            "+OK All %d tests completed.\n", testnum - 1);
     return (0);
 }

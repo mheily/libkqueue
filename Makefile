@@ -13,26 +13,20 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
+
 REPOSITORY=svn+ssh://mark.heily.com/$$HOME/svn/$(PROGRAM)
-INSTALL=/usr/bin/install
-SOURCES=filter.c kevent.c knote.c kqueue.c
-MANS=kqueue.2
-HEADERS=private.h
-EXTRA_DIST=*.in README
-SUBDIRS=os sys test
-DISTFILES=Makefile configure
-FILTERS=vnode.c timer.c signal.c socket.c user.c
+DIST=heily.com:$$HOME/public_html/$(PROGRAM)/dist
 
 include config.mk
 
 build:
-	gcc $(CFLAGS) -c *.c
+	$(CC) $(CFLAGS) -c $(SOURCES)
 	ar rcs libkqueue.a *.o
 	gcc -shared -Wl,-soname,libkqueue.so -o libkqueue.so *.o
 
 install:
 	$(INSTALL) -d -m 755 $(INCLUDEDIR)/kqueue/sys
-	$(INSTALL) -m 644 sys/event.h $(INCLUDEDIR)/kqueue/sys/event.h
+	$(INSTALL) -m 644 include/sys/event.h $(INCLUDEDIR)/kqueue/sys/event.h
 	$(INSTALL) -d -m 755 $(LIBDIR) 
 	$(INSTALL) -m 644 libkqueue.so $(LIBDIR)/libkqueue.so
 	$(INSTALL) -d -m 755 $(LIBDIR)/pkgconfig
@@ -53,14 +47,18 @@ check:
 	cd test && ./configure && make check
 
 dist:
+	cd test && make distclean || true
 	mkdir $(PROGRAM)-$(VERSION)
-	cp  Makefile configure                            \
-        $(SOURCES) $(MANS) $(HEADERS) $(EXTRA_DIST)   \
+	cp  Makefile ChangeLog configure config.inc      \
+        $(MANS) $(EXTRA_DIST)   \
         $(PROGRAM)-$(VERSION)
 	cp -R $(SUBDIRS) $(PROGRAM)-$(VERSION)
 	rm -rf `find $(PROGRAM)-$(VERSION) -type d -name .svn`
 	tar zcf $(PROGRAM)-$(VERSION).tar.gz $(PROGRAM)-$(VERSION)
 	rm -rf $(PROGRAM)-$(VERSION)
+
+dist-upload: dist
+	scp $(PROGRAM)-$(VERSION).tar.gz $(DIST)
 
 publish-www:
 	rm ~/public_html/libkqueue/*.html ; cp -R www/*.html ~/public_html/libkqueue/
@@ -75,4 +73,4 @@ merge:
 	echo "ok"
 
 distclean: clean
-	rm -f *.tar.gz config.mk config.h libkqueue.pc $(FILTERS)
+	rm -f *.tar.gz config.mk config.h libkqueue.pc

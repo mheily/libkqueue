@@ -17,9 +17,13 @@
 #ifndef  _KQUEUE_PRIVATE_H
 #define  _KQUEUE_PRIVATE_H
 
+#include <pthread.h>
 #include <stdio.h>
 #include <sys/select.h>
 #include "sys/event.h"
+
+/* Maximum number of kqueue descriptors in a single process. */
+#define MAX_KQUEUE  1024
 
 /* Maximum events returnable in a single kevent() call */
 #define MAX_KEVENT  512
@@ -58,12 +62,10 @@ LIST_HEAD(knotelist, knote);
 #define KNOTE_EMPTY(ent)            ((ent)->kev.filter == 0)
 
 #define KNOTE_ENABLE(ent)           do {                            \
-            (ent)->kev.flags |=  EV_ENABLE;                         \
             (ent)->kev.flags &= ~EV_DISABLE;                        \
 } while (0/*CONSTCOND*/)
 
 #define KNOTE_DISABLE(ent)          do {                            \
-            (ent)->kev.flags &= ~EV_ENABLE;                         \
             (ent)->kev.flags |=  EV_DISABLE;                        \
 } while (0/*CONSTCOND*/)
 
@@ -86,7 +88,6 @@ struct filter {
 
 struct kqueue {
     int             kq_sockfd[2];
-    pthread_t       kq_close_tid;
     struct filter   kq_filt[EVFILT_SYSCOUNT];
     fd_set          kq_fds; 
     int             kq_nfds;
