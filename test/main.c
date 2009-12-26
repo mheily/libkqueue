@@ -19,7 +19,7 @@
 #include "common.h"
 
 int testnum = 1;
-char *cur_test_id = "undef";
+char *cur_test_id = NULL;
 int kqfd;
 
 extern void test_evfilt_read();
@@ -39,7 +39,6 @@ test_no_kevents(void)
     struct timespec timeo;
     struct kevent kev;
 
-    puts("confirming that there are no events pending");
     memset(&timeo, 0, sizeof(timeo));
     nfds = kevent(kqfd, NULL, 0, &kev, 1, &timeo);
     if (nfds != 0) {
@@ -80,7 +79,7 @@ kevent_fflags_dump(struct kevent *kev)
 
     /* Not every filter has meaningful fflags */
     if (kev->filter != EVFILT_VNODE) {
-    	snprintf(buf, 1024, "fflags = %d", kev->flags);
+    	snprintf(buf, 1024, "fflags = %d", kev->fflags);
 	return (buf);
     }
 
@@ -134,24 +133,51 @@ kevent_flags_dump(struct kevent *kev)
     return (buf);
 }
 
-/* Copied from ../kevent.c kevent_dump() and improved */
+/* TODO - backport changes from src/common/kevent.c kevent_dump() */
 const char *
 kevent_to_str(struct kevent *kev)
 {
     char buf[512];
-    snprintf(&buf[0], sizeof(buf), "[filter=%d,%s,%s,ident=%u,data=%d,udata=%p]",
+
+    snprintf(&buf[0], sizeof(buf), 
+            "[ident=%d, filter=%d, %s, %s, data=%d, udata=%p]",
+            (u_int) kev->ident,
             kev->filter,
             kevent_flags_dump(kev),
             kevent_fflags_dump(kev),
-            (u_int) kev->ident,
             (int) kev->data,
             kev->udata);
+
     return (strdup(buf));
+}
+
+void
+kevent_add(int kqfd, struct kevent *kev, 
+        uintptr_t ident,
+        short     filter,
+        u_short   flags,
+        u_int     fflags,
+        intptr_t  data,
+        void      *udata)
+{
+    EV_SET(kev, ident, filter, flags, fflags, data, NULL);    
+    if (kevent(kqfd, kev, 1, NULL, 0, NULL) < 0) {
+        printf("Unable to add the following kevent:\n%s\n",
+                kevent_to_str(kev));
+        err(1, "kevent(): %s", strerror(errno));
+    }
 }
 
 void
 kevent_cmp(struct kevent *k1, struct kevent *k2)
 {
+/* XXX-
+   Workaround for inconsistent implementation of kevent(2) 
+ */
+#ifdef __FreeBSD__
+    if (k1->flags & EV_ADD)
+        k2->flags |= EV_ADD;
+#endif
     if (memcmp(k1, k2, sizeof(*k1)) != 0) {
         printf("kevent_cmp: mismatch:\n  %s !=\n  %s\n", 
               kevent_to_str(k1), kevent_to_str(k2));
@@ -162,14 +188,21 @@ kevent_cmp(struct kevent *k1, struct kevent *k2)
 void
 test_begin(const char *func)
 {
-    cur_test_id = (char *) func;
+    if (cur_test_id)
+        free(cur_test_id);
+    cur_test_id = strdup(func);
+    if (!cur_test_id)
+        err(1, "strdup failed");
+
     printf("\n\nTest %d: %s\n", testnum++, func);
 }
 
 void
-success(const char *func)
+success(void)
 {
-    printf("%-70s %s\n", func, "passed");
+    printf("%-70s %s\n", cur_test_id, "passed");
+    free(cur_test_id);
+    cur_test_id = NULL;
 }
 
 void
@@ -179,7 +212,7 @@ test_kqueue(void)
     if ((kqfd = kqueue()) < 0)
         err(1, "kqueue()");
     test_no_kevents();
-    success("kqueue()");
+    success();
 }
 
 void
@@ -188,13 +221,41 @@ test_kqueue_close(void)
     test_begin("close(kq)");
     if (close(kqfd) < 0)
         err(1, "close()");
-    success("kqueue_close()");
+    success();
+}
+
+void
+test_ev_receipt(void)
+{
+    int kq;
+    struct kevent kev;
+
+    test_begin("EV_RECEIPT");
+
+#if HAVE_EV_RECEIPT
+
+    if ((kq = kqueue()) < 0)
+        err(1, "kqueue");
+
+    EV_SET(&kev, SIGUSR2, EVFILT_SIGNAL, EV_ADD | EV_RECEIPT, 0, 0, NULL);
+    if (kevent(kq, &kev, 1, &kev, 1, NULL) < 0)
+        err(1, "%s", test_id);
+
+    /* TODO: check the receipt */
+
+    close(kq);
+
+#else
+    memset(&kev, 0, sizeof(kev));
+    puts("Skipped -- EV_RECEIPT is not available");
+#endif
+    success();
 }
 
 int 
 main(int argc, char **argv)
 {
-    int test_proc = 1;
+    int test_proc = 0;  /* XXX-FIXME */
     int test_socket = 1;
     int test_signal = 1;
     int test_vnode = 1;
@@ -221,13 +282,6 @@ main(int argc, char **argv)
     test_kqueue();
     test_kqueue_close();
 
-#if FIXME
-    if (test_proc) 
-        test_evfilt_proc();
-    puts("All proc tests OK");
-    exit(0);
-#endif
-
     if (test_socket) 
         test_evfilt_read();
     if (test_signal) 
@@ -240,6 +294,10 @@ main(int argc, char **argv)
 #endif
     if (test_timer) 
         test_evfilt_timer();
+    if (test_proc) 
+        test_evfilt_proc();
+
+    test_ev_receipt();
 
     printf("\n---\n"
             "+OK All %d tests completed.\n", testnum - 1);

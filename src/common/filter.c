@@ -46,7 +46,13 @@ filter_register(struct kqueue *kq, short filter, const struct filter *src)
     dst = &kq->kq_filt[filt];
     memcpy(dst, src, sizeof(*src));
     dst->kf_kqueue = kq;
-    KNOTELIST_INIT(&dst->knl);
+    pthread_mutex_init(&dst->kf_mtx, NULL);
+    KNOTELIST_INIT(&dst->kf_watchlist);
+    KNOTELIST_INIT(&dst->kf_eventlist);
+    if (src->kf_id == 0) {
+        dbg_puts("filter is not implemented");
+        return (0);
+    }
     if (src->kf_init == NULL) {
         dbg_puts("filter has no initializer");
         return (-1);
@@ -60,15 +66,12 @@ filter_register(struct kqueue *kq, short filter, const struct filter *src)
     }
 
     /* Add the filter's event descriptor to the main fdset */
-    if (dst->kf_pfd <= 0) {
-        dbg_printf("FIXME - filter %s did not return a fd to poll!",
-                filter_name(filter));
-        return (-1);
+    if (dst->kf_pfd > 0) {
+        FD_SET(dst->kf_pfd, &kq->kq_fds);
+        if (dst->kf_pfd > kq->kq_nfds)  
+            kq->kq_nfds = dst->kf_pfd;
+        dbg_printf("fds: added %d (nfds=%d)", dst->kf_pfd, kq->kq_nfds);
     }
-    FD_SET(dst->kf_pfd, &kq->kq_fds);
-    if (dst->kf_pfd > kq->kq_nfds)  
-        kq->kq_nfds = dst->kf_pfd;
-    dbg_printf("fds: added %d (nfds=%d)", dst->kf_pfd, kq->kq_nfds);
     dbg_printf("%s registered", filter_name(filter));
 
     return (0);
@@ -111,7 +114,11 @@ filter_unregister_all(struct kqueue *kq)
             kq->kq_filt[i].kf_destroy(&kq->kq_filt[i]);
 
         /* Destroy all knotes associated with this filter */
-        for (n1 = LIST_FIRST(&kq->kq_filt[i].knl); n1 != NULL; n1 = n2) {
+        for (n1 = LIST_FIRST(&kq->kq_filt[i].kf_watchlist); n1 != NULL; n1 = n2) {
+            n2 = LIST_NEXT(n1, entries);
+            free(n1);
+        }
+        for (n1 = LIST_FIRST(&kq->kq_filt[i].kf_eventlist); n1 != NULL; n1 = n2) {
             n2 = LIST_NEXT(n1, entries);
             free(n1);
         }
@@ -124,7 +131,7 @@ filter_socketpair(struct filter *filt)
 {
     int sockfd[2];
 
-    if (socketpair(AF_LOCAL, SOCK_STREAM, 0, sockfd) < 0)
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockfd) < 0)
         return (-1);
 
     fcntl(sockfd[0], F_SETFL, O_NONBLOCK);
@@ -133,25 +140,29 @@ filter_socketpair(struct filter *filt)
     return (0);
 } 
 
-struct filter *
-filter_lookup(struct kqueue *kq, short id)
+int
+filter_lookup(struct filter **filt, struct kqueue *kq, short id)
 {
-    id = (-1 * id) - 1;
-    if (id < 0 || id >= EVFILT_SYSCOUNT) {
+    if (~id < 0 || ~id >= EVFILT_SYSCOUNT) {
+        dbg_printf("invalid id: id %d ~id %d", id, (~id));
         errno = EINVAL;
-        return (NULL);
+        *filt = NULL;
+        return (-1);
     }
-    if (kq->kq_filt[id].kf_copyin == NULL) {
-        errno = ENOTSUP;
-        return (NULL);
+    *filt = &kq->kq_filt[~id];
+    if ((*filt)->kf_copyin == NULL) {
+        errno = ENOSYS;
+        *filt = NULL;
+        return (-1);
     }
 
-    return (&kq->kq_filt[id]);
+    return (0);
 }
 
 const char *
 filter_name(short filt)
 {
+    unsigned int id;
     const char *fname[EVFILT_SYSCOUNT] = {
         "EVFILT_READ",
         "EVFILT_WRITE",
@@ -166,8 +177,52 @@ filter_name(short filt)
         "EVFILT_USER"
     };
 
-    if (~filt >= EVFILT_SYSCOUNT)
-        return "EVFILT_BAD_RANGE";
+    id = ~filt;
+    if (id < 0 || id >= EVFILT_SYSCOUNT)
+        return "EVFILT_INVALID";
     else
-        return fname[~filt];
+        return fname[id];
+}
+
+int
+filter_raise(struct filter *filt)
+{
+    for (;;) {
+        if (write(filt->kf_wfd, " ", 1) < 0) {
+            if (errno == EINTR) 
+                continue;
+
+            if (errno != EAGAIN) {
+                dbg_printf("write(2): %s", strerror(errno));
+                /* TODO: set filter error flag */
+                return (-1);
+            }
+        }
+        break;
+    }
+
+    return (0);
+}
+
+int
+filter_lower(struct filter *filt)
+{
+    char buf[1024];
+    ssize_t n;
+
+    for (;;) {
+        n = read(filt->kf_pfd, &buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) 
+                continue;
+            if (errno == EAGAIN) 
+                break;
+
+            dbg_printf("read(2): %s", strerror(errno));
+            return (-1);
+        }
+        break;
+    }
+
+    return (0);
 }

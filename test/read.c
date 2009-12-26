@@ -50,7 +50,7 @@ test_kevent_socket_add(void)
     if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
         err(1, "%s", test_id);
 
-    success(test_id);
+    success();
 }
 
 void
@@ -77,7 +77,7 @@ test_kevent_socket_get(void)
     if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
         err(1, "%s", test_id);
 
-    success(test_id);
+    success();
 }
 
 void
@@ -111,7 +111,7 @@ test_kevent_socket_clear(void)
     if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
         err(1, "%s", test_id);
 
-    success(test_id);
+    success();
 }
 
 void
@@ -147,7 +147,7 @@ test_kevent_socket_disable_and_enable(void)
     if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
         err(1, "%s", test_id);
 
-    success(test_id);
+    success();
 }
 
 void
@@ -166,7 +166,7 @@ test_kevent_socket_del(void)
     test_no_kevents();
     kevent_socket_drain();
 
-    success(test_id);
+    success();
 }
 
 void
@@ -199,7 +199,7 @@ test_kevent_socket_oneshot(void)
 
     kevent_socket_drain();
 
-    success(test_id);
+    success();
 }
 
 
@@ -223,7 +223,6 @@ test_kevent_socket_dispatch(void)
     /* The event will occur only once, even though EV_CLEAR is not
        specified. */
     kevent_socket_fill();
-    kev.flags = EV_ADD;     /* FIXME: not sure what the proper behavior is */
     kev.data = 1;
     kevent_cmp(&kev, kevent_get(kqfd));
     test_no_kevents();
@@ -235,7 +234,7 @@ test_kevent_socket_dispatch(void)
 
     kevent_socket_drain();
 
-    success(test_id);
+    success();
 }
 #endif  /* HAVE_EV_DISPATCH */
 
@@ -269,7 +268,7 @@ test_kevent_socket_lowat(void)
     kevent_socket_drain();
     kevent_socket_drain();
 
-    success(test_id);
+    success();
 }
 #endif
 
@@ -298,14 +297,14 @@ test_kevent_socket_eof(void)
     if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
         err(1, "%s", test_id);
 
-    success(test_id);
+    success();
 }
 
 void
 test_evfilt_read()
 {
     /* Create a connected pair of full-duplex sockets for testing socket events */
-    if (socketpair(AF_LOCAL, SOCK_STREAM, 0, sockfd) < 0) 
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockfd) < 0) 
         abort();
 
     kqfd = kqueue();

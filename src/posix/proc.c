@@ -21,7 +21,6 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <sys/eventfd.h>
 #include <sys/queue.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -29,90 +28,73 @@
 #include <unistd.h>
 
 #include <limits.h>
-#include <sys/inotify.h>
-#include <sys/epoll.h>
 
 #include "sys/event.h"
 #include "private.h"
 
+pthread_cond_t   wait_cond = PTHREAD_COND_INITIALIZER;
+pthread_mutex_t  wait_mtx = PTHREAD_MUTEX_INITIALIZER;
 
-/* XXX-FIXME Should only have one wait_thread per process.
-   Now, there is one thread per kqueue
- */
 struct evfilt_data {
     pthread_t       wthr_id;
-    pthread_cond_t   wait_cond;
-    pthread_mutex_t  wait_mtx;
 };
 
 static void *
 wait_thread(void *arg)
 {
     struct filter *filt = (struct filter *) arg;
-    uint64_t counter = 1;
-    const int options = WEXITED | WNOWAIT; 
     struct knote *kn;
-    siginfo_t si;
+    int status, result;
+    pid_t pid;
     sigset_t sigmask;
 
     /* Block all signals */
     sigfillset (&sigmask);
+    sigdelset(&sigmask, SIGCHLD);
     pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
 
     for (;;) {
 
         /* Wait for a child process to exit(2) */
-        if (waitid(P_ALL, 0, &si, options) != 0) {
+        if ((pid = waitpid(-1, &status, 0)) < 0) {
             if (errno == ECHILD) {
                 dbg_puts("got ECHILD, waiting for wakeup condition");
-                pthread_mutex_lock(&filt->kf_data->wait_mtx);
-                pthread_cond_wait(&filt->kf_data->wait_cond, &filt->kf_data->wait_mtx);
-                pthread_mutex_unlock(&filt->kf_data->wait_mtx);
+                pthread_mutex_lock(&wait_mtx);
+                pthread_cond_wait(&wait_cond, &wait_mtx);
+                pthread_mutex_unlock(&wait_mtx);
                 dbg_puts("awoken from ECHILD-induced sleep");
                 continue;
             }
-
-            dbg_puts("  waitid(2) returned");
             if (errno == EINTR)
                 continue;
-            dbg_perror("waitid(2)");
-            break; 
+            dbg_printf("wait(2): %s", strerror(errno));
+            break;
+        } 
+
+        /* Create a proc_event */
+        if (WIFEXITED(status)) {
+            result = WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            /* FIXME: probably not true on BSD */
+            result = WTERMSIG(status);
+        } else {
+            dbg_puts("unexpected code path");
+            result = 234;           /* arbitrary error value */
         }
 
         /* Scan the wait queue to see if anyone is interested */
         pthread_mutex_lock(&filt->kf_mtx);
-        kn = knote_lookup(filt, si.si_pid);
-        if (kn == NULL) {
-            pthread_mutex_unlock(&filt->kf_mtx);
-            continue;
+        kn = knote_lookup(filt, pid);
+        if (kn != NULL) {
+            kn->kev.data = result;
+            kn->kev.fflags = NOTE_EXIT; 
+            LIST_REMOVE(kn, entries);
+            LIST_INSERT_HEAD(&filt->kf_eventlist, kn, entries);
+            /* Indicate read(2) readiness */
+            /* TODO: error handling */
+            filter_raise(filt);
         }
-
-        /* Create a proc_event */
-        if (si.si_code == CLD_EXITED) {
-            kn->kev.data = si.si_status;
-        } else if (si.si_code == CLD_KILLED) {
-            /* FIXME: probably not true on BSD */
-            /* FIXME: arbitrary non-zero number */
-            kn->kev.data = 254; 
-        } else {
-            /* Should never happen. */
-            /* FIXME: arbitrary non-zero number */
-            kn->kev.data = 1; 
-        }
-
-        /* Move the knote from the watchlist to the eventlist */
-        LIST_REMOVE(kn, entries);
-        LIST_INSERT_HEAD(&filt->kf_eventlist, kn, entries);
         pthread_mutex_unlock(&filt->kf_mtx);
-
-        /* Indicate read(2) readiness */
-        if (write(filt->kf_pfd, &counter, sizeof(counter)) < 0) {
-            if (errno != EAGAIN) {
-                dbg_printf("write(2): %s", strerror(errno));
-                /* TODO: set filter error flag */
-                break;
-                }
-        }
     }
 
     /* TODO: error handling */
@@ -124,30 +106,19 @@ int
 evfilt_proc_init(struct filter *filt)
 {
     struct evfilt_data *ed;
-    int efd = -1;
 
     if ((ed = calloc(1, sizeof(*ed))) == NULL)
         return (-1);
-    filt->kf_data = ed;
 
-    pthread_mutex_init(&ed->wait_mtx, NULL);
-    pthread_cond_init(&ed->wait_cond, NULL);
-    if ((efd = eventfd(0, 0)) < 0) 
+    if (filter_socketpair(filt) < 0) 
         goto errout;
-    if (fcntl(filt->kf_pfd, F_SETFL, O_NONBLOCK) < 0) 
-        goto errout;
-    filt->kf_pfd = efd;
     if (pthread_create(&ed->wthr_id, NULL, wait_thread, filt) != 0) 
         goto errout;
-
 
     return (0);
 
 errout:
-    if (efd >= 0)
-        close(efd);
     free(ed);
-    close(filt->kf_pfd);
     return (-1);
 }
 
@@ -164,8 +135,8 @@ evfilt_proc_copyin(struct filter *filt,
 {
     if (src->flags & EV_ADD && KNOTE_EMPTY(dst)) {
         memcpy(&dst->kev, src, sizeof(*src));
-        /* TODO: Consider holding the mutex here.. */
-        pthread_cond_signal(&filt->kf_data->wait_cond);
+        /* TODO: think about locking the mutex first.. */
+        pthread_cond_signal(&wait_cond);
     }
 
     if (src->flags & EV_ADD || src->flags & EV_ENABLE) {
@@ -180,53 +151,38 @@ evfilt_proc_copyout(struct filter *filt,
             struct kevent *dst, 
             int maxevents)
 {
-    struct knote *kn, *kn_nxt;
+    struct knote *kn;
     int nevents = 0;
-    uint64_t cur;
 
-    /* Reset the counter */
-    if (read(filt->kf_pfd, &cur, sizeof(cur)) < sizeof(cur)) {
-        dbg_printf("read(2): %s", strerror(errno));
-        return (-1);
-    }
-    dbg_printf("  counter=%llu", (unsigned long long) cur);
+    filter_lower(filt);
 
-    pthread_mutex_lock(&filt->kf_mtx);
-    for (kn = LIST_FIRST(&filt->kf_eventlist); kn != NULL; kn = kn_nxt) {
-        kn_nxt = LIST_NEXT(kn, entries);
-
+    LIST_FOREACH(kn, &filt->kf_eventlist, entries) {
         kevent_dump(&kn->kev);
         memcpy(dst, &kn->kev, sizeof(*dst));
+        dst->fflags = NOTE_EXIT;
 
         if (kn->kev.flags & EV_DISPATCH) {
             KNOTE_DISABLE(kn);
         }
-        if (kn->kev.flags & EV_ONESHOT) {
+#if FIXME
+        /* XXX - NEED TO use safe foreach instead */
+        if (kn->kev.flags & EV_ONESHOT) 
             knote_free(kn);
-        } else {
-            kn->kev.data = 0;
-            LIST_REMOVE(kn, entries);
-            LIST_INSERT_HEAD(&filt->kf_watchlist, kn, entries);
-        }
-
+#endif
 
         if (++nevents > maxevents)
             break;
         dst++;
     }
-    pthread_mutex_unlock(&filt->kf_mtx);
 
-    if (!LIST_EMPTY(&filt->kf_eventlist)) {
-    /* XXX-FIXME: If there are leftover events on the waitq, 
-       re-arm the eventfd. list */
-        abort();
-    }
+    if (!LIST_EMPTY(&filt->kf_eventlist)) 
+        filter_raise(filt);
 
     return (nevents);
 }
 
 const struct filter evfilt_proc = {
-    0, //XXX-FIXME broken: EVFILT_PROC,
+    EVFILT_PROC,
     evfilt_proc_init,
     evfilt_proc_destroy,
     evfilt_proc_copyin,

@@ -17,8 +17,15 @@
 #ifndef  _KQUEUE_PRIVATE_H
 #define  _KQUEUE_PRIVATE_H
 
+#if defined (__SVR4) && defined (__sun)
+#define SOLARIS
+#include <port.h>
+#endif
+
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/select.h>
 #include "sys/event.h"
 
@@ -29,9 +36,9 @@
 #define MAX_KEVENT  512
 
 #ifdef KQUEUE_DEBUG
-# define dbg_puts(str)           fprintf(stderr, "%s\n", str)
-# define dbg_printf(fmt,...)     fprintf(stderr, fmt"\n", __VA_ARGS__)
-# define dbg_perror(str)         fprintf(stderr, "%s: %s\n", str, strerror(errno))
+# define dbg_puts(str)           fprintf(stderr, "%s(): %s\n", __func__,str)
+# define dbg_printf(fmt,...)     fprintf(stderr, "%s(): "fmt"\n", __func__,__VA_ARGS__)
+# define dbg_perror(str)         fprintf(stderr, "%s(): %s: %s\n", __func__,str, strerror(errno))
 #else
 # define dbg_puts(str)           ;
 # define dbg_printf(fmt,...)     ;
@@ -81,17 +88,22 @@ struct filter {
     int       kf_wfd;                   /* fd to write when an event occurs */
     u_int     kf_timeres;               /* timer resolution, in miliseconds */
     sigset_t  kf_sigmask;
+    pthread_mutex_t kf_mtx;
     struct evfilt_data *kf_data;	/* filter-specific data */
-    struct knotelist knl; 
+    struct knotelist kf_watchlist;      /* events that have not occurred */
+    struct knotelist kf_eventlist;      /* events that have occurred */
     struct kqueue *kf_kqueue;
 };
 
 struct kqueue {
     int             kq_sockfd[2];
     struct filter   kq_filt[EVFILT_SYSCOUNT];
-    fd_set          kq_fds; 
+    fd_set          kq_fds, kq_rfds; 
     int             kq_nfds;
     pthread_mutex_t kq_mtx;
+#ifdef SOLARIS
+    int             kq_port;
+#endif
     LIST_ENTRY(kqueue) entries;
 };
 
@@ -100,22 +112,27 @@ struct knote *  knote_lookup_data(struct filter *filt, intptr_t);
 struct knote *  knote_new(struct filter *);
 void 		    knote_free(struct knote *);
 
-struct filter *  filter_lookup(struct kqueue *, short);
+int         filter_lookup(struct filter **, struct kqueue *, short);
 int         filter_socketpair(struct filter *);
 int      	filter_register_all(struct kqueue *);
 void     	filter_unregister_all(struct kqueue *);
 const char *filter_name(short);
+int         filter_lower(struct filter *);
+int         filter_raise(struct filter *);
+#define     filter_lock(f)   pthread_mutex_lock(&(f)->kf_mtx)
+#define     filter_unlock(f) pthread_mutex_unlock(&(f)->kf_mtx)
 
 int 		kevent_init(struct kqueue *);
-const char * kevent_dump(struct kevent *);
-int 		kevent_wait(struct kqueue *kq,
-                        struct kevent *kevent, 
-                        int nevents,
-                        const struct timespec *timeout);
+const char * kevent_dump(const struct kevent *);
+int         kevent_wait(struct kqueue *, const struct timespec *);
+int         kevent_copyout(struct kqueue *, int, struct kevent *, int);
 void 		kevent_free(struct kqueue *);
 
 struct kqueue * kqueue_lookup(int kq);
-void            kqueue_lock(struct kqueue *kq);
-void            kqueue_unlock(struct kqueue *kq);
+/* TODO: make a kqops struct */
+int         kqueue_init_hook(void);     // in hook.c
+int         kqlist_insert_hook(struct kqueue *);       // in hook.c
+int         kqueue_gc(void);        // in hook.c
+void        kqueue_free(struct kqueue *);
 
 #endif  /* ! _KQUEUE_PRIVATE_H */

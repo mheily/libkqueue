@@ -14,69 +14,18 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <errno.h>
-#include <fcntl.h>
-#include <pthread.h>
-#include <signal.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <sys/eventfd.h>
-#include <sys/queue.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <string.h>
-#include <unistd.h>
-
 #include "sys/event.h"
 #include "private.h"
-
-/* TODO: make common linux function */
-static int
-evfd_raise(int evfd)
-{
-    uint64_t counter;
-
-    dbg_puts("efd_raise(): raising event level");
-    counter = 1;
-    if (write(evfd, &counter, sizeof(counter)) < 0) {
-        /* FIXME: handle EAGAIN */
-        dbg_printf("write(2): %s", strerror(errno));
-        return (-1);
-    }
-    return (0);
-}
-
-static int
-evfd_lower(int evfd)
-{
-    uint64_t cur;
-
-    /* Reset the counter */
-    dbg_puts("efd_lower(): lowering event level");
-    if (read(evfd, &cur, sizeof(cur)) < sizeof(cur)) {
-        /* FIXME: handle EAGAIN */
-        dbg_printf("read(2): %s", strerror(errno));
-        return (-1);
-    }
-    dbg_printf("  counter=%llu", (unsigned long long) cur);
-    return (0);
-}
 
 int
 evfilt_user_init(struct filter *filt)
 {
-    if ((filt->kf_pfd = eventfd(0, 0)) < 0) 
-        return (-1);
-    if (fcntl(filt->kf_pfd, F_SETFL, O_NONBLOCK) < 0)
-        return (-1);
-
-    return (0);
+    return (-1);
 }
 
 void
 evfilt_user_destroy(struct filter *filt)
 {
-    close(filt->kf_pfd);    /* TODO: do this in the parent */
     return;
 }
 
@@ -84,8 +33,11 @@ int
 evfilt_user_copyin(struct filter *filt, 
         struct knote *dst, const struct kevent *src)
 {
+    return (-1);
+#if TODO
     u_int ffctrl;
     struct kevent *kev;
+    uint64_t counter;
 
     if (src->flags & EV_ADD && KNOTE_EMPTY(dst)) 
         memcpy(&dst->kev, src, sizeof(*src));
@@ -127,10 +79,17 @@ evfilt_user_copyin(struct filter *filt,
     }
 
     if ((!(dst->kev.flags & EV_DISABLE)) && src->fflags & NOTE_TRIGGER) {
+        counter = 1;
+        if (write(filt->kf_pfd, &counter, sizeof(counter)) < 0) {
+            if (errno != EAGAIN) {
+                dbg_printf("write(2): %s", strerror(errno));
+                return (-1);
+            }
+        }
         dst->kev.fflags |= NOTE_TRIGGER;
-        evfd_raise(filt->kf_pfd);
+        dbg_puts("knote triggered");
     }
-
+#endif
     return (0);
 }
 
@@ -139,15 +98,21 @@ evfilt_user_copyout(struct filter *filt,
             struct kevent *dst, 
             int maxevents)
 {
+    return (-1);
+#if TODO
     struct knote *kn, *kn_next;
     int nevents = 0;
-  
+    uint64_t cur;
+
+    /* Reset the counter */
+    if (read(filt->kf_pfd, &cur, sizeof(cur)) < sizeof(cur)) {
+        dbg_printf("read(2): %s", strerror(errno));
+        return (-1);
+    }
+    dbg_printf("  counter=%llu", (unsigned long long) cur);
+
     for (kn = LIST_FIRST(&filt->kf_watchlist); kn != NULL; kn = kn_next) {
         kn_next = LIST_NEXT(kn, entries);
-
-        /* Skip knotes that have not been triggered */
-        if (!(kn->kev.fflags & NOTE_TRIGGER))
-                continue;
 
         memcpy(dst, &kn->kev, sizeof(*dst));
         dst->fflags &= ~NOTE_FFCTRLMASK;     //FIXME: Not sure if needed
@@ -159,29 +124,26 @@ evfilt_user_copyout(struct filter *filt,
                       other filters. */
             dst->flags &= ~EV_ADD;
         }
-        if (kn->kev.flags & EV_ONESHOT) 
+        if (kn->kev.flags & EV_ONESHOT) {
+
+            /* NOTE: True on FreeBSD but not consistent behavior with
+                      other filters. */
+            dst->flags &= ~EV_ONESHOT;  
+
             knote_free(kn);
-        if (kn->kev.flags & EV_CLEAR)
-            kn->kev.fflags &= ~NOTE_TRIGGER;
-        if (kn->kev.flags & (EV_DISPATCH | EV_CLEAR | EV_ONESHOT))
-            evfd_lower(filt->kf_pfd);
+        }
 
         dst++;
         if (++nevents == maxevents)
             break;
     }
 
-    /* This should normally never happen but is here for debugging */
-    if (nevents == 0) {
-        dbg_puts("spurious wakeup");
-        evfd_lower(filt->kf_pfd);
-    }
-
     return (nevents);
+#endif
 }
 
 const struct filter evfilt_user = {
-    EVFILT_USER,
+    0, //EVFILT_USER,
     evfilt_user_init,
     evfilt_user_destroy,
     evfilt_user_copyin,

@@ -32,16 +32,99 @@
 #include "sys/event.h"
 #include "private.h"
 
+static char *
+kevent_filter_dump(const struct kevent *kev)
+{
+    char *buf;
+
+    if ((buf = calloc(1, 64)) == NULL)
+        abort();
+
+    snprintf(buf, 64, "%d (%s)", kev->filter, filter_name(kev->filter));
+    return (buf);
+}
+
+static char *
+kevent_fflags_dump(const struct kevent *kev)
+{
+    char *buf;
+
+#define KEVFFL_DUMP(attrib) \
+    if (kev->fflags & attrib) \
+    strncat(buf, #attrib" ", 64);
+
+    if ((buf = calloc(1, 1024)) == NULL)
+        abort();
+
+    snprintf(buf, 1024, "fflags=0x%04x (", kev->fflags);
+    if (kev->filter == EVFILT_VNODE) {
+        KEVFFL_DUMP(NOTE_DELETE);
+        KEVFFL_DUMP(NOTE_WRITE);
+        KEVFFL_DUMP(NOTE_EXTEND);
+        KEVFFL_DUMP(NOTE_ATTRIB);
+        KEVFFL_DUMP(NOTE_LINK);
+        KEVFFL_DUMP(NOTE_RENAME);
+    } else if (kev->filter == EVFILT_USER) {
+        KEVFFL_DUMP(NOTE_FFNOP);
+        KEVFFL_DUMP(NOTE_FFAND);
+        KEVFFL_DUMP(NOTE_FFOR);
+        KEVFFL_DUMP(NOTE_FFCOPY);
+        KEVFFL_DUMP(NOTE_TRIGGER);
+    }  else {
+        strncat(buf, " ", 1);
+    }
+    buf[strlen(buf) - 1] = ')';
+
+#undef KEVFFL_DUMP
+
+    return (buf);
+}
+
+static char *
+kevent_flags_dump(const struct kevent *kev)
+{
+    char *buf;
+
+#define KEVFL_DUMP(attrib) \
+    if (kev->flags & attrib) \
+	strncat(buf, #attrib" ", 64);
+
+    if ((buf = calloc(1, 1024)) == NULL)
+        abort();
+
+    snprintf(buf, 1024, "flags=0x%04x (", kev->flags);
+    KEVFL_DUMP(EV_ADD);
+    KEVFL_DUMP(EV_ENABLE);
+    KEVFL_DUMP(EV_DISABLE);
+    KEVFL_DUMP(EV_DELETE);
+    KEVFL_DUMP(EV_ONESHOT);
+    KEVFL_DUMP(EV_CLEAR);
+    KEVFL_DUMP(EV_EOF);
+    KEVFL_DUMP(EV_ERROR);
+    KEVFL_DUMP(EV_DISPATCH);
+    KEVFL_DUMP(EV_RECEIPT);
+    buf[strlen(buf) - 1] = ')';
+
+#undef KEVFL_DUMP
+
+    return (buf);
+}
+
 const char *
-kevent_dump(struct kevent *kev)
+kevent_dump(const struct kevent *kev)
 {
     char buf[512];
-    snprintf(&buf[0], sizeof(buf), "[filter=%d,flags=%d,ident=%u,udata=%p]", 
-            kev->filter,
-            kev->flags,
+
+    snprintf(&buf[0], sizeof(buf), 
+            "{ ident=%d, filter=%s, %s, %s, data=%d, udata=%p }",
             (u_int) kev->ident,
+            kevent_filter_dump(kev),
+            kevent_flags_dump(kev),
+            kevent_fflags_dump(kev),
+            (int) kev->data,
             kev->udata);
-    return (strdup(buf));
+
+    return (strdup(buf)); /* FIXME: memory leak */
 }
 
 static void
@@ -51,21 +134,31 @@ kevent_error(struct kevent *dst, const struct kevent *src, int data)
     dst->data = data;
 }
 
+/** @return number of events added to the eventlist */
 static int
 kevent_copyin(struct kqueue *kq, const struct kevent *src, int nchanges,
         struct kevent *eventlist, int nevents)
 {
-    struct knote  *dst;
+    struct knote  *dst = NULL;
     struct filter *filt;
-    int kn_alloc,status;
+    int kn_alloc;
+    int status, rv;
+
+    kn_alloc = 0;
+    status = 0;
+    rv = 0;
+
+    dbg_printf("nchanges=%d nevents=%d", nchanges, nevents);
 
     for (; nchanges > 0; src++, nchanges--) {
 
-        if ((filt = filter_lookup(kq, src->filter)) == NULL) {
-            status = -EINVAL;
-            goto err_out;
-        }
+        status = filter_lookup(&filt, kq, src->filter);
+        if (status < 0) 
+            goto err_out_unlocked;
 
+        dbg_printf("%d %s\n", nchanges, kevent_dump(src));
+
+        filter_lock(filt);
         /*
          * Retrieve an existing knote object, or create a new one.
          */
@@ -77,7 +170,6 @@ kevent_copyin(struct kqueue *kq, const struct kevent *src, int nchanges,
                    status = -ENOMEM;
                    goto err_out;
                }
-               dbg_puts(kevent_dump(&dst->kev));
                kn_alloc = 1;
            } else if (src->flags & EV_ENABLE 
                    || src->flags & EV_DISABLE
@@ -85,6 +177,14 @@ kevent_copyin(struct kqueue *kq, const struct kevent *src, int nchanges,
                status = -ENOENT;
                goto err_out;
            } else {
+
+               /* Special case for EVFILT_USER:
+                  Ignore user-generated events that are not of interest */
+               if (src->fflags & NOTE_TRIGGER) {
+                   filter_unlock(filt);
+                   continue;
+               }
+
                /* flags == 0 or no action */
                status = -EINVAL;
                goto err_out;
@@ -110,20 +210,24 @@ kevent_copyin(struct kqueue *kq, const struct kevent *src, int nchanges,
             goto err_out;
         }
 
+        filter_unlock(filt);
         continue;
 
 err_out:
+        filter_unlock(filt);
+err_out_unlocked:
         if (status != 0 && kn_alloc)
             knote_free(dst);
         if (nevents > 0) {
             kevent_error(eventlist++, src, status);
             nevents--;
+            rv++;
         } else {
             return (-1);
         }
     }
 
-    return (0);
+    return (rv);
 }
 
 int
@@ -132,9 +236,7 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
         const struct timespec *timeout)
 {
     struct kqueue *kq;
-    struct filter *filt;
-    fd_set fds;
-    int i, rv, n, nret;
+    int rv, n, nret;
 
     errno = 0;
 
@@ -149,11 +251,13 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
      * Process each kevent on the changelist.
      */
     if (nchanges) {
-        kqueue_lock(kq);
         rv = kevent_copyin(kq, changelist, nchanges, eventlist, nevents);
-        kqueue_unlock(kq);
         if (rv < 0)
             return (-1); 
+        if (rv > 0) {
+            eventlist += rv;
+            nevents -= rv;
+        }
     }
 
     /* Determine if we need to wait for events. */
@@ -162,52 +266,24 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
     if (nevents > MAX_KEVENT)
         nevents = MAX_KEVENT;
 
-    /*
-     * Wait for one or more filters to have events.
-     */
-wait_for_events:
-    fds = kq->kq_fds;
-    n = pselect(kq->kq_nfds, &fds, NULL , NULL, timeout, NULL);
-    if (n < 0) {
-        if (errno == EINTR) {
-            dbg_puts("signal caught");
-            return (-1);
-        }
-        dbg_perror("pselect(2)");
-        return (-1);
-    }
-    dbg_printf("pselect(2): %d bits set", n);
-    if (n == 0)
-        return (0);
-
-    /* 
-     * Process each event and place it on the eventlist
-     */ 
-    nret = 0;
-    kqueue_lock(kq);
-    for (i = 0; (i < EVFILT_SYSCOUNT && n > 0 && nevents > 0); i++) {
-        dbg_printf("eventlist: n = %d nevents = %d", n, nevents);
-        filt = &kq->kq_filt[i]; 
-        dbg_printf("pfd[%d] = %d", i, filt->kf_pfd);
-        if (FD_ISSET(filt->kf_pfd, &fds)) {
-            dbg_printf("event(s) for filter #%d", i);
-            rv = filt->kf_copyout(filt, eventlist, nevents);
-            if (rv < 0) {
-                kqueue_unlock(kq);
-                dbg_puts("kevent_copyout failed");
-                return (-1);
-            }
-            nret += rv;
-            eventlist += rv;
-            nevents -= rv;
-            n--;
-        }
-    }
-    kqueue_unlock(kq);
-
     /* Handle spurious wakeups where no events are generated. */
-    if (nret == 0)
-        goto wait_for_events;
+    for (nret = 0; nret == 0; 
+            nret = kevent_copyout(kq, n, eventlist, nevents)) 
+    {
+        /* Wait for one or more events. */
+        n = kevent_wait(kq, timeout);
+        if (n < 0)
+            return (-1);
+        if (n == 0)
+            return (0);             /* Timeout */
+    }
+
+#ifdef KQUEUE_DEBUG
+    dbg_printf("returning %d events", nret);
+    for (n = 0; n < nret; n++) {
+        dbg_printf("eventlist[%d] = %s", n, kevent_dump(&eventlist[n]));
+    }
+#endif /* KQUEUE_DEBUG */
 
     return (nret);
 }

@@ -18,7 +18,12 @@
 #define _COMMON_H
 
 
-#include <err.h>
+#if HAVE_ERR_H
+# include <err.h>
+#else
+# define err(rc,msg,...) do { perror(msg); exit(rc); } while (0)
+# define errx(rc,msg,...) do { puts(msg); exit(rc); } while (0)
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -43,6 +48,15 @@ struct kevent * kevent_get(int);
 
 void kevent_cmp(struct kevent *, struct kevent *);
 
+void
+kevent_add(int kqfd, struct kevent *kev, 
+        uintptr_t ident,
+        short     filter,
+        u_short   flags,
+        u_int     fflags,
+        intptr_t  data,
+        void      *udata);
+
 /* DEPRECATED: */
 #define KEV_CMP(kev,_ident,_filter,_flags) do {                 \
     if (kev.ident != (_ident) ||                                \
@@ -57,6 +71,6 @@ void kevent_cmp(struct kevent *, struct kevent *);
 extern void test_no_kevents(void);
 
 extern void test_begin(const char *);
-extern void success(const char *);
+extern void success(void);
 
 #endif  /* _COMMON_H */
