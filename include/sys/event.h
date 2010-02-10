@@ -33,7 +33,6 @@
 #include <sys/queue.h> 
 #include <sys/types.h> 
 #include <stdint.h> 
-#include <sys/cdefs.h>
 
 struct timespec;
 
@@ -41,17 +40,15 @@ struct timespec;
 
 #define EVFILT_READ		(-1)
 #define EVFILT_WRITE		(-2)
+#define EVFILT_AIO		(-3)	/* attached to aio requests */
 #define EVFILT_VNODE		(-4)	/* attached to vnodes */
 #define EVFILT_PROC		(-5)	/* attached to struct proc */
 #define EVFILT_SIGNAL		(-6)	/* attached to struct proc */
 #define EVFILT_TIMER		(-7)	/* timers */
-#define EVFILT_USER		(-11)	/* User events */
-#if !LIBKQUEUE
-#define EVFILT_AIO		(-3)	/* attached to aio requests */
 #define EVFILT_NETDEV		(-8)	/* network devices */
 #define EVFILT_FS		(-9)	/* filesystem events */
 #define EVFILT_LIO		(-10)	/* attached to lio requests */
-#endif  /* ! LIBKQUEUE */
+#define EVFILT_USER		(-11)	/* User events */
 #define EVFILT_SYSCOUNT		11
 
 #define EV_SET(kevp_, a, b, c, d, e, f) do {	\
@@ -133,7 +130,6 @@ struct kevent {
  * data/hint flags for EVFILT_PROC
  */
 #define	NOTE_EXIT	0x80000000		/* process exited */
-#if ! LIBKQUEUE
 #define	NOTE_FORK	0x40000000		/* process forked */
 #define	NOTE_EXEC	0x20000000		/* process exec'd */
 #define	NOTE_PCTRLMASK	0xf0000000		/* mask for hint bits */
@@ -143,23 +139,39 @@ struct kevent {
 #define	NOTE_TRACK	0x00000001		/* follow across forks */
 #define	NOTE_TRACKERR	0x00000002		/* could not track child */
 #define	NOTE_CHILD	0x00000004		/* am a child process */
-#endif  /* ! LIBKQUEUE */
 
-#if ! LIBKQUEUE
 /*
  * data/hint flags for EVFILT_NETDEV
  */
 #define NOTE_LINKUP	0x0001			/* link is up */
 #define NOTE_LINKDOWN	0x0002			/* link is down */
 #define NOTE_LINKINV	0x0004			/* link state is invalid */
-#endif  /* ! LIBKQUEUE */
 
-__BEGIN_DECLS
+/* KLUDGE: This is from <sys/mount.h> on FreeBSD and is used by 
+           the EVFILT_FS filter. */
+/* vfsquery flags */
+#define VQ_NOTRESP      0x0001  /* server down */
+#define VQ_NEEDAUTH     0x0002  /* server bad auth */
+#define VQ_LOWDISK      0x0004  /* we're low on space */
+#define VQ_MOUNT        0x0008  /* new filesystem arrived */
+#define VQ_UNMOUNT      0x0010  /* filesystem has left */
+#define VQ_DEAD         0x0020  /* filesystem is dead, needs force unmount */
+#define VQ_ASSIST       0x0040  /* filesystem needs assistance from external
+                                   program */
+#define VQ_NOTRESPLOCK  0x0080  /* server lockd down */
+
+
+#ifdef  __cplusplus
+extern "C" {
+#endif
+
 int     kqueue(void);
 int     kevent(int kq, const struct kevent *changelist, int nchanges,
 	    struct kevent *eventlist, int nevents,
 	    const struct timespec *timeout);
-__END_DECLS
+
+#ifdef  __cplusplus
+}
+#endif
 
 #endif /* !_SYS_EVENT_H_ */
-

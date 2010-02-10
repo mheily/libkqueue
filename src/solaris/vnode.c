@@ -14,145 +14,26 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <errno.h>
-#include <err.h>
-#include <fcntl.h>
-#include <pthread.h>
-#include <signal.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <sys/queue.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <string.h>
-#include <unistd.h>
-
-#include <limits.h>
-#include <sys/inotify.h>
-#include <sys/epoll.h>
-
 #include "sys/event.h"
 #include "private.h"
-
-char *
-inotify_mask_dump(uint32_t mask)
-{
-    char *buf;
-
-#define INEVT_MASK_DUMP(attrib) \
-    if (mask & attrib) \
-       strcat(buf, #attrib" ");
-
-    if ((buf = calloc(1, 1024)) == NULL)
-	abort();
-    sprintf(buf, "mask = %d (", mask);
-    INEVT_MASK_DUMP(IN_ACCESS);
-    INEVT_MASK_DUMP(IN_MODIFY);
-    INEVT_MASK_DUMP(IN_ATTRIB);
-    INEVT_MASK_DUMP(IN_CLOSE_WRITE);
-    INEVT_MASK_DUMP(IN_CLOSE_NOWRITE);
-    INEVT_MASK_DUMP(IN_OPEN);
-    INEVT_MASK_DUMP(IN_MOVED_FROM);
-    INEVT_MASK_DUMP(IN_MOVED_TO);
-    INEVT_MASK_DUMP(IN_CREATE);
-    INEVT_MASK_DUMP(IN_DELETE);
-    INEVT_MASK_DUMP(IN_DELETE_SELF);
-    INEVT_MASK_DUMP(IN_MOVE_SELF);
-    buf[strlen(buf) - 1] = ')';
-
-    return (buf);
-}
-
-static void
-inotify_event_dump(struct inotify_event *evt)
-{
-    fputs("[BEGIN: inotify_event dump]\n", stdout);
-    fprintf(stdout, "  wd = %d\n", evt->wd);
-    fprintf(stdout, "  %s", inotify_mask_dump(evt->mask));
-
-    fputs(")\n", stdout);
-    fputs("[END: inotify_event dump]\n", stdout);
-    fflush(stdout);
-}
-
-static int
-fd_to_path(char *buf, size_t bufsz, int fd)
-{
-    char path[1024];    //TODO: Maxpathlen, etc.
-
-    if (snprintf(&path[0], sizeof(path), "/proc/%d/fd/%d", getpid(), fd) < 0)
-        return (-1);
-
-    memset(buf, 0, bufsz);
-    return (readlink(path, buf, bufsz));
-}
-
-
-/* TODO: USE this to get events with name field */
-int
-get_one_event(struct inotify_event *dst, int pfd)
-{
-    ssize_t n;
-
-    dbg_puts("reading one inotify event");
-    for (;;) {
-        n = read(pfd, dst, sizeof(*dst));
-        if (n < 0) {
-            if (errno == EINTR)
-                continue;
-            dbg_perror("read");
-            return (-1);
-        } else {
-            break;
-        }
-    }
-    dbg_printf("read(2) from inotify wd: %zu bytes", n);
-
-    /* FIXME-TODO: if len > 0, read(len) */
-    if (dst->len != 0) 
-        abort();
-
-
-    return (0);
-}
-
-static int
-delete_watch(int pfd, struct knote *kn)
-{
-    if (kn->kev.data < 0) 
-        return (0);
-    if (inotify_rm_watch(pfd, kn->kev.data) < 0) {
-        dbg_printf("inotify_rm_watch(2): %s", strerror(errno));
-        return (-1);
-    }
-    dbg_printf("wd %d removed", (int) kn->kev.data);
-    kn->kev.data = -1;
-
-    return (0);
-}
 
 int
 evfilt_vnode_init(struct filter *filt)
 {
-    filt->kf_pfd = inotify_init();
-    dbg_printf("inotify fd = %d", filt->kf_pfd);
-    if (filt->kf_pfd < 0)
-        return (-1);
-
-    return (0);
+    return (-1);
 }
 
 void
 evfilt_vnode_destroy(struct filter *filt)
 {
-    close(filt->kf_pfd);
+    ;
 }
 
 int
 evfilt_vnode_copyin(struct filter *filt, 
         struct knote *dst, const struct kevent *src)
 {
+#if TODO
     char path[PATH_MAX];
     struct stat sb;
     uint32_t mask;
@@ -203,6 +84,8 @@ evfilt_vnode_copyin(struct filter *filt,
     }
 
     return (0);
+#endif
+    return (-1);
 }
 
 int
@@ -210,6 +93,7 @@ evfilt_vnode_copyout(struct filter *filt,
             struct kevent *dst, 
             int nevents)
 {
+#if TODO
     struct inotify_event evt;
     struct stat sb;
     struct knote *kn;
@@ -275,10 +159,12 @@ evfilt_vnode_copyout(struct filter *filt,
         knote_free(kn);
             
     return (1);
+#endif
+    return (-1);
 }
 
 const struct filter evfilt_vnode = {
-    EVFILT_VNODE,
+    0, //EVFILT_VNODE,
     evfilt_vnode_init,
     evfilt_vnode_destroy,
     evfilt_vnode_copyin,

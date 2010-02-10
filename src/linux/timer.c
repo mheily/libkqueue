@@ -149,9 +149,10 @@ evfilt_timer_destroy(struct filter *filt)
     struct knote *kn;
 
     /* Destroy all timerfds */
-    KNOTELIST_FOREACH(kn, &filt->knl) {
+    KNOTELIST_FOREACH(kn, &filt->kf_watchlist) {
         close(kn->kn_pfd);
     }
+    /* TODO: use eventlist, close these also */
 
     close (filt->kf_pfd);
 }
@@ -212,15 +213,7 @@ evfilt_timer_copyout(struct filter *filt,
         ev = &epevt[i];
         /* TODO: put in generic debug.c: epoll_event_dump(ev); */
         kn = ev->data.ptr;
-        dst->ident = kn->kev.ident;
-        dst->filter = kn->kev.filter;
-        dst->udata = kn->kev.udata;
-        dst->flags = EV_ADD; 
-        dst->fflags = 0;
-        if (kn->kev.flags & EV_ONESHOT) /*TODO: move elsewhere */
-            dst->flags |= EV_ONESHOT;
-        if (kn->kev.flags & EV_CLEAR) /*TODO: move elsewhere */
-            dst->flags |= EV_CLEAR;
+        memcpy(dst, &kn->kev, sizeof(*dst));
         if (ev->events & EPOLLERR)
             dst->fflags = 1; /* FIXME: Return the actual timer error */
           

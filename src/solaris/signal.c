@@ -14,56 +14,22 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <errno.h>
-#include <fcntl.h>
-#include <pthread.h>
-#include <signal.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <sys/queue.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <string.h>
-#include <unistd.h>
-
-#include <sys/signalfd.h>
-
 #include "sys/event.h"
 #include "private.h"
 
 /* Highest signal number supported. POSIX standard signals are < 32 */
 #define SIGNAL_MAX      32
 
-static int
-update_sigmask(const struct filter *filt)
-{
-    int rv;
-    rv = signalfd(filt->kf_pfd, &filt->kf_sigmask, 0);
-    dbg_printf("signalfd = %d", filt->kf_pfd);
-    if (rv < 0 || rv != filt->kf_pfd) {
-        dbg_printf("signalfd(2): %s", strerror(errno));
-        return (-1);
-    }
-
-    return (0);
-}
-
 int
 evfilt_signal_init(struct filter *filt)
 {
-    sigemptyset(&filt->kf_sigmask);
-    filt->kf_pfd = signalfd(-1, &filt->kf_sigmask, 0);
-    dbg_printf("signalfd = %d", filt->kf_pfd);
-    if (filt->kf_pfd < 0) 
-        return (-1);
-
-    return (0);
+    return (-1);
 }
 
 void
 evfilt_signal_destroy(struct filter *filt)
 {
-    close (filt->kf_pfd);
+    ;
 }
 
 int
@@ -75,6 +41,8 @@ evfilt_signal_copyin(struct filter *filt,
         return (-1);
     }
 
+    return (-1);
+#if TODO
     if (src->flags & EV_ADD && KNOTE_EMPTY(dst)) {
         memcpy(&dst->kev, src, sizeof(*src));
         dst->kev.flags |= EV_CLEAR;
@@ -85,13 +53,17 @@ evfilt_signal_copyin(struct filter *filt,
         sigdelset(&filt->kf_sigmask, src->ident);
 
     return (update_sigmask(filt));
+#endif
 }
 
 int
 evfilt_signal_copyout(struct filter *filt, 
             struct kevent *dst, 
             int nevents)
-{
+{ 
+    return (-1);
+#if TODO
+
     struct knote *kn;
     struct signalfd_siginfo sig[MAX_KEVENT];
     int i;
@@ -133,10 +105,11 @@ evfilt_signal_copyout(struct filter *filt,
     }
 
     return (nevents);
+#endif
 }
 
 const struct filter evfilt_signal = {
-    EVFILT_SIGNAL,
+    0, //EVFILT_SIGNAL,
     evfilt_signal_init,
     evfilt_signal_destroy,
     evfilt_signal_copyin,

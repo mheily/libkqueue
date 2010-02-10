@@ -16,27 +16,31 @@
 
 include config.mk
 
-check:
-	if [ ! -f /usr/include/sys/event.h ] ; then \
-        cd .. && ./configure --debug=yes && make build ; \
-	fi
-	$(CC) $(CFLAGS) $(SOURCES) $(LDADD)
-	./a.out
+all: kqtest
+
+kqtest: $(SOURCES)
+	test -L libkqueue.a || ln -s ../libkqueue.a 
+	$(CC) -o kqtest $(CFLAGS) $(SOURCES) $(LDADD)
+
+check: kqtest
+	./kqtest
 
 # NOTE: copy+paste of 'make check'
-valgrind:
-	cd .. && make build CFLAGS="$(CFLAGS) -g -O0 -DKQUEUE_DEBUG -DUNIT_TEST"
-	gcc -c $(CFLAGS) test.c
-	gcc -g -O0 $(CFLAGS) test.c libkqueue.a $(LDADD)
-	valgrind --tool=memcheck --leak-check=full --show-reachable=yes --num-callers=20 --track-fds=yes ./a.out
-
+valgrind: kqtest
+	valgrind --tool=memcheck --leak-check=full --show-reachable=yes --num-callers=20 --track-fds=yes ./kqtest
 
 check-installed:
-	gcc $(CFLAGS) -I$(PREFIX)/kqueue test.c -lkqueue
-	./a.out
+	$(CC) -o kqtest $(CFLAGS) $(SOURCES) $(LDADD) -lkqueue
+	./kqtest
 
-distclean: clean
-	rm -f config.mk config.h a.out
+check-libtool:
+	gcc $(CFLAGS) -c *.c
+	libtool --mode=link gcc -g -O0 -o kqtest *.o $(LIBDIR)/libkqueue.la
+	./kqtest
+
+distclean: clean 
+	rm -f config.mk config.h
+	for x in libdispatch ; do cd $$x && make distclean ; done
 
 clean:
-	rm -f *.o 
+	rm -f *.o *.a kqtest

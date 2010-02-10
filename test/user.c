@@ -26,17 +26,13 @@ add_and_delete(void)
 
     test_begin(test_id);
 
-    EV_SET(&kev, 1, EVFILT_USER, EV_ADD, 0, 0, NULL);
-    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
-        err(1, "%s", test_id);
+    kevent_add(kqfd, &kev, 1, EVFILT_USER, EV_ADD, 0, 0, NULL);
     test_no_kevents();
 
-    kev.flags = EV_DELETE;
-    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
-        err(1, "%s", test_id);
+    kevent_add(kqfd, &kev, 1, EVFILT_USER, EV_DELETE, 0, 0, NULL);
     test_no_kevents();
 
-    success(test_id);
+    success();
 }
 
 static void
@@ -47,17 +43,20 @@ event_wait(void)
 
     test_begin(test_id);
 
-    EV_SET(&kev, 1, EVFILT_USER, EV_ADD, 0, 0, NULL);    
-    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
-        err(1, "%s", test_id);
+    test_no_kevents();
 
-    kev.fflags |= NOTE_TRIGGER;
-    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
-        err(1, "%s", test_id);
+    /* Add the event, and then trigger it */
+    kevent_add(kqfd, &kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);    
+    kevent_add(kqfd, &kev, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);    
 
+    kev.fflags &= ~NOTE_FFCTRLMASK;
+    kev.fflags &= ~NOTE_TRIGGER;
+    kev.flags = EV_CLEAR;
     kevent_cmp(&kev, kevent_get(kqfd));
 
-    success(test_id);
+    test_no_kevents();
+
+    success();
 }
 
 static void
@@ -68,25 +67,24 @@ disable_and_enable(void)
 
     test_begin(test_id);
 
-    EV_SET(&kev, 1, EVFILT_USER, EV_ADD, 0, 0, NULL);    
-    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
-        err(1, "%s", test_id);
-    kev.flags = EV_DISABLE;
-    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
-        err(1, "%s", test_id);
-
-    kev.fflags |= NOTE_TRIGGER;
-    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
-        err(1, "%s", test_id);
     test_no_kevents();
 
-    kev.flags = EV_ENABLE;
-    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
-        err(1, "%s", test_id);
-    kev.flags = EV_ADD;
+    kevent_add(kqfd, &kev, 1, EVFILT_USER, EV_ADD, 0, 0, NULL); 
+    kevent_add(kqfd, &kev, 1, EVFILT_USER, EV_DISABLE, 0, 0, NULL); 
+
+    /* Trigger the event, but since it is disabled, nothing will happen. */
+    kevent_add(kqfd, &kev, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL); 
+    test_no_kevents();
+
+    kevent_add(kqfd, &kev, 1, EVFILT_USER, EV_ENABLE, 0, 0, NULL); 
+    kevent_add(kqfd, &kev, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL); 
+
+    kev.flags = EV_CLEAR;
+    kev.fflags &= ~NOTE_FFCTRLMASK;
+    kev.fflags &= ~NOTE_TRIGGER;
     kevent_cmp(&kev, kevent_get(kqfd));
 
-    success(test_id);
+    success();
 }
 
 static void
@@ -97,26 +95,21 @@ oneshot(void)
 
     test_begin(test_id);
 
-    EV_SET(&kev, 1, EVFILT_USER, EV_ADD | EV_ONESHOT, 0, 0, NULL);    
-    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
-        err(1, "%s", test_id);
+    test_no_kevents();
+
+    kevent_add(kqfd, &kev, 2, EVFILT_USER, EV_ADD | EV_ONESHOT, 0, 0, NULL);
 
     puts("  -- event 1");
-    kev.fflags |= NOTE_TRIGGER;
-    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
-        err(1, "%s", test_id);
+    kevent_add(kqfd, &kev, 2, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);    
+
+    kev.flags = EV_ONESHOT;
+    kev.fflags &= ~NOTE_FFCTRLMASK;
+    kev.fflags &= ~NOTE_TRIGGER;
     kevent_cmp(&kev, kevent_get(kqfd));
 
-    /* Try to trigger the event again. It is deleted, so that
-       should be an error. 
-     */
-    puts("  -- event 2 (should fail)");
-    kev.flags = 0; 
-    kev.fflags |= NOTE_TRIGGER;
-    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) == 0)
-        err(1, "%s", test_id);
+    test_no_kevents();
 
-    success(test_id);
+    success();
 }
 
 void

@@ -5,8 +5,8 @@ c_exports="program version target cflags"
 make_exports="program version target \
               prefix libdir includedir mandir \
               cflags ldflags ldadd libdepends \
-              sources mans headers extra_dist subdirs \
-              install"
+              sources objs deps mans headers extra_dist subdirs \
+              cc cpp ld ar install"
 
 required_headers=
 optional_headers=
@@ -19,12 +19,17 @@ post_configure_hook() {
     return
 }
 
-. ./config.inc
-
 export_to_make() {
   for id in $*
   do
-    uc_id=`echo $id | tr 'a-z' 'A-Z'`;
+
+    # Prepend $DESTDIR to installation directories
+    case "$id" in
+        prefix|libdir|includedir|mandir)  
+        eval "$id=\"\\\$\\\$DESTDIR\$$id\""
+    esac
+
+    uc_id=`echo $id | $tr '[:lower:]' '[:upper:]'`;
     eval "echo \"$uc_id=\"\$$id\"\" >> config.mk"
   done
 }
@@ -32,12 +37,13 @@ export_to_make() {
 export_to_c() {
   for id in $*
   do
-    uc_id=`echo $id | tr 'a-z' 'A-Z'`;
+    uc_id=`echo $id | $tr '[:lower:]' '[:upper:]'`;
     eval "echo \"#define $uc_id \\\"\$$id\\\"\" >> config.h"
   done
 }
 
 finalize() {
+  uc_id=`echo \"$1\" | $tr '[:lower:]' '[:upper:]'`;
   eval "if [ \"\$$1\" = \"\" ] ; then $1=\"$2\" ; fi"
 }
 
@@ -51,10 +57,19 @@ process_argv() {
     done
 }
 
+process_env() {
+    test -n "$CC" && cc="$CC"
+    test -n "$CPP" && cpp="$CPP"
+    test -n "$CPPFLAGS" && cppflags="$CPPFLAGS"
+    test -n "$CFLAGS" && cflags="$CFLAGS"
+    test -n "$LD" && ld="$LD"
+    test -n "$LDFLAGS" && ldflags="$LDFLAGS"
+    test -n "$AR" && ar="$AR"
+}
  
 check_header() {	 
    sym=`echo "have_$1" | sed 's,[./],_,g'`	 
-   uc_sym=`echo "$sym" | tr a-z A-Z`	 
+   uc_sym=`echo "$sym" | $tr '[:lower:]' '[:upper:]'`;
    path=$1
 
    printf "checking for $path.. "
@@ -82,8 +97,8 @@ check_symbol() {
     header=$1
     symbol=$2
 
-    uc_symbol=`echo "HAVE_$symbol" | tr a-z A-Z | sed 's,[./],_,g'`
-    lc_symbol=`echo "have_$symbol" | tr A-Z a-z | sed 's,[./],_,g'`
+    uc_symbol=`echo "HAVE_$symbol" | $tr '[:lower:]' '[:upper:]' | sed 's,[./],_,g'`
+    lc_symbol=`echo "have_$symbol" | $tr '[:upper:]' '[:lower:]' | sed 's,[./],_,g'`
 
     if [ -f "$header" ] ; then
         path="$header"
@@ -119,9 +134,87 @@ check_install() {
     echo "$install"
 }
 
+check_target() {
+    printf "checking operating system type.. "
+    default_target=`uname -s | $tr '[:upper:]' '[:lower:]'`
+    if [ "$default_target" = "sunos" ] ; then
+       default_target="solaris"
+    fi
+    finalize target "$default_target"
+    echo "$target"
+}
+
+check_compiler() {
+    printf "checking for a C compiler.. "
+    if [ "`uname -s`" = "SunOS" ] ; then
+       default_cc="/usr/sfw/bin/gcc"
+    else
+       default_cc="/usr/bin/cc"
+    fi
+    finalize cc "$default_cc"
+    echo "$cc"
+}
+
+check_linker() {
+    printf "checking for a suitable linker.. "
+
+    # Disabled due to problems with ld(1) under Linux
+    #if [ "`uname -s`" = "SunOS" ] ; then
+    #   default_ld="/usr/sfw/bin/gld"
+    #else
+    #   default_ld="/usr/bin/ld"
+    #fi
+    #ldflags="-shared -export-dynamic -soname $program.so $ldflags"
+
+    # Workaround for "hidden symbol <foo> is referenced by DSO" linker error
+    # seen when compiling libdispatch.
+    # Appears to be a problem with GCC 4.0 and binutils
+    #
+    default_ld="$cc"
+    ldflags="-shared -Wl,-soname,$program.so $ldflags"
+
+    finalize ld "$default_ld"
+    echo "$ld"
+}
+
+check_archiver() {
+    printf "checking for a suitable archiver.. "
+    if [ "`uname -s`" = "SunOS" ] ; then
+       default_ar="/usr/sfw/bin/gar"
+    else
+       default_ar="/usr/bin/ar"
+    fi
+    finalize ar "$default_ar"
+    echo "$ar"
+}
 err() {
     echo "*** ERROR *** $*"
     exit 1
+}
+
+subst_vars() {
+  outfile=$1
+
+  if [ ! -f "${outfile}.in" ] ; then
+      return
+  fi
+
+  echo "Creating $outfile"
+  rm -f $outfile
+  sed -e "
+       s,@@PROGRAM@@,$program,g;
+       s,@@VERSION@@,$version,g;
+       s,@@PREFIX@@,$prefix,g;
+       s,@@LIBDIR@@,$libdir,g;
+       s,@@INCLUDEDIR@@,$includedir,g;
+       s,@@MANDIR@@,$mandir,g;
+       s,@@LIBDEPENDS@@,$libdepends,g;
+       s,@@PKG_SUMMARY@@,$pkg_summary,g;
+       s,@@PKG_DESCRIPTION@@,$pkg_description,g;
+       s,@@LICENSE@@,$license,g;
+       s,@@AUTHOR@@,$author,g;
+       " < ${outfile}.in > $outfile
+  chmod 400 $outfile
 }
 
 #######################################################################
@@ -129,6 +222,12 @@ err() {
 #                           MAIN()
 #
 #######################################################################
+
+# Workaround for Solaris "Bad string" issue when LOCALE is undefined
+tr="/usr/bin/tr"
+test -f /usr/xpg4/bin/tr && tr="/usr/xpg4/bin/tr"
+
+. ./config.inc
 
 # Initialize the output files
 #
@@ -141,10 +240,16 @@ rm -f config.h
 echo "/* AUTOMATICALLY GENERATED -- DO NOT EDIT */" > config.h
 
 process_argv "$*"
+process_env
+
+check_target
+check_compiler
+check_linker
+check_archiver
+check_install
 
 finalize program    "$program"
 finalize version    "$version"
-finalize target     `uname -s | tr A-Z a-z`
 finalize prefix     "/usr/local"
 finalize libdir     "${prefix}/lib"
 finalize includedir "${prefix}/include"
@@ -153,10 +258,7 @@ finalize cflags     "$cflags"
 finalize libdepends "$libdepends"
 finalize ldadd      ""
 finalize ldflags    ""
-finalize cc         "/usr/bin/cc"
-
-echo "checking operating system type.. $target"
-check_install
+finalize deps       ""
 
 pre_configure_hook
 
@@ -168,22 +270,16 @@ check_headers $optional_headers
 
 post_configure_hook
 
-if [ -f "$program.pc.in" ] ; then
-  echo "Creating $program.pc"
-  sed -e "
-       s,@@PROGRAM@@,$program,g;
-       s,@@VERSION@@,$version,g;
-       s,@@PREFIX@@,$prefix,g;
-       s,@@LIBDIR@@,$libdir,g;
-       s,@@INCLUDEDIR@@,$includedir,g;
-       s,@@MANDIR@@,$mandir,g;
-       s,@@LIBDEPENDS@@,$libdepends,g;
-       " < $program.pc.in >> $program.pc
-  chmod 400 $program.pc
-fi
+objs="`echo \"$sources\" | sed 's/\.c/\.o/g'`"
+
+subst_vars "$program.pc"
+subst_vars "$program.la"
+subst_vars "rpm.spec"
 
 echo "Creating config.h"
 export_to_c $c_exports
 
 echo "Creating config.mk"
 export_to_make "$make_exports"
+
+make clean >/dev/null 2>&1
