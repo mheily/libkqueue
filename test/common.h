@@ -24,6 +24,13 @@
 # define err(rc,msg,...) do { perror(msg); exit(rc); } while (0)
 # define errx(rc,msg,...) do { puts(msg); exit(rc); } while (0)
 #endif
+
+#define die(str)   do { \
+    fprintf(stderr, "%s(): %s: %s\n", __func__,str, strerror(errno));\
+    abort();\
+} while (0)
+
+#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -39,19 +46,26 @@
 
 #include "config.h"
 
+void test_evfilt_read(int);
+void test_evfilt_signal(int);
+void test_evfilt_vnode(int);
+void test_evfilt_timer(int);
+void test_evfilt_proc(int);
+#if HAVE_EVFILT_USER
+void test_evfilt_user(int);
+#endif
+
 #define test(f,...) do {                                             \
     test_begin("test_"#f"()\t"__VA_ARGS__);                                                  \
     test_##f();\
     test_end();                                                     \
 } while (/*CONSTCOND*/0)
 
-
-extern char *cur_test_id;
-int vnode_fd;
-
 extern const char * kevent_to_str(struct kevent *);
 struct kevent * kevent_get(int);
 
+
+void kevent_update(int kqfd, struct kevent *kev);
 
 void kevent_cmp(struct kevent *, struct kevent *);
 
@@ -75,8 +89,14 @@ kevent_add(int kqfd, struct kevent *kev,
 } while (0);
 
 /* Checks if any events are pending, which is an error. */
-extern void test_no_kevents(void);
-extern void test_begin(const char *);
-extern void test_end(void);
+void test_no_kevents(int);
+
+/* From test.c */
+void    test_begin(const char *);
+void    test_end(void);
+void    test_atexit(void);
+void    testing_begin(void);
+void    testing_end(void);
+int     testing_make_uid(void);
 
 #endif  /* _COMMON_H */

@@ -30,8 +30,6 @@
 #include "sys/event.h"
 #include "private.h"
 
-static int kqueue_initialized;          /* Set to 1 by kqueue_init() */
-
 static RB_HEAD(kqt, kqueue) kqtree       = RB_INITIALIZER(&kqtree);
 static pthread_rwlock_t     kqtree_mtx   = PTHREAD_RWLOCK_INITIALIZER;
 
@@ -43,8 +41,81 @@ kqueue_cmp(struct kqueue *a, struct kqueue *b)
 
 RB_GENERATE(kqt, kqueue, entries, kqueue_cmp);
 
+/* Must hold the kqtree_mtx when calling this */
+static void
+kqueue_free(struct kqueue *kq)
+{
+    RB_REMOVE(kqt, &kqtree, kq);
+    filter_unregister_all(kq);
+    free(kq);
+}
+
+static int
+kqueue_gc(void)
+{
+    int rv;
+    struct kqueue *n1, *n2;
+
+    /* Free any kqueue descriptor that is no longer needed */
+    /* Sadly O(N), however needed in the case that a descriptor is
+       closed and kevent(2) will never again be called on it. */
+    for (n1 = RB_MIN(kqt, &kqtree); n1 != NULL; n1 = n2) {
+        n2 = RB_NEXT(kqt, &kqtree, n1);
+
+        if (n1->kq_ref == 0) {
+            kqueue_free(n1);
+        } else {
+            rv = kqueue_validate(n1);
+            if (rv == 0) 
+                kqueue_free(n1);
+            else if (rv < 0) 
+                return (-1);
+        }
+    }
+
+    return (0);
+}
+
+
+int
+kqueue_validate(struct kqueue *kq)
+{
+    int rv;
+    char buf[1];
+    struct pollfd pfd;
+
+    pfd.fd = kq->kq_sockfd[0];
+    pfd.events = POLLIN | POLLHUP;
+    pfd.revents = 0;
+
+    rv = poll(&pfd, 1, 0);
+    if (rv == 0)
+        return (1);
+    if (rv < 0) {
+        dbg_perror("poll(2)");
+        return (-1);
+    }
+    if (rv > 0) {
+        /* NOTE: If the caller accidentally writes to the kqfd, it will
+                 be considered invalid. */
+        rv = recv(kq->kq_sockfd[0], buf, sizeof(buf), MSG_PEEK | MSG_DONTWAIT);
+        if (rv == 0) 
+            return (0);
+        else
+            return (-1);
+    }
+
+    return (0);
+}
+
+void
+kqueue_put(struct kqueue *kq)
+{
+    atomic_dec(&kq->kq_ref);
+}
+
 struct kqueue *
-kqueue_lookup(int kq)
+kqueue_get(int kq)
 {
     struct kqueue query;
     struct kqueue *ent = NULL;
@@ -54,50 +125,35 @@ kqueue_lookup(int kq)
     ent = RB_FIND(kqt, &kqtree, &query);
     pthread_rwlock_unlock(&kqtree_mtx);
 
+    /* Check for invalid kqueue objects still in the tree */
+    if (ent != NULL && (ent->kq_sockfd[0] < 0 || ent->kq_ref == 0))
+        ent = NULL;
+    else
+        atomic_inc(&ent->kq_ref);
+
     return (ent);
 }
 
-/* Must hold the kqtree_mtx when calling this */
-void
-kqueue_free(struct kqueue *kq)
-{
-    dbg_printf("fd=%d", kq->kq_sockfd[1]);
-    RB_REMOVE(kqt, &kqtree, kq);
-    filter_unregister_all(kq);
-    free(kq);
-}
-
-static int
-kqueue_init(void)
-{
-    if (kqueue_init_hook() < 0)
-        return (-1);
-
-    kqueue_initialized = 1;
-    return (0);
-}
-
-int
+int __attribute__((visibility("default")))
 kqueue(void)
 {
     struct kqueue *kq;
+    int tmp;
 
     kq = calloc(1, sizeof(*kq));
     if (kq == NULL)
         return (-1);
+    kq->kq_ref = 1;
     pthread_mutex_init(&kq->kq_mtx, NULL);
 
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, kq->kq_sockfd) < 0) 
         goto errout_unlocked;
 
     pthread_rwlock_wrlock(&kqtree_mtx);
-    if (!kqueue_initialized && kqueue_init() < 0) 
+    if (kqueue_gc < 0)
         goto errout;
+    /* TODO: move outside of the lock if it is safe */
     if (filter_register_all(kq) < 0)
-        goto errout;
-    if (kqueue_create_hook(kq) < 0)
-        goto errout;
-    if (kqueue_gc() < 0)
         goto errout;
     RB_INSERT(kqt, &kqtree, kq);
     pthread_rwlock_unlock(&kqtree_mtx);
@@ -109,11 +165,11 @@ errout:
     pthread_rwlock_unlock(&kqtree_mtx);
 
 errout_unlocked:
-    //FIXME: unregister_all filters
     if (kq->kq_sockfd[0] != kq->kq_sockfd[1]) {
-        // FIXME: close() may clobber errno in the case of EINTR
-        close(kq->kq_sockfd[0]);
-        close(kq->kq_sockfd[1]);
+        tmp = errno;
+        (void)close(kq->kq_sockfd[0]);
+        (void)close(kq->kq_sockfd[1]);
+        errno = tmp;
     }
     free(kq);
     return (-1);

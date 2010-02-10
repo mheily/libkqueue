@@ -80,12 +80,9 @@ wait_thread(void *arg)
         }
 
         /* Scan the wait queue to see if anyone is interested */
-        pthread_mutex_lock(&filt->kf_mtx);
         kn = knote_lookup(filt, si.si_pid);
-        if (kn == NULL) {
-            pthread_mutex_unlock(&filt->kf_mtx);
+        if (kn == NULL) 
             continue;
-        }
 
         /* Create a proc_event */
         if (si.si_code == CLD_EXITED) {
@@ -100,10 +97,7 @@ wait_thread(void *arg)
             kn->kev.data = 1; 
         }
 
-        /* Move the knote from the watchlist to the eventlist */
-        LIST_REMOVE(kn, entries);
-        LIST_INSERT_HEAD(&filt->kf_eventlist, kn, entries);
-        pthread_mutex_unlock(&filt->kf_mtx);
+        knote_enqueue(filt, kn);
 
         /* Indicate read(2) readiness */
         if (write(filt->kf_pfd, &counter, sizeof(counter)) < 0) {
@@ -159,28 +153,11 @@ evfilt_proc_destroy(struct filter *filt)
 }
 
 int
-evfilt_proc_copyin(struct filter *filt, 
-        struct knote *dst, const struct kevent *src)
-{
-    if (src->flags & EV_ADD && KNOTE_EMPTY(dst)) {
-        memcpy(&dst->kev, src, sizeof(*src));
-        /* TODO: Consider holding the mutex here.. */
-        pthread_cond_signal(&filt->kf_data->wait_cond);
-    }
-
-    if (src->flags & EV_ADD || src->flags & EV_ENABLE) {
-        /* Nothing to do.. */
-    }
-
-    return (0);
-}
-
-int
 evfilt_proc_copyout(struct filter *filt, 
             struct kevent *dst, 
             int maxevents)
 {
-    struct knote *kn, *kn_nxt;
+    struct knote *kn;
     int nevents = 0;
     uint64_t cur;
 
@@ -191,10 +168,7 @@ evfilt_proc_copyout(struct filter *filt,
     }
     dbg_printf("  counter=%llu", (unsigned long long) cur);
 
-    pthread_mutex_lock(&filt->kf_mtx);
-    for (kn = LIST_FIRST(&filt->kf_eventlist); kn != NULL; kn = kn_nxt) {
-        kn_nxt = LIST_NEXT(kn, entries);
-
+    for (kn = knote_dequeue(filt); kn != NULL; kn = knote_dequeue(filt)) {
         kevent_dump(&kn->kev);
         memcpy(dst, &kn->kev, sizeof(*dst));
 
@@ -202,11 +176,9 @@ evfilt_proc_copyout(struct filter *filt,
             KNOTE_DISABLE(kn);
         }
         if (kn->kev.flags & EV_ONESHOT) {
-            knote_free(kn);
+            knote_free(filt, kn);
         } else {
-            kn->kev.data = 0;
-            LIST_REMOVE(kn, entries);
-            LIST_INSERT_HEAD(&filt->kf_watchlist, kn, entries);
+            kn->kev.data = 0; //why??
         }
 
 
@@ -214,9 +186,8 @@ evfilt_proc_copyout(struct filter *filt,
             break;
         dst++;
     }
-    pthread_mutex_unlock(&filt->kf_mtx);
 
-    if (!LIST_EMPTY(&filt->kf_eventlist)) {
+    if (knote_events_pending(filt)) {
     /* XXX-FIXME: If there are leftover events on the waitq, 
        re-arm the eventfd. list */
         abort();
@@ -224,11 +195,46 @@ evfilt_proc_copyout(struct filter *filt,
 
     return (nevents);
 }
+ 
+int
+evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
+{
+    return (0); /* STUB */
+}
+
+int
+evfilt_proc_knote_modify(struct filter *filt, struct knote *kn, 
+        const struct kevent *kev)
+{
+    return (0); /* STUB */
+}
+
+int
+evfilt_proc_knote_delete(struct filter *filt, struct knote *kn)
+{
+    return (0); /* STUB */
+}
+
+int
+evfilt_proc_knote_enable(struct filter *filt, struct knote *kn)
+{
+    return (0); /* STUB */
+}
+
+int
+evfilt_proc_knote_disable(struct filter *filt, struct knote *kn)
+{
+    return (0); /* STUB */
+}
 
 const struct filter evfilt_proc = {
     0, //XXX-FIXME broken: EVFILT_PROC,
     evfilt_proc_init,
     evfilt_proc_destroy,
-    evfilt_proc_copyin,
     evfilt_proc_copyout,
+    evfilt_proc_knote_create,
+    evfilt_proc_knote_modify,
+    evfilt_proc_knote_delete,
+    evfilt_proc_knote_enable,
+    evfilt_proc_knote_disable,
 };

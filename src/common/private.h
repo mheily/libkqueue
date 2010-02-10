@@ -31,6 +31,12 @@
 
 #include "tree.h"
 
+/* GCC atomic builtins. 
+ * See: http://gcc.gnu.org/onlinedocs/gcc-4.1.0/gcc/Atomic-Builtins.html 
+ */
+#define atomic_inc(p)   __sync_add_and_fetch((p), 1)
+#define atomic_dec(p)   __sync_sub_and_fetch((p), 1)
+
 /* Maximum events returnable in a single kevent() call */
 #define MAX_KEVENT  512
 
@@ -53,19 +59,18 @@ struct evfilt_data;
  */
 struct knote {
     struct kevent     kev;
-    int               kn_pfd;       /* Used by timerfd */
-    nlink_t           kn_st_nlink;  /* Used by vnode */
-    off_t             kn_st_size;   /* Used by vnode */
-    LIST_ENTRY(knote) entries;
+    union {
+        int           kn_pfd;       /* Used by timerfd */
+        int           kn_events;    /* Used by socket */
+        struct {
+            nlink_t   kn_st_nlink;  /* Used by vnode */
+            off_t     kn_st_size;   /* Used by vnode */
+        };
+    };
+    TAILQ_ENTRY(knote) event_ent;    /* Used by filter->kf_event */
+    RB_ENTRY(knote)   kntree_ent;   /* Used by filter->kntree */
 };
 LIST_HEAD(knotelist, knote);
-
-/* TODO: This should be a red-black tree or a heap */
-#define KNOTELIST_INIT(knl)         LIST_INIT((knl))
-#define KNOTELIST_FOREACH(ent,knl)  LIST_FOREACH((ent),(knl), entries)
-#define KNOTELIST_EMPTY(knl)        LIST_EMPTY((knl))
-#define KNOTE_INSERT(knl, ent)      LIST_INSERT_HEAD((knl), (ent), entries)
-#define KNOTE_EMPTY(ent)            ((ent)->kev.filter == 0)
 
 #define KNOTE_ENABLE(ent)           do {                            \
             (ent)->kev.flags &= ~EV_DISABLE;                        \
@@ -77,20 +82,29 @@ LIST_HEAD(knotelist, knote);
 
 struct filter {
     int       kf_id;
+
+    /* filter operations */
+
     int     (*kf_init)(struct filter *);
     void    (*kf_destroy)(struct filter *);
-    int     (*kf_copyin)(struct filter *, 
-                         struct knote *, 
-                         const struct kevent *);
     int     (*kf_copyout)(struct filter *, struct kevent *, int);
+
+    /* knote operations */
+
+    int     (*kn_create)(struct filter *, struct knote *);
+    int     (*kn_modify)(struct filter *, struct knote *, 
+                            const struct kevent *);
+    int     (*kn_delete)(struct filter *, struct knote *);
+    int     (*kn_enable)(struct filter *, struct knote *);
+    int     (*kn_disable)(struct filter *, struct knote *);
+
     int       kf_pfd;                   /* fd to poll(2) for readiness */
     int       kf_wfd;                   /* fd to write when an event occurs */
     u_int     kf_timeres;               /* timer resolution, in miliseconds */
     sigset_t  kf_sigmask;
-    pthread_mutex_t kf_mtx;
     struct evfilt_data *kf_data;	/* filter-specific data */
-    struct knotelist kf_watchlist;      /* events that have not occurred */
-    struct knotelist kf_eventlist;      /* events that have occurred */
+    RB_HEAD(knt, knote) kf_knote;
+    TAILQ_HEAD(, knote)  kf_event;       /* events that have occurred */
     struct kqueue *kf_kqueue;
 };
 
@@ -103,13 +117,25 @@ struct kqueue {
 #ifdef SOLARIS
     int             kq_port;
 #endif
+    volatile unsigned int    kq_ref;
     RB_ENTRY(kqueue) entries;
 };
 
 struct knote *  knote_lookup(struct filter *, short);
 struct knote *  knote_lookup_data(struct filter *filt, intptr_t);
-struct knote *  knote_new(struct filter *);
-void 		    knote_free(struct knote *);
+struct knote *  knote_new(void);
+void        knote_free(struct filter *, struct knote *);
+void        knote_free_all(struct filter *);
+void        knote_insert(struct filter *, struct knote *);
+
+/* TODO: these deal with the eventlist, should use a different prefix */
+void        knote_enqueue(struct filter *, struct knote *);
+struct knote *  knote_dequeue(struct filter *);
+int         knote_events_pending(struct filter *);
+
+int         eventfd_create(void);
+int         eventfd_raise(int);
+int         eventfd_lower(int);
 
 int         filter_lookup(struct filter **, struct kqueue *, short);
 int         filter_socketpair(struct filter *);
@@ -118,20 +144,17 @@ void     	filter_unregister_all(struct kqueue *);
 const char *filter_name(short);
 int         filter_lower(struct filter *);
 int         filter_raise(struct filter *);
-#define     filter_lock(f)   pthread_mutex_lock(&(f)->kf_mtx)
-#define     filter_unlock(f) pthread_mutex_unlock(&(f)->kf_mtx)
 
 int 		kevent_init(struct kqueue *);
-const char * kevent_dump(const struct kevent *);
 int         kevent_wait(struct kqueue *, const struct timespec *);
 int         kevent_copyout(struct kqueue *, int, struct kevent *, int);
 void 		kevent_free(struct kqueue *);
+const char *kevent_dump(const struct kevent *);
 
-struct kqueue * kqueue_lookup(int kq);
-/* TODO: make a kqops struct */
-int         kqueue_init_hook(void);     // in hook.c
-int         kqueue_create_hook(struct kqueue *);       // in hook.c
-int         kqueue_gc(void);        // in hook.c
-void        kqueue_free(struct kqueue *);
+struct kqueue * kqueue_get(int);
+void        kqueue_put(struct kqueue *);
+#define     kqueue_lock(kq)     pthread_mutex_lock(&(kq)->kq_mtx)
+#define     kqueue_unlock(kq)   pthread_mutex_unlock(&(kq)->kq_mtx)
+int         kqueue_validate(struct kqueue *);
 
 #endif  /* ! _KQUEUE_PRIVATE_H */

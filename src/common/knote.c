@@ -21,45 +21,75 @@
 
 #include "private.h"
 
-/* TODO: These must be called with the kqueue lock held */
+static int
+knote_cmp(struct knote *a, struct knote *b)
+{
+    return memcmp(&a->kev.ident, &b->kev.ident, sizeof(a->kev.ident)); 
+}
+
+RB_GENERATE(knt, knote, kntree_ent, knote_cmp);
 
 struct knote *
-knote_new(struct filter *filt)
+knote_new(void)
 {
     struct knote *dst;
 
     if ((dst = calloc(1, sizeof(*dst))) == NULL) 
         return (NULL);
-    KNOTE_INSERT(&filt->kf_watchlist, dst);
+
     return (dst);
 }
 
 void
-knote_free(struct knote *kn)
+knote_insert(struct filter *filt, struct knote *kn)
+{
+    RB_INSERT(knt, &filt->kf_knote, kn);
+}
+
+void
+knote_free(struct filter *filt, struct knote *kn)
 {
     dbg_printf("filter=%s, ident=%u",
             filter_name(kn->kev.filter), (u_int) kn->kev.ident);
-	LIST_REMOVE(kn, entries);
+	RB_REMOVE(knt, &filt->kf_knote, kn);
+    if (kn->event_ent.tqe_prev) //XXX-FIXME what if this is the 1st entry??
+        TAILQ_REMOVE(&filt->kf_event, kn, event_ent);
+    filt->kn_delete(filt, kn);
 	free(kn);
+}
+
+void
+knote_free_all(struct filter *filt)
+{
+    struct knote *n1, *n2;
+
+    /* Destroy all pending events */
+    for (n1 = TAILQ_FIRST(&filt->kf_event); n1 != NULL; n1 = n2) {
+        n2 = TAILQ_NEXT(n1, event_ent);
+        free(n1);
+    }
+
+    /* Distroy all knotes */
+    for (n1 = RB_MIN(knt, &filt->kf_knote); n1 != NULL; n1 = n2) {
+        n2 = RB_NEXT(knt, filt->kf_knote, n1);
+        RB_REMOVE(knt, &filt->kf_knote, n1);
+        free(n1);
+    }
 }
 
 /* TODO: rename to knote_lookup_ident */
 struct knote *
 knote_lookup(struct filter *filt, short ident)
 {
-    struct knote *kn;
+    struct knote query;
+    struct knote *ent = NULL;
 
-    /* TODO: Use rbtree for faster searching */
-    LIST_FOREACH(kn, &filt->kf_watchlist, entries) {
-        if (ident == kn->kev.ident)
-            return (kn);
-    }
-    LIST_FOREACH(kn, &filt->kf_eventlist, entries) {
-        if (ident == kn->kev.ident)
-            return (kn);
-    }
+    query.kev.ident = ident;
+    ent = RB_FIND(knt, &filt->kf_knote, &query);
 
-    return (NULL);
+    dbg_printf("id=%d ent=%p", ident, ent);
+
+    return (ent);
 }
     
 struct knote *
@@ -67,14 +97,45 @@ knote_lookup_data(struct filter *filt, intptr_t data)
 {
     struct knote *kn;
 
-    LIST_FOREACH(kn, &filt->kf_watchlist, entries) {
-        if (data == kn->kev.data)
-            return (kn);
+    RB_FOREACH(kn, knt, &filt->kf_knote) {
+        if (data == kn->kev.data) 
+            break;
     }
-    LIST_FOREACH(kn, &filt->kf_eventlist, entries) {
-        if (data == kn->kev.data)
-            return (kn);
+    return (kn);
+}
+
+void
+knote_enqueue(struct filter *filt, struct knote *kn)
+{
+    /* XXX-FIXME: check if the knote is already on the eventlist */
+    dbg_printf("id=%ld", kn->kev.ident);
+    TAILQ_INSERT_TAIL(&filt->kf_event, kn, event_ent);
+}
+
+struct knote *
+knote_dequeue(struct filter *filt)
+{
+    struct knote *kn;
+
+    if (TAILQ_EMPTY(&filt->kf_event)) {
+        kn = NULL;
+        dbg_puts("no events are pending");
+    } else {
+        kn = TAILQ_FIRST(&filt->kf_event);
+        TAILQ_REMOVE(&filt->kf_event, kn, event_ent);
+        memset(&kn->event_ent, 0, sizeof(kn->event_ent));
+        dbg_printf("id=%ld", kn->kev.ident);
     }
 
-    return (NULL);
+    return (kn);
+}
+
+int
+knote_events_pending(struct filter *filt)
+{
+    int res;
+
+    res = TAILQ_EMPTY(&filt->kf_event);
+
+    return (res);
 }

@@ -38,12 +38,9 @@
 static char *
 itimerspec_dump(struct itimerspec *ts)
 {
-    char *buf;
+    static char __thread buf[1024];
 
-    if ((buf = calloc(1, 1024)) == NULL)
-        abort();
-
-    snprintf(buf, 1024,
+    snprintf(buf, sizeof(buf),
             "itimer: [ interval=%lu s %lu ns, next expire=%lu s %lu ns ]",
             ts->it_interval.tv_sec,
             ts->it_interval.tv_nsec,
@@ -80,40 +77,6 @@ convert_msec_to_itimerspec(struct itimerspec *dst, int src, int oneshot)
 }
 
 static int
-ktimer_create(struct filter *filt, struct knote *kn)
-{
-    struct epoll_event ev;
-    struct itimerspec ts;
-    int tfd;
-
-    tfd = timerfd_create(CLOCK_MONOTONIC, 0);
-    if (tfd < 0) {
-        dbg_printf("timerfd_create(2): %s", strerror(errno));
-        return (-1);
-    }
-    dbg_printf("created timerfd %d", tfd);
-
-    convert_msec_to_itimerspec(&ts, kn->kev.data, kn->kev.flags & EV_ONESHOT);
-    if (timerfd_settime(tfd, 0, &ts, NULL) < 0) {
-        dbg_printf("timerfd_settime(2): %s", strerror(errno));
-        close(tfd);
-        return (-1);
-    }
-
-    memset(&ev, 0, sizeof(ev));
-    ev.events = EPOLLIN;
-    ev.data.ptr = kn;
-    if (epoll_ctl(filt->kf_pfd, EPOLL_CTL_ADD, tfd, &ev) < 0) {
-        dbg_printf("epoll_ctl(2): %d", errno);
-        close(tfd);
-        return (-1);
-    }
-
-    kn->kn_pfd = tfd;
-    return (0);
-}
-
-static int
 ktimer_delete(struct filter *filt, struct knote *kn)
 {
     int rv = 0;
@@ -146,38 +109,7 @@ evfilt_timer_init(struct filter *filt)
 void
 evfilt_timer_destroy(struct filter *filt)
 {
-    struct knote *kn;
-
-    /* Destroy all timerfds */
-    KNOTELIST_FOREACH(kn, &filt->kf_watchlist) {
-        close(kn->kn_pfd);
-    }
-    /* TODO: use eventlist, close these also */
-
-    close (filt->kf_pfd);
-}
-
-int
-evfilt_timer_copyin(struct filter *filt, 
-        struct knote *dst, const struct kevent *src)
-{
-    if (src->flags & EV_ADD && KNOTE_EMPTY(dst)) {
-        memcpy(&dst->kev, src, sizeof(*src));
-        dst->kev.flags |= EV_CLEAR;
-    }
-    if (src->flags & EV_ADD) 
-        return ktimer_create(filt, dst);
-    if (src->flags & EV_DELETE) 
-        return ktimer_delete(filt, dst);
-    if (src->flags & EV_ENABLE) 
-        return ktimer_create(filt, dst);
-    if (src->flags & EV_DISABLE) {
-        // TODO: err checking
-        (void) ktimer_delete(filt, dst);
-        KNOTE_DISABLE(dst);
-    }
-
-    return (0);
+    close (filt->kf_pfd);//LAME
 }
 
 /* TODO: This entire function is copy+pasted from socket.c
@@ -231,7 +163,7 @@ evfilt_timer_copyout(struct filter *filt,
             KNOTE_DISABLE(kn);
         if (kn->kev.flags & EV_ONESHOT) {
             ktimer_delete(filt, kn);
-            knote_free(kn);
+            knote_free(filt, kn);
         }
 
         nevents++;
@@ -241,10 +173,88 @@ evfilt_timer_copyout(struct filter *filt,
     return (nevents);
 }
 
+int
+evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
+{
+    struct epoll_event ev;
+    struct itimerspec ts;
+    int tfd;
+
+    kn->kev.flags |= EV_CLEAR;
+
+    tfd = timerfd_create(CLOCK_MONOTONIC, 0);
+    if (tfd < 0) {
+        dbg_printf("timerfd_create(2): %s", strerror(errno));
+        return (-1);
+    }
+    dbg_printf("created timerfd %d", tfd);
+
+    convert_msec_to_itimerspec(&ts, kn->kev.data, kn->kev.flags & EV_ONESHOT);
+    if (timerfd_settime(tfd, 0, &ts, NULL) < 0) {
+        dbg_printf("timerfd_settime(2): %s", strerror(errno));
+        close(tfd);
+        return (-1);
+    }
+
+    memset(&ev, 0, sizeof(ev));
+    ev.events = EPOLLIN;
+    ev.data.ptr = kn;
+    if (epoll_ctl(filt->kf_pfd, EPOLL_CTL_ADD, tfd, &ev) < 0) {
+        dbg_printf("epoll_ctl(2): %d", errno);
+        close(tfd);
+        return (-1);
+    }
+
+    kn->kn_pfd = tfd;
+    return (0);
+}
+
+int
+evfilt_timer_knote_modify(struct filter *filt, struct knote *kn, 
+        const struct kevent *kev)
+{
+    return (0); /* STUB */
+}
+
+int
+evfilt_timer_knote_delete(struct filter *filt, struct knote *kn)
+{
+    int rv = 0;
+
+    dbg_printf("removing timerfd %d from %d", kn->kn_pfd, filt->kf_pfd);
+    if (epoll_ctl(filt->kf_pfd, EPOLL_CTL_DEL, kn->kn_pfd, NULL) < 0) {
+        dbg_printf("epoll_ctl(2): %s", strerror(errno));
+        rv = -1;
+    }
+    if (close(kn->kn_pfd) < 0) {
+        dbg_printf("close(2): %s", strerror(errno));
+        rv = -1;
+    }
+
+    kn->kn_pfd = -1;
+    return (rv);
+}
+
+int
+evfilt_timer_knote_enable(struct filter *filt, struct knote *kn)
+{
+    return evfilt_timer_knote_create(filt, kn);
+}
+
+int
+evfilt_timer_knote_disable(struct filter *filt, struct knote *kn)
+{
+    return evfilt_timer_knote_delete(filt, kn);
+}
+
 const struct filter evfilt_timer = {
     EVFILT_TIMER,
     evfilt_timer_init,
     evfilt_timer_destroy,
-    evfilt_timer_copyin,
     evfilt_timer_copyout,
+    evfilt_timer_knote_create,
+    evfilt_timer_knote_modify,
+    evfilt_timer_knote_delete,
+    evfilt_timer_knote_enable,
+    evfilt_timer_knote_disable,     
 };

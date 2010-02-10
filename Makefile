@@ -20,7 +20,7 @@ DISTFILE=$(PROGRAM)-$(VERSION).tar.gz
 
 include config.mk
 
-.PHONY :: install uninstall check dist dist-upload publish-www clean merge distclean fresh-build rpm edit
+.PHONY :: install uninstall check dist dist-upload publish-www clean merge distclean fresh-build rpm edit cscope
 
 all: $(PROGRAM).so $(PROGRAM).a
 
@@ -32,7 +32,6 @@ $(PROGRAM).a: $(OBJS)
 
 $(PROGRAM).so: $(OBJS)
 	$(LD) $(LDFLAGS) -o $(PROGRAM).so $(OBJS) $(LDADD)
-
 
 install: $(PROGRAM).so
 	$(INSTALL) -d -m 755 $(INCLUDEDIR)/kqueue/sys
@@ -81,7 +80,7 @@ publish-www:
 	rm ~/public_html/libkqueue/*.html ; cp -R www/*.html ~/public_html/libkqueue/
 
 clean:
-	rm -f *.a $(OBJS) *.so 
+	rm -f tags *.a $(OBJS) *.so 
 	cd test && make clean || true
 
 fresh-build:
@@ -96,10 +95,15 @@ merge:
 	@read x && test "$$x" = "y"
 	echo "ok"
 
-edit:
-	$(EDITOR) `find src/common -name '*.c' -o -name '*.h'` \
-              `find src/$(TARGET) -name '*.c'`
+tags: $(SOURCES) $(HEADERS)
+	ctags $(SOURCES) $(HEADERS)
+
+edit: tags
+	$(EDITOR) $(SOURCES) $(HEADERS)
     
+cscope: tags
+	cscope $(SOURCES) $(HEADERS)
+
 distclean: clean
 	rm -f *.tar.gz config.mk config.h $(PROGRAM).pc $(PROGRAM).la rpm.spec
 
@@ -117,3 +121,11 @@ rpm: clean $(DISTFILE)
 debug-install:
 	./configure --prefix=/usr --debug=yes
 	make clean && make && sudo make install
+
+diff:
+	if [ "`pwd | grep /trunk`" != "" ] ; then \
+	   (cd .. ; $(DIFF) branches/stable trunk | less) ; \
+    fi
+	if [ "`pwd | grep /branches/stable`" != "" ] ; then \
+	   (cd ../.. ; $(DIFF) branches/stable trunk | less) ; \
+    fi

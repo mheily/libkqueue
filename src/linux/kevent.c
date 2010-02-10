@@ -20,59 +20,6 @@
 #include "sys/event.h"
 #include "private.h"
 
-static int gcfd;
-
-static int
-gcfd_ctl(int op, struct kqueue *kq)
-{
-    struct epoll_event evt;
-
-    evt.data.ptr = kq;
-    evt.events = 0;
-    return (epoll_ctl(gcfd, op, kq->kq_sockfd[0], &evt));
-}
-
-int
-kqueue_init_hook(void)
-{
-    int epfd;
-
-    if ((epfd = epoll_create(1)) < 0) {
-        dbg_perror("epoll_create(2)");
-        return (-1);
-    }
-
-    gcfd = epfd;
-
-    return (0);
-}
-
-int
-kqueue_gc(void)
-{
-    struct epoll_event evt;
-    struct kqueue *kq;
-    int rv;
-
-    do {
-        rv = epoll_wait(gcfd, &evt, 1, 0);
-        if (rv > 0) {
-            kq = (struct kqueue *)evt.data.ptr;
-            rv = gcfd_ctl(EPOLL_CTL_DEL, kq);
-            kqueue_free(kq);
-        } else if (rv < 0) {
-            dbg_perror("epoll_wait(2)");
-        }
-    } while (rv > 0);
-
-    return (rv);
-}
-
-int
-kqueue_create_hook(struct kqueue *kq)
-{
-    return (gcfd_ctl(EPOLL_CTL_ADD, kq));
-}
 
 int
 kevent_wait(struct kqueue *kq, const struct timespec *timeout)
@@ -109,18 +56,16 @@ kevent_copyout(struct kqueue *kq, int nready,
         if (FD_ISSET(filt->kf_pfd, &kq->kq_rfds)) {
             dbg_printf("pending events for %s", 
                     filter_name(filt->kf_id));
-            filter_lock(filt);
             rv = filt->kf_copyout(filt, eventlist, nevents);
             if (rv < 0) {
-                filter_unlock(filt);
                 dbg_puts("kevent_copyout failed");
-                return (-1);
+                nret = -1;
+                break;
             }
             nret += rv;
             eventlist += rv;
             nevents -= rv;
             nready--;
-            filter_unlock(filt);
         }
     }
 

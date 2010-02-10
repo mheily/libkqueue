@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2009 Mark Heily <mark@heily.com>
+# Copyright (c) 2010 Mark Heily <mark@heily.com>
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -14,34 +14,18 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
 
-include config.mk
+obj-m = kqueue.o
+KVERSION = $(shell uname -r)
 
-all: kqtest
-
-kqtest: $(SOURCES)
-	$(CC) -o kqtest $(CFLAGS) $(SOURCES) $(LDADD)
-
-check: kqtest
-	./kqtest
-
-valgrind: kqtest
-	valgrind --tool=memcheck --leak-check=full --show-reachable=yes --num-callers=20 --track-fds=yes ./kqtest
-
-check-installed:
-	$(CC) -o kqtest $(CFLAGS) $(SOURCES) $(LDADD) -lkqueue
-	./kqtest
-
-check-libtool:
-	gcc $(CFLAGS) -c *.c
-	libtool --mode=link gcc -g -O0 -o kqtest *.o $(LIBDIR)/libkqueue.la
-	./kqtest
-
-distclean: clean 
-	rm -f config.mk config.h
-	for x in libdispatch ; do cd $$x && make distclean ; done
-
-edit:
-	$(EDITOR) *.[ch]
+all:
+	make -C /lib/modules/`uname -r`/build M=$(PWD) modules
 
 clean:
-	rm -f *.o *.a kqtest
+	make -C /lib/modules/`uname -r`/build M=$(PWD) clean
+	rm -f modtest
+
+modtest: test.c
+	gcc -o modtest -Wall -Werror test.c
+
+check: modtest
+	./modtest

@@ -67,27 +67,6 @@ evfilt_signal_destroy(struct filter *filt)
 }
 
 int
-evfilt_signal_copyin(struct filter *filt, 
-        struct knote *dst, const struct kevent *src)
-{
-    if (src->ident >= SIGNAL_MAX) {
-        dbg_printf("unsupported signal number %u", (u_int) src->ident);
-        return (-1);
-    }
-
-    if (src->flags & EV_ADD && KNOTE_EMPTY(dst)) {
-        memcpy(&dst->kev, src, sizeof(*src));
-        dst->kev.flags |= EV_CLEAR;
-    }
-    if (src->flags & EV_ADD || src->flags & EV_ENABLE) 
-        sigaddset(&filt->kf_sigmask, src->ident);
-    if (src->flags & EV_DISABLE || src->flags & EV_DELETE) 
-        sigdelset(&filt->kf_sigmask, src->ident);
-
-    return (update_sigmask(filt));
-}
-
-int
 evfilt_signal_copyout(struct filter *filt, 
             struct kevent *dst, 
             int nevents)
@@ -126,7 +105,7 @@ evfilt_signal_copyout(struct filter *filt,
         if (kn->kev.flags & EV_DISPATCH)
             KNOTE_DISABLE(kn);
         if (kn->kev.flags & EV_ONESHOT) 
-            knote_free(kn);
+            knote_free(filt, kn);
 
         dst++; 
         nevents++;
@@ -135,10 +114,59 @@ evfilt_signal_copyout(struct filter *filt,
     return (nevents);
 }
 
+int
+evfilt_signal_knote_create(struct filter *filt, struct knote *kn)
+{
+    if (kn->kev.ident >= SIGNAL_MAX) {
+        dbg_printf("bad signal number %u", (u_int) kn->kev.ident);
+        return (-1);
+    }
+
+    kn->kev.flags |= EV_CLEAR;
+    sigaddset(&filt->kf_sigmask, kn->kev.ident);
+
+    return (update_sigmask(filt));
+
+}
+
+int
+evfilt_signal_knote_modify(struct filter *filt, struct knote *kn, 
+        const struct kevent *kev)
+{
+    return (-1); /* FIXME - STUB */
+}
+
+int
+evfilt_signal_knote_delete(struct filter *filt, struct knote *kn)
+{   
+    sigdelset(&filt->kf_sigmask, kn->kev.ident);
+
+    return (update_sigmask(filt));
+}
+
+int
+evfilt_signal_knote_enable(struct filter *filt, struct knote *kn)
+{
+    sigaddset(&filt->kf_sigmask, kn->kev.ident);
+
+    return (update_sigmask(filt));
+}
+
+int
+evfilt_signal_knote_disable(struct filter *filt, struct knote *kn)
+{
+    return (evfilt_signal_knote_delete(filt, kn));
+}
+
+
 const struct filter evfilt_signal = {
     EVFILT_SIGNAL,
     evfilt_signal_init,
     evfilt_signal_destroy,
-    evfilt_signal_copyin,
     evfilt_signal_copyout,
+    evfilt_signal_knote_create,
+    evfilt_signal_knote_modify,
+    evfilt_signal_knote_delete,
+    evfilt_signal_knote_enable,
+    evfilt_signal_knote_disable,         
 };

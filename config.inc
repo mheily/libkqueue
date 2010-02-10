@@ -1,5 +1,5 @@
 program="libkqueue"
-version="0.4"
+version="0.5"
 cflags="-fPIC -I./include -I./src/common -Wall -Werror"
 sources="src/common/filter.c src/common/knote.c 
          src/common/kevent.c src/common/kqueue.c" 
@@ -18,9 +18,9 @@ author="Mark Heily"
 
 pre_configure_hook() {
   if [ "$debug" = "yes" ] ; then
-      cflags="$cflags -g3 -O0 -DKQUEUE_DEBUG"
+      cflags="$cflags -g3 -O0 -DKQUEUE_DEBUG -rdynamic"
   else
-      cflags="$cflags -g -O2"
+      cflags="$cflags -g -O2 -fvisibility=hidden"
   fi
 
   optional_headers="err.h"
@@ -55,6 +55,6 @@ post_configure_hook() {
       fi
     fi      
 
-    sources="$sources src/$target/hook.c $evfilt_signal $evfilt_proc 
+    sources="$sources src/$target/kevent.c src/$target/eventfd.c $evfilt_signal $evfilt_proc 
              $evfilt_socket $evfilt_timer $evfilt_user $evfilt_vnode"
 }
