@@ -6,7 +6,8 @@ make_exports="program version target \
               prefix libdir includedir mandir \
               cflags ldflags ldadd libdepends \
               sources objs deps mans headers extra_dist subdirs \
-              cc cpp ld ar install diff"
+              abi_major abi_minor abi_version \
+              cc cpp ld ln ar install diff"
 
 required_headers=
 optional_headers=
@@ -63,6 +64,7 @@ process_env() {
     test -n "$CPPFLAGS" && cppflags="$CPPFLAGS"
     test -n "$CFLAGS" && cflags="$CFLAGS"
     test -n "$LD" && ld="$LD"
+    test -n "$LN" && ld="$LN"
     test -n "$LDFLAGS" && ldflags="$LDFLAGS"
     test -n "$AR" && ar="$AR"
 }
@@ -158,20 +160,21 @@ check_compiler() {
 check_linker() {
     printf "checking for a suitable linker.. "
 
-    # Disabled due to problems with ld(1) under Linux
-    #if [ "`uname -s`" = "SunOS" ] ; then
-    #   default_ld="/usr/sfw/bin/gld"
-    #else
-    #   default_ld="/usr/bin/ld"
-    #fi
-    #ldflags="-shared -export-dynamic -soname $program.so $ldflags"
-
     # Workaround for "hidden symbol <foo> is referenced by DSO" linker error
     # seen when compiling libdispatch.
     # Appears to be a problem with GCC 4.0 and binutils
     #
     default_ld="$cc"
-    ldflags="-shared -Wl,-soname,$program.so $ldflags"
+    ldflags="-shared -o $program.so.$abi_major.$abi_minor $ldflags"
+
+    # FIXME: port to solaris
+    if [ "$target" = "linux" ] ; then
+    ldflags="$ldflags -Wl,-export-dynamic -Wl,-soname,$program.so.$abi_major"
+    fi 
+
+    if [ "$target" = "solaris" ] ; then
+    ldflags="$ldflags"
+    fi
 
     finalize ld "$default_ld"
     echo "$ld"
@@ -187,8 +190,10 @@ check_archiver() {
     finalize ar "$default_ar"
     echo "$ar"
 }
+
 err() {
     echo "*** ERROR *** $*"
+    rm -f config.mk $program.pc config.h
     exit 1
 }
 
@@ -259,6 +264,9 @@ check_diff
 
 finalize program    "$program"
 finalize version    "$version"
+finalize abi_major  "$abi_major"
+finalize abi_minor  "$abi_minor"
+finalize abi_version "$abi_major.$abi_minor"
 finalize prefix     "/usr/local"
 finalize libdir     "${prefix}/lib"
 finalize includedir "${prefix}/include"
@@ -268,6 +276,7 @@ finalize libdepends "$libdepends"
 finalize ldadd      ""
 finalize ldflags    ""
 finalize deps       ""
+finalize ln         "`which ln`"
 
 pre_configure_hook
 
@@ -290,5 +299,3 @@ export_to_c $c_exports
 
 echo "Creating config.mk"
 export_to_make "$make_exports"
-
-make clean >/dev/null 2>&1

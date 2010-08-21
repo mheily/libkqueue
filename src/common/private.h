@@ -24,49 +24,80 @@
 
 #include <errno.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/select.h>
-#include "sys/event.h"
+#include "../../include/sys/event.h"
 
 #include "tree.h"
 
 /* GCC atomic builtins. 
  * See: http://gcc.gnu.org/onlinedocs/gcc-4.1.0/gcc/Atomic-Builtins.html 
  */
-#define atomic_inc(p)   __sync_add_and_fetch((p), 1)
-#define atomic_dec(p)   __sync_sub_and_fetch((p), 1)
+#ifdef __sun
+# include <atomic.h>
+# define atomic_inc      atomic_inc_32
+# define atomic_dec      atomic_dec_32
+#else
+# define atomic_inc(p)   __sync_add_and_fetch((p), 1)
+# define atomic_dec(p)   __sync_sub_and_fetch((p), 1)
+#endif
 
 /* Maximum events returnable in a single kevent() call */
 #define MAX_KEVENT  512
 
-#ifdef KQUEUE_DEBUG
-# define dbg_puts(str)           fprintf(stderr, "%s(): %s\n", __func__,str)
-# define dbg_printf(fmt,...)     fprintf(stderr, "%s(): "fmt"\n", __func__,__VA_ARGS__)
-# define dbg_perror(str)         fprintf(stderr, "%s(): %s: %s\n", __func__,str, strerror(errno))
-#else
+
+#ifndef NDEBUG
+
+extern int KQUEUE_DEBUG;
+
+#define dbg_puts(str)           do {                                \
+    if (KQUEUE_DEBUG)                                               \
+      fprintf(stderr, "KQ: %s(): %s\n", __func__,str);              \
+} while (0)
+
+#define dbg_printf(fmt,...)     do {                                \
+    if (KQUEUE_DEBUG)                                               \
+      fprintf(stderr, "KQ: %s(): "fmt"\n", __func__,__VA_ARGS__);   \
+} while (0)
+
+#define dbg_perror(str)         do {                                \
+    if (KQUEUE_DEBUG)                                               \
+      fprintf(stderr, "KQ: %s(): %s: %s\n",                         \
+              __func__, str, strerror(errno));                      \
+} while (0)
+
+#else /* NDEBUG */
 # define dbg_puts(str)           ;
 # define dbg_printf(fmt,...)     ;
 # define dbg_perror(str)         ;
 #endif 
 
+
 struct kqueue;
 struct kevent;
 struct evfilt_data;
+
+/* 
+ * Flags used by knote->flags
+ */
+#define KNFL_PASSIVE_SOCKET  (0x01)  /* Socket is in listen(2) mode */
 
 /* TODO: Make this a variable length structure and allow
    each filter to add custom fields at the end.
  */
 struct knote {
     struct kevent     kev;
+    int               flags;       
     union {
-        int           kn_pfd;       /* Used by timerfd */
-        int           kn_events;    /* Used by socket */
+        int           pfd;       /* Used by timerfd */
+        int           events;    /* Used by socket */
         struct {
-            nlink_t   kn_st_nlink;  /* Used by vnode */
-            off_t     kn_st_size;   /* Used by vnode */
-        };
-    };
+            nlink_t   nlink;  /* Used by vnode */
+            off_t     size;   /* Used by vnode */
+        } vnode;
+    } data;
     TAILQ_ENTRY(knote) event_ent;    /* Used by filter->kf_event */
     RB_ENTRY(knote)   kntree_ent;   /* Used by filter->kntree */
 };
@@ -81,7 +112,7 @@ LIST_HEAD(knotelist, knote);
 } while (0/*CONSTCOND*/)
 
 struct filter {
-    int       kf_id;
+    short     kf_id;
 
     /* filter operations */
 
@@ -98,9 +129,10 @@ struct filter {
     int     (*kn_enable)(struct filter *, struct knote *);
     int     (*kn_disable)(struct filter *, struct knote *);
 
+    struct eventfd *kf_efd;             /* Used by user.c */
     int       kf_pfd;                   /* fd to poll(2) for readiness */
     int       kf_wfd;                   /* fd to write when an event occurs */
-    u_int     kf_timeres;               /* timer resolution, in miliseconds */
+    unsigned int     kf_timeres;        /* timer resolution, in miliseconds */
     sigset_t  kf_sigmask;
     struct evfilt_data *kf_data;	/* filter-specific data */
     RB_HEAD(knt, knote) kf_knote;
@@ -117,7 +149,7 @@ struct kqueue {
 #ifdef SOLARIS
     int             kq_port;
 #endif
-    volatile unsigned int    kq_ref;
+    volatile uint32_t        kq_ref;
     RB_ENTRY(kqueue) entries;
 };
 
@@ -127,15 +159,19 @@ struct knote *  knote_new(void);
 void        knote_free(struct filter *, struct knote *);
 void        knote_free_all(struct filter *);
 void        knote_insert(struct filter *, struct knote *);
+int         knote_get_socket_type(struct knote *);
 
 /* TODO: these deal with the eventlist, should use a different prefix */
 void        knote_enqueue(struct filter *, struct knote *);
 struct knote *  knote_dequeue(struct filter *);
 int         knote_events_pending(struct filter *);
 
-int         eventfd_create(void);
-int         eventfd_raise(int);
-int         eventfd_lower(int);
+struct eventfd * eventfd_create(void);
+void        eventfd_free(struct eventfd *);
+int         eventfd_raise(struct eventfd *);
+int         eventfd_lower(struct eventfd *);
+int         eventfd_reader(struct eventfd *);
+int         eventfd_writer(struct eventfd *);
 
 int         filter_lookup(struct filter **, struct kqueue *, short);
 int         filter_socketpair(struct filter *);

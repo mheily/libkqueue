@@ -1,6 +1,10 @@
 program="libkqueue"
-version="0.5"
-cflags="-fPIC -I./include -I./src/common -Wall -Werror"
+version="0.9.2"
+abi_major="0"
+abi_minor="0"
+abi_version="$abi_major.$abi_minor"
+cflags="-fpic -Wall -Werror -g -O2 -std=c99 -D_XOPEN_SOURCE=600"
+ldflags=""
 sources="src/common/filter.c src/common/knote.c 
          src/common/kevent.c src/common/kqueue.c" 
 libdepends=""
@@ -18,18 +22,24 @@ author="Mark Heily"
 
 pre_configure_hook() {
   if [ "$debug" = "yes" ] ; then
-      cflags="$cflags -g3 -O0 -DKQUEUE_DEBUG -rdynamic"
-  else
-      cflags="$cflags -g -O2 -fvisibility=hidden"
+      cflags="$cflags -g3 -O0 -rdynamic"
   fi
 
   optional_headers="err.h"
 
   libdepends=" -L$libdir"
   if [ $target = "linux" ] ; then
+      # Actually a GCC 4.X dependency
+      cflags="$cflags -fvisibility=hidden"
+
       libdepends="$libdepends -lpthread -lrt"
-      required_headers="sys/epoll.h sys/inotify.h 
-                        sys/signalfd.h sys/timerfd.h sys/eventfd.h"
+      required_headers="sys/epoll.h sys/inotify.h"
+      optional_headers="sys/signalfd.h sys/timerfd.h sys/eventfd.h"
+  fi
+
+  if [ $target = "solaris" ] ; then
+      cflags="$cflags -m64"
+      libdepends="$libdepends -lsocket -lnsl"
   fi
 }
 
@@ -40,21 +50,31 @@ post_configure_hook() {
     evfilt_proc="src/$target/proc.c"
     evfilt_socket="src/$target/socket.c"
     evfilt_timer="src/$target/timer.c"
-    evfilt_user="src/$target/user.c"
+    evfilt_user="src/posix/user.c"
     evfilt_vnode="src/$target/vnode.c"
 
     if [ $target = "linux" ] ; then
       if [ "$have_sys_signalfd_h" != "yes" ] ; then
           evfilt_signal="src/posix/signal.c"
       fi
+          evfilt_signal="src/posix/signal.c" #XXX-FIXME TESTING
       if [ "$have_sys_timerfd_h" != "yes" ] ; then
-          evfilt_timer=""      # TODO: "src/posix/timer.c"
+          evfilt_timer="src/posix/timer.c"
       fi
       if [ "$have_sys_eventfd_h" != "yes" ] ; then
-          evfilt_user=""      # TODO: "src/posix/user.c"
+          sources="$sources src/posix/eventfd.c"
+      else
+          sources="$sources src/linux/eventfd.c"
       fi
     fi      
 
-    sources="$sources src/$target/kevent.c src/$target/eventfd.c $evfilt_signal $evfilt_proc 
+    if [ $target = "solaris" ] ; then
+          cflags="$cflags -D__EXTENSIONS__"
+          evfilt_signal="src/posix/signal.c"
+          evfilt_timer="src/posix/timer.c"
+          sources="$sources src/posix/eventfd.c"
+    fi      
+
+    sources="$sources src/posix/kevent.c $evfilt_signal $evfilt_proc 
              $evfilt_socket $evfilt_timer $evfilt_user $evfilt_vnode"
 }

@@ -127,6 +127,11 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent *src)
     struct filter *filt;
     int rv;
 
+    if (src->flags & EV_DISPATCH && src->flags & EV_ONESHOT) {
+        errno = EINVAL;
+        return (-1);
+    }
+
     if (filter_lookup(&filt, kq, src->filter) < 0) 
         return (-1);
 
@@ -171,12 +176,11 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent *src)
     } else if (src->flags & EV_ENABLE) {
         kn->kev.flags &= ~EV_DISABLE;
         return (filt->kn_enable(filt, kn));
-    } else {
-        return (filt->kn_modify(filt, kn, src));
     }
 
-    errno = EINVAL;
-    return (-1);
+    /* Implicit EV_ADD */
+    kn->kev.udata = src->udata;
+    return (filt->kn_modify(filt, kn, src));
 
 #if DEADWOOD
     /* Special case for EVFILT_USER:
@@ -200,6 +204,7 @@ kevent_copyin(struct kqueue *kq, const struct kevent *src, int nchanges,
     for (nret = 0; nchanges > 0; src++, nchanges--) {
 
         if (kevent_copyin_one(kq, src) < 0) {
+            dbg_printf("errno=%s",strerror(errno));
             status = errno;
             goto err_path;
         } else {
@@ -257,6 +262,7 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
         kqueue_lock(kq);
         rv = kevent_copyin(kq, changelist, nchanges, eventlist, nevents);
         kqueue_unlock(kq);
+        dbg_printf("changelist: rv=%d", rv);
         if (rv < 0)
             goto errout;
         if (rv > 0) {
@@ -289,12 +295,12 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
         kqueue_unlock(kq);
     }
 
-#ifdef KQUEUE_DEBUG
-    dbg_printf("returning %d events", nret);
-    for (n = 0; n < nret; n++) {
-        dbg_printf("eventlist[%d] = %s", n, kevent_dump(&eventlist[n]));
+    if (KQUEUE_DEBUG) {
+        dbg_printf("returning %d events", nret);
+        for (n = 0; n < nret; n++) {
+            dbg_printf("eventlist[%d] = %s", n, kevent_dump(&eventlist[n]));
+        }
     }
-#endif /* KQUEUE_DEBUG */
 
     goto out;
 

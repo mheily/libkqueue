@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/queue.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include "private.h"
@@ -27,7 +29,7 @@ knote_cmp(struct knote *a, struct knote *b)
     return memcmp(&a->kev.ident, &b->kev.ident, sizeof(a->kev.ident)); 
 }
 
-RB_GENERATE(knt, knote, kntree_ent, knote_cmp);
+RB_GENERATE(knt, knote, kntree_ent, knote_cmp)
 
 struct knote *
 knote_new(void)
@@ -50,7 +52,7 @@ void
 knote_free(struct filter *filt, struct knote *kn)
 {
     dbg_printf("filter=%s, ident=%u",
-            filter_name(kn->kev.filter), (u_int) kn->kev.ident);
+            filter_name(kn->kev.filter), (unsigned int) kn->kev.ident);
 	RB_REMOVE(knt, &filt->kf_knote, kn);
     if (kn->event_ent.tqe_prev) //XXX-FIXME what if this is the 1st entry??
         TAILQ_REMOVE(&filt->kf_event, kn, event_ent);
@@ -108,7 +110,6 @@ void
 knote_enqueue(struct filter *filt, struct knote *kn)
 {
     /* XXX-FIXME: check if the knote is already on the eventlist */
-    dbg_printf("id=%ld", kn->kev.ident);
     TAILQ_INSERT_TAIL(&filt->kf_event, kn, event_ent);
 }
 
@@ -124,7 +125,6 @@ knote_dequeue(struct filter *filt)
         kn = TAILQ_FIRST(&filt->kf_event);
         TAILQ_REMOVE(&filt->kf_event, kn, event_ent);
         memset(&kn->event_ent, 0, sizeof(kn->event_ent));
-        dbg_printf("id=%ld", kn->kev.ident);
     }
 
     return (kn);
@@ -138,4 +138,32 @@ knote_events_pending(struct filter *filt)
     res = TAILQ_EMPTY(&filt->kf_event);
 
     return (res);
+}
+
+/*
+ * Test if a socket is active or passive.
+ */
+int
+knote_get_socket_type(struct knote *kn)
+{
+    socklen_t slen;
+    int i, lsock;
+
+    slen = sizeof(lsock);
+    lsock = 0;
+    i = getsockopt(kn->kev.ident, SOL_SOCKET, SO_ACCEPTCONN, &lsock, &slen);
+    if (i < 0) {
+        switch (errno) {
+            case ENOTSOCK:   /* same as lsock = 0 */
+                return (0);
+                break;
+            default:
+                dbg_printf("getsockopt(3) failed: %s", strerror(errno));
+                return (-1);
+        }
+    } else {
+        if (lsock) 
+            kn->flags |= KNFL_PASSIVE_SOCKET;
+        return (0);
+    }
 }

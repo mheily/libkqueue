@@ -30,6 +30,10 @@
 #include "sys/event.h"
 #include "private.h"
 
+#ifndef NDEBUG
+int KQUEUE_DEBUG = 0;
+#endif
+
 static RB_HEAD(kqt, kqueue) kqtree       = RB_INITIALIZER(&kqtree);
 static pthread_rwlock_t     kqtree_mtx   = PTHREAD_RWLOCK_INITIALIZER;
 
@@ -39,7 +43,7 @@ kqueue_cmp(struct kqueue *a, struct kqueue *b)
     return memcmp(&a->kq_sockfd[1], &b->kq_sockfd[1], sizeof(int)); 
 }
 
-RB_GENERATE(kqt, kqueue, entries, kqueue_cmp);
+RB_GENERATE(kqt, kqueue, entries, kqueue_cmp)
 
 /* Must hold the kqtree_mtx when calling this */
 static void
@@ -146,11 +150,17 @@ kqueue(void)
     kq->kq_ref = 1;
     pthread_mutex_init(&kq->kq_mtx, NULL);
 
+#ifdef NDEBUG
+    KQUEUE_DEBUG = 0;
+#else
+    KQUEUE_DEBUG = (getenv("KQUEUE_DEBUG") == NULL) ? 0 : 1;
+#endif
+
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, kq->kq_sockfd) < 0) 
         goto errout_unlocked;
 
     pthread_rwlock_wrlock(&kqtree_mtx);
-    if (kqueue_gc < 0)
+    if (kqueue_gc() < 0)
         goto errout;
     /* TODO: move outside of the lock if it is safe */
     if (filter_register_all(kq) < 0)

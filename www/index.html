@@ -8,22 +8,29 @@
     <title>libkqueue</title>
     <style type="text/css">
     body {
-        margin-left: 2em;
-        padding-bottom: 2em;
+        background:	#DCDCDC;
+        margin: 0;
+    }
+    div.content {
+        background: white;
+        margin: 0 3em;
+        padding: 0 2em;
     }
     .blockquote { margin-right: 2em }
     code.block { 
-         padding: 20px; 
+         padding: 10px; 
          border: 1px solid black; 
          background: beige;
-         margin: 3em; 
+         margin: 2em; 
     }
     h1 {
-        margin-left: -0.5em;
+        font-size: 3em;
+        color: maroon;
+        text-align: center;
     }
     h2 {
-        margin-left: -0.5em;
-        padding-top: 1em;
+        margin-left: -1em;
+        padding-top: 0.5em;
     }
     ol {
         margin: 2em;
@@ -39,27 +46,33 @@
 
 <body>
 
+<div class="content">
 <h1>libkqueue</h1>
 
-libkqueue is a portable userspace implementation of the <a href="http://www.freebsd.org/cgi/man.cgi?query=kqueue&sektion=2">kqueue(2)</a> kernel event notification mechanism. Initial efforts are focused on porting the kqueue API to the Linux 2.6 kernel. There is also an experimental Solaris port (currently broken). 
+<h2>Overview</h2>
+libkqueue is a userspace implementation of the <a href="http://www.freebsd.org/cgi/man.cgi?query=kqueue&sektion=2">kqueue(2)</a> kernel event notification mechanism. Initial efforts are focused on porting to the Linux 2.6 kernel. There is also an experimental Solaris port (currently broken).
+
+<p>
+libkqueue acts as a translator between the <code>kevent</code> structure and the native kernel facilities of the host machine. The following diagram illustrates how this works under Linux: 
+</p>
+
+<p align=center>
+<img src="linux_impl.png" border=0>
+</p>
+
+<h2>Benchmarks</h2>
+On Linux, libkqueue provides O(1) scalability relative to the number of concurrent client connections. This is an improvement over the traditional <code>poll(2)</code> system call which has O(N) scalability. For testing, two versions of the <a href="http://www.acme.com/software/thttpd/">thttpd web server</a> were compiled: one using libkqueue, and one using poll(2). The ApacheBench benchmarking utility was used to compare the performance of both versions. A custom script was used to create thousands of idle connections to the server, to simulate the use of HTTP Keepalives on a busy real-world server. 
+<p align=center>
+<img src="scalability.png" border=0>
+</p>
 
 <h2>Download</h2>
 
-Source code releases can be found <a href="dist">here</a>. There are no binary packages at the moment.
+Source code releases can be found <a href="dist">here</a>. There are no binary packages yet.
 <p>
-To checkout the entire SVN repository, run the following command:
+To checkout the Subversion repository, run the following command:
 <p>
-<code class=block>svn co svn://mark.heily.com/libkqueue</code>
-<p>
-You can checkout the trunk by using the following command:
-<p>
-<code class=block>svn co svn://mark.heily.com/libkqueue/trunk libkqueue</code>
-
-<p>
-There is heavy development on the trunk, and it may not always be in a usable state. If you want to be current, but not bleeding edge, there is also a stable branch. You can checkout the stable branch by using the following command:
-<p>
-<code class=block>svn co svn://mark.heily.com/libkqueue/branches/stable libkqueue</code>
-   
+<code class=block>svn checkout svn://mark.heily.com/libkqueue</code>
 
 <h2>Mailing Lists</h2>
 
@@ -80,8 +93,6 @@ The kqueue and kevent functions are implemented, and most of the filters are wor
 <ul>
  <li><code>EVFILT_PROC</code>
  <li><code>EVFILT_AIO</code>
- <li><code>EVFILT_FS</code>
- <li><code>EVFILT_NETDEV</code>
 </ul>
 
 More details about the current implementation status can be found <a href="status.html">here</a>.
@@ -108,6 +119,9 @@ When an EVFILT_SIGNAL event is generated, the <code>data</code> field
 is set to 1 regardless of how many times the signal was received by the process.
 </li>
 
+<li>
+When an EVFILT_READ event occurs on a listening socket, the   <code>data</code> field is set to 1 regardless of how many pending connections are available.
+
 <!--
 <li>
 The EVFILT_PROC filter only supports the NOTE_EXIT flag, and the <code>ident</code> field must contain the PID of a child of the current process. This filter is only suitable as an event-driven replacement for the <code>wait(2)</code> family of system calls.
@@ -122,11 +136,29 @@ Here are the issues to be aware of when using this library under any platform:<b
 <li>When a kqueue descriptor is closed, it's resources are not immediately reclaimed. Instead,
     they will be freed the next time that the <code>kqueue(2)</code> function is called.
 </li>    
+
+<li>
+A signal handler is implicitly installed when a EVFILT_SIGNAL kevent is created. For compatibility with kernel-based <code>kqueue(2)</code>, programs must ignore signals that will generate kevents. After an EVFILT_SIGNAL kevent is created, a program must not modify the disposition of the associated signal. The following example shows the proper way to handle SIGUSR1 with a kevent:<p>
+<pre>
+int main() {
+  int kqfd;
+  struct kevent kev;
+
+  kqfd = kqueue();
+  signal(SIGUSR1, SIG_IGN);
+  EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+  kevent(kqfd, &kev, 1, NULL, 0, NULL);
+}
+</pre>
 </ol>
 
 <h2>Future Plans</h2>
 
 In the future, I plan to add three more backends. One will be for Solaris and take advantage of the event port mechanism described in <a href="http://docs.sun.com/app/docs/doc/816-5168/port-create-3c?l=en&a=view&q=port_create">port_create(3C)</a>. The second will be a generic POSIX backend that does not use any non-portable system calls. The third will be a Microsoft Windows port that uses <code>WaitForMultipleObjects()</code>.
+
+<h2>Bugs</h2>
+
+If you suspect that you have found a bug in libkqueue, please send an email report to the mailing list. If you can reproduce the bug, write a simple testcase and enable debugging output by setting the <code>KQUEUE_DEBUG=y</code> environment variable. Provide this debugging output and the code for the testcase in your bug report.
 
 <h2>Portability of kevent(2) across BSD systems</h2>
 
@@ -229,7 +261,11 @@ libkqueue uses one or more helper threads, so all programs that link with libkqu
 <a href="http://www.opensource.apple.com/source/xnu/xnu-1456.1.26/tools/tests/xnu_quick_test/kqueue_tests.c">XNU kqueue test program</a> - Demonstrates use of EVFILT_USER
 </li>
 
-<h3>Solaris Event Ports</h3>
+<li>
+<a href="http://www.fsl.cs.sunysb.edu/~kolya/projects/">kqueue for linux</a> - abandoned port of kqueue to Linux circa 2002 <a href="http://www.fsl.cs.sunysb.edu/~kolya/pubs/kqueue_for_linux.pdf">[PDF]</a>.
+</li>
+
+<h2>Solaris Event Ports</h2>
 I do plan to add Solaris event port support to libkqueue once the Linux backend is complete and the internal API is stabilized. I checked the port_create(3C) manpage in Solaris 10 and OpenSolaris, and did not see any way to wait for signals. There is also no equivalent to EVFILT_VNODE in Solaris 10, although OpenSolaris has the PORT_SOURCE_FILE functionality.
 <ul>
 <li>
@@ -250,6 +286,6 @@ For more information, contact <a href="mailto:devel+libkqueue@heily.com">Mark He
 <center>
 &copy; 2009 Mark Heily. All rights reserved.
 </center>
-
+</div>
 </body>
 </html>

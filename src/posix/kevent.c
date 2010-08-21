@@ -14,12 +14,10 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/epoll.h>
 #include <stdlib.h>
 
 #include "sys/event.h"
 #include "private.h"
-
 
 int
 kevent_wait(struct kqueue *kq, const struct timespec *timeout)
@@ -54,8 +52,7 @@ kevent_copyout(struct kqueue *kq, int nready,
         filt = &kq->kq_filt[i]; 
 //        dbg_printf("pfd[%d] = %d", i, filt->kf_pfd);
         if (FD_ISSET(filt->kf_pfd, &kq->kq_rfds)) {
-            dbg_printf("pending events for %s", 
-                    filter_name(filt->kf_id));
+            dbg_printf("pending events for filter %d (%s)", filt->kf_id, filter_name(filt->kf_id));
             rv = filt->kf_copyout(filt, eventlist, nevents);
             if (rv < 0) {
                 dbg_puts("kevent_copyout failed");

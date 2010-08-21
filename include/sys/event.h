@@ -30,13 +30,18 @@
 #ifndef _SYS_EVENT_H_
 #define _SYS_EVENT_H_
 
+#include <sys/types.h>
+
+#ifdef __KERNEL__
+#define intptr_t long
+#else
 #include <sys/queue.h> 
 #include <sys/types.h> 
 #include <stdint.h> 
+#define LIBKQUEUE       1
+#endif
 
 struct timespec;
-
-#define LIBKQUEUE       1
 
 #define EVFILT_READ		(-1)
 #define EVFILT_WRITE		(-2)
@@ -64,8 +69,8 @@ struct timespec;
 struct kevent {
 	uintptr_t	ident;		/* identifier for this event */
 	short		filter;		/* filter for event */
-	u_short		flags;
-	u_int		fflags;
+	unsigned short flags;
+	unsigned int fflags;
 	intptr_t	data;
 	void		*udata;		/* opaque user data identifier */
 };
@@ -161,6 +166,7 @@ struct kevent {
 #define VQ_NOTRESPLOCK  0x0080  /* server lockd down */
 
 
+#ifndef __KERNEL__
 #ifdef  __cplusplus
 extern "C" {
 #endif
@@ -173,5 +179,6 @@ int     kevent(int kq, const struct kevent *changelist, int nchanges,
 #ifdef  __cplusplus
 }
 #endif
+#endif /* !__KERNEL__* */
 
 #endif /* !_SYS_EVENT_H_ */

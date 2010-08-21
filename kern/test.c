@@ -22,14 +22,22 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include "../include/sys/event.h"
+
 int 
 main(int argc, char **argv)
 {
-    int fd, x;
+    struct kevent kev;
+    int fd;
 
-    fd = open("/dev/kqueue", 0);
+    fd = open("/dev/kqueue", O_RDWR);
     if (fd < 0)
         err(1, "open()");
+    printf("kqfd = %d\n", fd);
+
+    EV_SET(&kev, 1, EVFILT_READ, EV_ADD, 0, 0, NULL);
+#if OLD
+    int x;
 
     x = 1;
 	if (ioctl(fd, 1234, (char *) &x) < 0)
@@ -37,6 +45,9 @@ main(int argc, char **argv)
     x = 2;
 	if (ioctl(fd, 1234, (char *) &x) < 0)
         err(1, "ioctl");
+#endif
+	if (write(fd, &kev, sizeof(kev)) < 0)
+        err(1, "write");
 
     close(fd);
     puts("ok");

@@ -18,36 +18,35 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <sys/eventfd.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include "private.h"
 
-/* A structure is used to allow other targets to emulate this */
 struct eventfd {
-    int fd;
+    int fd[2];
 };
 
 struct eventfd *
 eventfd_create(void)
 {
     struct eventfd *e;
-    int evfd;
 
     e = malloc(sizeof(*e));
     if (e == NULL)
         return (NULL);
 
-    if ((evfd = eventfd(0, 0)) < 0) {
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, e->fd) < 0) {
         free(e);
         return (NULL);
     }
-    if (fcntl(evfd, F_SETFL, O_NONBLOCK) < 0) {
+    if ((fcntl(e->fd[0], F_SETFL, O_NONBLOCK) < 0) ||
+            (fcntl(e->fd[1], F_SETFL, O_NONBLOCK) < 0)) {
         free(e);
-        close(evfd);
+        close(e->fd[0]);
+        close(e->fd[1]);
         return (NULL);
     }
-    e->fd = evfd;
 
     return (e);
 }
@@ -55,71 +54,47 @@ eventfd_create(void)
 void
 eventfd_free(struct eventfd *e)
 {
-    close(e->fd);
+    close(e->fd[0]);
+    close(e->fd[1]);
     free(e);
 }
 
 int
 eventfd_raise(struct eventfd *e)
 {
-    uint64_t counter;
-    int rv = 0;
-
     dbg_puts("raising event level");
-    counter = 1;
-    if (write(e->fd, &counter, sizeof(counter)) < 0) {
-        switch (errno) {
-            case EAGAIN:    
-                /* Not considered an error */
-                break;
-
-            case EINTR:
-                rv = -EINTR;
-                break;
-
-            default:
-                dbg_printf("write(2): %s", strerror(errno));
-                rv = -1;
-        }
+    if (write(e->fd[0], ".", 1) < 0) {
+        /* FIXME: handle EAGAIN and EINTR */
+        dbg_printf("write(2): %s", strerror(errno));
+        return (-1);
     }
-    return (rv);
+    return (0);
 }
 
 int
 eventfd_lower(struct eventfd *e)
 {
-    uint64_t cur;
-    int rv = 0;
+    char buf[1024];
 
     /* Reset the counter */
     dbg_puts("lowering event level");
-    if (read(e->fd, &cur, sizeof(cur)) < sizeof(cur)) {
-        switch (errno) {
-            case EAGAIN:    
-                /* Not considered an error */
-                break;
-
-            case EINTR:
-                rv = -EINTR;
-                break;
-
-            default:
-                dbg_printf("read(2): %s", strerror(errno));
-                rv = -1;
-        }
-    } 
-
-    return (rv);
+    if (read(e->fd[1], &buf, sizeof(buf)) < 0) {
+        /* FIXME: handle EAGAIN and EINTR */
+        /* FIXME: loop so as to consume all data.. may need mutex */
+        dbg_printf("read(2): %s", strerror(errno));
+        return (-1);
+    }
+    return (0);
 }
 
 int
 eventfd_reader(struct eventfd *e)
 {
-    return (e->fd);
+    return (e->fd[1]);
 }
 
 int
 eventfd_writer(struct eventfd *e)
 {
-    return (e->fd);
+    return (e->fd[0]);
 }

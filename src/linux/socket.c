@@ -127,20 +127,28 @@ evfilt_socket_copyout(struct filter *filt,
             if (ev->events & EPOLLERR)
                 dst->fflags = 1; /* FIXME: Return the actual socket error */
           
-            /* On return, data contains the number of bytes of protocol
-               data available to read.
-             */
-            if (ioctl(dst->ident, 
-                        (dst->filter == EVFILT_READ) ? SIOCINQ : SIOCOUTQ, 
-                        &dst->data) < 0) {
-                /* race condition with socket close, so ignore this error */
-                dbg_puts("ioctl(2) of socket failed");
-                dst->data = 0;
+            if (kn->flags & KNFL_PASSIVE_SOCKET) {
+                /* On return, data contains the length of the 
+                   socket backlog. This is not available under Linux.
+                 */
+                dst->data = 1;
+            } else {
+                /* On return, data contains the number of bytes of protocol
+                   data available to read.
+                 */
+                if (ioctl(dst->ident, 
+                            (dst->filter == EVFILT_READ) ? SIOCINQ : SIOCOUTQ, 
+                            &dst->data) < 0) {
+                    /* race condition with socket close, so ignore this error */
+                    dbg_puts("ioctl(2) of socket failed");
+                    dst->data = 0;
+                }
             }
 
-            if (kn->kev.flags & EV_DISPATCH) 
+            if (kn->kev.flags & EV_DISPATCH) {
+                socket_knote_delete(filt->kf_pfd, kn->kev.ident);
                 KNOTE_DISABLE(kn);
-            if (kn->kev.flags & EV_ONESHOT) {
+            } else if (kn->kev.flags & EV_ONESHOT) {
                 socket_knote_delete(filt->kf_pfd, kn->kev.ident);
                 knote_free(filt, kn);
             }
@@ -158,18 +166,21 @@ evfilt_socket_knote_create(struct filter *filt, struct knote *kn)
 {
     struct epoll_event ev;
 
+    if (knote_get_socket_type(kn) < 0)
+        return (-1);
+
     /* Convert the kevent into an epoll_event */
     if (kn->kev.filter == EVFILT_READ)
-        kn->kn_events = EPOLLIN | EPOLLRDHUP;
+        kn->data.events = EPOLLIN | EPOLLRDHUP;
     else
-        kn->kn_events = EPOLLOUT;
+        kn->data.events = EPOLLOUT;
     if (kn->kev.flags & EV_ONESHOT || kn->kev.flags & EV_DISPATCH)
-        kn->kn_events |= EPOLLONESHOT;
+        kn->data.events |= EPOLLONESHOT;
     if (kn->kev.flags & EV_CLEAR)
-        kn->kn_events |= EPOLLET;
+        kn->data.events |= EPOLLET;
 
     memset(&ev, 0, sizeof(ev));
-    ev.events = kn->kn_events;
+    ev.events = kn->data.events;
     ev.data.fd = kn->kev.ident;
 
     return epoll_update(EPOLL_CTL_ADD, filt, kn, &ev);
@@ -185,7 +196,10 @@ evfilt_socket_knote_modify(struct filter *filt, struct knote *kn,
 int
 evfilt_socket_knote_delete(struct filter *filt, struct knote *kn)
 {
-    return epoll_update(EPOLL_CTL_DEL, filt, kn, NULL);
+    if (kn->kev.flags & EV_DISABLE)
+        return (0);
+    else
+        return epoll_update(EPOLL_CTL_DEL, filt, kn, NULL);
 }
 
 int
@@ -194,7 +208,7 @@ evfilt_socket_knote_enable(struct filter *filt, struct knote *kn)
     struct epoll_event ev;
 
     memset(&ev, 0, sizeof(ev));
-    ev.events = kn->kn_events;
+    ev.events = kn->data.events;
     ev.data.fd = kn->kev.ident;
 
     return epoll_update(EPOLL_CTL_ADD, filt, kn, &ev);

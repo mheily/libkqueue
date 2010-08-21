@@ -25,19 +25,22 @@ include config.mk
 all: $(PROGRAM).so $(PROGRAM).a
 
 %.o: %.c $(DEPS)
-	$(CC) -c -o $@ $(CFLAGS) $<
+	$(CC) -c -o $@ -I./include -I./src/common $(CFLAGS) $<
 
 $(PROGRAM).a: $(OBJS)
 	$(AR) rcs $(PROGRAM).a $(OBJS)
 
 $(PROGRAM).so: $(OBJS)
-	$(LD) $(LDFLAGS) -o $(PROGRAM).so $(OBJS) $(LDADD)
+	$(LD) $(LDFLAGS) $(OBJS) $(LDADD)
+	$(LN) -sf $(PROGRAM).so.$(ABI_VERSION) $(PROGRAM).so
 
 install: $(PROGRAM).so
 	$(INSTALL) -d -m 755 $(INCLUDEDIR)/kqueue/sys
 	$(INSTALL) -m 644 include/sys/event.h $(INCLUDEDIR)/kqueue/sys/event.h
 	$(INSTALL) -d -m 755 $(LIBDIR) 
-	$(INSTALL) -m 644 $(PROGRAM).so $(LIBDIR)
+	$(INSTALL) -m 644 $(PROGRAM).so.$(ABI_VERSION) $(LIBDIR)
+	$(LN) -sf $(PROGRAM).so.$(ABI_VERSION) $(LIBDIR)/$(PROGRAM).so.$(ABI_MAJOR)
+	$(LN) -sf $(PROGRAM).so.$(ABI_VERSION) $(LIBDIR)/$(PROGRAM).so
 	$(INSTALL) -m 644 $(PROGRAM).la $(LIBDIR)
 	$(INSTALL) -m 644 $(PROGRAM).a $(LIBDIR)
 	$(INSTALL) -d -m 755 $(LIBDIR)/pkgconfig
@@ -57,15 +60,14 @@ uninstall:
 check: $(PROGRAM).a
 	cd test && ./configure && make check
 
-$(DISTFILE): $(OBJS)
-	cd test && make distclean || true
+$(DISTFILE): $(SOURCES) $(HEADERS)
 	mkdir $(PROGRAM)-$(VERSION)
 	cp  Makefile ChangeLog configure config.inc      \
         $(MANS) $(EXTRA_DIST)   \
         $(PROGRAM)-$(VERSION)
 	cp -R $(SUBDIRS) $(PROGRAM)-$(VERSION)
 	rm -rf `find $(PROGRAM)-$(VERSION) -type d -name .svn -o -name .libs`
-	cd $(PROGRAM)-$(VERSION) && rm $(OBJS)
+	cd $(PROGRAM)-$(VERSION) && ./configure && cd test && ./configure && cd .. && make distclean
 	tar zcf $(PROGRAM)-$(VERSION).tar.gz $(PROGRAM)-$(VERSION)
 	rm -rf $(PROGRAM)-$(VERSION)
 
@@ -77,11 +79,16 @@ dist-upload: dist
 	scp $(PROGRAM)-$(VERSION).tar.gz $(DIST)
 
 publish-www:
-	rm ~/public_html/libkqueue/*.html ; cp -R www/*.html ~/public_html/libkqueue/
+	cp -R www/* ~/public_html/libkqueue/
 
 clean:
-	rm -f tags *.a $(OBJS) *.so 
+	rm -f tags *.a $(OBJS) *.so *.so.*
+	rm -rf pkg
 	cd test && make clean || true
+
+distclean: clean
+	rm -f *.tar.gz config.mk config.h $(PROGRAM).pc $(PROGRAM).la rpm.spec
+	rm -rf $(PROGRAM)-$(VERSION) 2>/dev/null || true
 
 fresh-build:
 	rm -rf /tmp/$(PROGRAM)-testbuild 
@@ -104,9 +111,6 @@ edit: tags
 cscope: tags
 	cscope $(SOURCES) $(HEADERS)
 
-distclean: clean
-	rm -f *.tar.gz config.mk config.h $(PROGRAM).pc $(PROGRAM).la rpm.spec
-
 rpm: clean $(DISTFILE)
 	rm -rf rpm *.rpm *.deb
 	mkdir -p rpm/BUILD rpm/RPMS rpm/SOURCES rpm/SPECS rpm/SRPMS
@@ -117,6 +121,18 @@ rpm: clean $(DISTFILE)
 	rm -rf rpm
 	rmdir i386 x86_64    # WORKAROUND: These aren't supposed to exist
 	fakeroot alien --scripts *.rpm
+
+deb: clean $(DISTFILE)
+	mkdir pkg && cd pkg ; \
+	tar zxf ../$(DISTFILE) ; \
+	cp ../$(DISTFILE) $(PROGRAM)_$(VERSION).orig.tar.gz ; \
+	cp -R ../ports/debian $(PROGRAM)-$(VERSION) ; \
+	rm -rf `find $(PROGRAM)-$(VERSION)/debian -type d -name .svn` ; \
+	perl -pi -e 's/\@\@VERSION\@\@/$(VERSION)/' $(PROGRAM)-$(VERSION)/debian/changelog ; \
+	cd $(PROGRAM)-$(VERSION) && dpkg-buildpackage -uc -us
+	lintian -i pkg/*.deb
+	@printf "\nThe following packages have been created:\n"
+	@find ./pkg -name '*.deb' | sed 's/^/    /'
 
 debug-install:
 	./configure --prefix=/usr --debug=yes

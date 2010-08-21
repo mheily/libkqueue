@@ -37,7 +37,7 @@ static int
 filter_register(struct kqueue *kq, short filter, const struct filter *src)
 {
     struct filter *dst;
-    u_int filt;
+    unsigned int filt;
     int rv = 0;
 
     filt = (-1 * filter) - 1;
@@ -66,7 +66,7 @@ filter_register(struct kqueue *kq, short filter, const struct filter *src)
     rv = src->kf_init(dst);
     if (rv < 0) {
         dbg_puts("filter failed to initialize");
-        dst->kf_id = 0; /* FIXME: lame magic constant */ 
+        dst->kf_id = 0;
         return (-1);
     }
 
@@ -77,7 +77,7 @@ filter_register(struct kqueue *kq, short filter, const struct filter *src)
             kq->kq_nfds = dst->kf_pfd;
         dbg_printf("fds: added %d (nfds=%d)", dst->kf_pfd, kq->kq_nfds);
     }
-    dbg_printf("%s registered", filter_name(filter));
+    dbg_printf("filter %d (%s) registered", filter, filter_name(filter));
 
     return (0);
 }

@@ -20,7 +20,6 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <sys/eventfd.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -33,7 +32,11 @@
 int
 evfilt_user_init(struct filter *filt)
 {
-    filt->kf_pfd = eventfd_create();
+    filt->kf_efd = eventfd_create();
+    if (filt->kf_efd == NULL)
+        return (-1);
+
+    filt->kf_pfd = eventfd_reader(filt->kf_efd);
     if (filt->kf_pfd < 0) 
         return (-1);
 
@@ -43,7 +46,7 @@ evfilt_user_init(struct filter *filt)
 void
 evfilt_user_destroy(struct filter *filt)
 {
-    close(filt->kf_pfd);    /* TODO: do this in the parent */
+    eventfd_free(filt->kf_efd);
     return;
 }
 
@@ -59,8 +62,6 @@ evfilt_user_copyout(struct filter *filt,
         memcpy(dst, &kn->kev, sizeof(*dst));
         dst->fflags &= ~NOTE_FFCTRLMASK;     //FIXME: Not sure if needed
         dst->fflags &= ~NOTE_TRIGGER;
-        if (kn->kev.flags & EV_DISPATCH) 
-            KNOTE_DISABLE(kn);
         if (kn->kev.flags & EV_ADD) {
             /* NOTE: True on FreeBSD but not consistent behavior with
                       other filters. */
@@ -69,9 +70,13 @@ evfilt_user_copyout(struct filter *filt,
         if (kn->kev.flags & EV_CLEAR)
             kn->kev.fflags &= ~NOTE_TRIGGER;
         if (kn->kev.flags & (EV_DISPATCH | EV_CLEAR | EV_ONESHOT))
-            eventfd_lower(filt->kf_pfd);
-        if (kn->kev.flags & EV_ONESHOT) 
+            eventfd_lower(filt->kf_efd);
+        if (kn->kev.flags & EV_DISPATCH) {
+            KNOTE_DISABLE(kn);
+            kn->kev.fflags &= ~NOTE_TRIGGER;
+        } else if (kn->kev.flags & EV_ONESHOT) {
             knote_free(filt, kn);
+        }
 
         dst++;
         if (++nevents == maxevents)
@@ -81,7 +86,7 @@ evfilt_user_copyout(struct filter *filt,
     /* This should normally never happen but is here for debugging */
     if (nevents == 0) {
         dbg_puts("spurious wakeup");
-        eventfd_lower(filt->kf_pfd);
+        eventfd_lower(filt->kf_efd);
     }
 
     return (nevents);
@@ -107,8 +112,8 @@ int
 evfilt_user_knote_modify(struct filter *filt, struct knote *kn, 
         const struct kevent *kev)
 {
-    u_int ffctrl;
-    u_int fflags;
+    unsigned int ffctrl;
+    unsigned int fflags;
 
     /* Excerpted from sys/kern/kern_event.c in FreeBSD HEAD */
     ffctrl = kev->fflags & NOTE_FFCTRLMASK;
@@ -137,7 +142,7 @@ evfilt_user_knote_modify(struct filter *filt, struct knote *kn,
     if ((!(kn->kev.flags & EV_DISABLE)) && kev->fflags & NOTE_TRIGGER) {
         kn->kev.fflags |= NOTE_TRIGGER;
         knote_enqueue(filt, kn);
-        eventfd_raise(filt->kf_pfd);
+        eventfd_raise(filt->kf_efd);
     }
 
     return (0);
