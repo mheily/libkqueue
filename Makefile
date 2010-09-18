@@ -60,6 +60,9 @@ uninstall:
 check: $(PROGRAM).a
 	cd test && ./configure && make check
 
+debug-check: clean $(PROGRAM).a
+	cd test && ./configure && KQUEUE_DEBUG=y make check
+
 $(DISTFILE): $(SOURCES) $(HEADERS)
 	mkdir $(PROGRAM)-$(VERSION)
 	cp  Makefile ChangeLog configure config.inc      \
@@ -77,9 +80,6 @@ dist:
 
 dist-upload: dist
 	scp $(PROGRAM)-$(VERSION).tar.gz $(DIST)
-
-publish-www:
-	cp -R www/* ~/public_html/libkqueue/
 
 clean:
 	rm -f tags *.a $(OBJS) *.so *.so.*
@@ -111,16 +111,18 @@ edit: tags
 cscope: tags
 	cscope $(SOURCES) $(HEADERS)
 
-rpm: clean $(DISTFILE)
-	rm -rf rpm *.rpm *.deb
-	mkdir -p rpm/BUILD rpm/RPMS rpm/SOURCES rpm/SPECS rpm/SRPMS
-	mkdir -p rpm/RPMS/i386 rpm/RPMS/x86_64
-	cp $(DISTFILE) rpm/SOURCES 
+# Creates an ~/rpmbuild tree
+rpmbuild:
+	mkdir -p $$HOME/rpmbuild
+	cd $$HOME/rpmbuild && mkdir -p BUILD RPMS SOURCES SPECS SRPMS
+	grep _topdir $$HOME/.rpmmacros || \
+           echo "%_topdir %(echo $$HOME/rpmbuild)" >> $$HOME/.rpmmacros
+
+rpm: rpmbuild clean $(DISTFILE)
+	mkdir -p pkg
+	cp $(DISTFILE) $$HOME/rpmbuild/SOURCES 
 	rpmbuild -bb rpm.spec
-	mv ./rpm/RPMS/* .
-	rm -rf rpm
-	rmdir i386 x86_64    # WORKAROUND: These aren't supposed to exist
-	fakeroot alien --scripts *.rpm
+	find $$HOME/rpmbuild -name '$(PROGRAM)-$(VERSION)*.rpm' -exec mv {} ./pkg \;
 
 deb: clean $(DISTFILE)
 	mkdir pkg && cd pkg ; \
@@ -145,3 +147,17 @@ diff:
 	if [ "`pwd | grep /branches/stable`" != "" ] ; then \
 	   (cd ../.. ; $(DIFF) branches/stable trunk | less) ; \
     fi
+
+# Copy to/from the host to the Solaris guest VM
+#
+solaris-push:
+	ssh -p 2222 localhost 'rm -rf /export/home/mheily/libkqueue'
+	cd .. ; scp -rq -P 2222 trunk localhost:/export/home/mheily/libkqueue
+
+solaris-test: solaris-push
+	ssh -p 2222 localhost 'cd /export/home/mheily/libkqueue && /usr/sfw/bin/gmake distclean && ./configure && /usr/sfw/bin/gmake clean all check'
+
+solaris-pull:
+	scp -rq -P 2222 localhost:/export/home/mheily/libkqueue/\* .
+#
+#

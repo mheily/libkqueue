@@ -51,6 +51,13 @@ kqueue_free(struct kqueue *kq)
 {
     RB_REMOVE(kqt, &kqtree, kq);
     filter_unregister_all(kq);
+#if defined(__sun__)
+    port_event_t *pe = (port_event_t *) pthread_getspecific(kq->kq_port_event);
+
+    if (kq->kq_port > 0) 
+        close(kq->kq_port);
+    free(pe);
+#endif
     free(kq);
 }
 
@@ -138,6 +145,27 @@ kqueue_get(int kq)
     return (ent);
 }
 
+/* Non-portable kqueue initalization code. */
+static int
+kqueue_sys_init(struct kqueue *kq)
+{
+#if defined(__sun__)
+    port_event_t *pe;
+
+    if ((kq->kq_port = port_create()) < 0) {
+        dbg_perror("port_create(2)");
+        return (-1);
+    }
+    if (pthread_key_create(&kq->kq_port_event, NULL) != 0)
+       abort();
+    if ((pe = calloc(1, sizeof(*pe))) == NULL) 
+       abort();
+    if (pthread_setspecific(kq->kq_port_event, pe) != 0)
+       abort();
+#endif
+    return (0);
+}
+
 int __attribute__((visibility("default")))
 kqueue(void)
 {
@@ -157,6 +185,9 @@ kqueue(void)
 #endif
 
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, kq->kq_sockfd) < 0) 
+        goto errout_unlocked;
+
+    if (kqueue_sys_init(kq) < 0)
         goto errout_unlocked;
 
     pthread_rwlock_wrlock(&kqtree_mtx);
@@ -181,6 +212,10 @@ errout_unlocked:
         (void)close(kq->kq_sockfd[1]);
         errno = tmp;
     }
+#if defined(__sun__)
+    if (kq->kq_port > 0) 
+	close(kq->kq_port);
+#endif
     free(kq);
     return (-1);
 }

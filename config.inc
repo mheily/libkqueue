@@ -1,5 +1,5 @@
 program="libkqueue"
-version="0.9.3"
+version="1.0"
 abi_major="0"
 abi_minor="0"
 abi_version="$abi_major.$abi_minor"
@@ -29,6 +29,9 @@ pre_configure_hook() {
 
   libdepends=" -L$libdir"
   if [ $target = "linux" ] ; then
+
+      check_symbol sys/epoll.h EPOLLRDHUP
+
       # Actually a GCC 4.X dependency
       cflags="$cflags -fvisibility=hidden"
 
@@ -39,6 +42,7 @@ pre_configure_hook() {
 
   if [ $target = "solaris" ] ; then
       cflags="$cflags -m64"
+      ldflags="$ldflags -m64"
       libdepends="$libdepends -lsocket -lnsl"
   fi
 }
@@ -46,35 +50,47 @@ pre_configure_hook() {
 post_configure_hook() {
     finalize target "$target"
 
-    evfilt_signal="src/$target/signal.c"
+    kevent="src/posix/kevent.c"
+    evfilt_signal="src/posix/signal.c"
     evfilt_proc="src/$target/proc.c"
     evfilt_socket="src/$target/socket.c"
-    evfilt_timer="src/$target/timer.c"
+    evfilt_timer="src/posix/timer.c"
     evfilt_user="src/posix/user.c"
     evfilt_vnode="src/$target/vnode.c"
+    eventfd="src/posix/eventfd.c"
 
     if [ $target = "linux" ] ; then
-      if [ "$have_sys_signalfd_h" != "yes" ] ; then
-          evfilt_signal="src/posix/signal.c"
+      # FIXME: not tested
+      #if [ "$have_sys_signalfd_h" = "yes" ] ; then
+      #    evfilt_signal="src/linux/signal.c"
+      #fi
+      if [ "$have_sys_timerfd_h" = "yes" ] ; then
+          evfilt_timer="src/linux/timer.c"
       fi
-          evfilt_signal="src/posix/signal.c" #XXX-FIXME TESTING
-      if [ "$have_sys_timerfd_h" != "yes" ] ; then
-          evfilt_timer="src/posix/timer.c"
-      fi
-      if [ "$have_sys_eventfd_h" != "yes" ] ; then
-          sources="$sources src/posix/eventfd.c"
-      else
-          sources="$sources src/linux/eventfd.c"
+      if [ "$have_sys_eventfd_h" = "yes" ] ; then
+          eventfd="src/linux/eventfd.c"
       fi
     fi      
 
     if [ $target = "solaris" ] ; then
           cflags="$cflags -D__EXTENSIONS__"
-          evfilt_signal="src/posix/signal.c"
-          evfilt_timer="src/posix/timer.c"
-          sources="$sources src/posix/eventfd.c"
+    	  kevent="src/solaris/kevent.c"
+          evfilt_timer="src/solaris/timer.c"
+          evfilt_user="src/solaris/user.c"
+          evfilt_proc=""
+          evfilt_vnode=""
+          eventfd=""
     fi      
 
-    sources="$sources src/posix/kevent.c $evfilt_signal $evfilt_proc 
+    # FIXME: This will compile but not actually work
+    if [ $target = "freebsd" ] ; then
+          evfilt_signal="src/posix/signal.c"
+          evfilt_proc=""
+          evfilt_socket=""
+          evfilt_timer=""
+          evfilt_vnode=""
+    fi
+
+    sources="$sources $kevent $eventfd $evfilt_signal $evfilt_proc 
              $evfilt_socket $evfilt_timer $evfilt_user $evfilt_vnode"
 }

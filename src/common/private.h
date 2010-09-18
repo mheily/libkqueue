@@ -18,8 +18,11 @@
 #define  _KQUEUE_PRIVATE_H
 
 #if defined (__SVR4) && defined (__sun)
-#define SOLARIS
-#include <port.h>
+# define SOLARIS
+# include <port.h>
+  /* Used to set portev_events for PORT_SOURCE_USER */
+# define X_PORT_SOURCE_SIGNAL  101
+# define X_PORT_SOURCE_USER    102
 #endif
 
 #include <errno.h>
@@ -64,14 +67,17 @@ extern int KQUEUE_DEBUG;
 
 #define dbg_perror(str)         do {                                \
     if (KQUEUE_DEBUG)                                               \
-      fprintf(stderr, "KQ: %s(): %s: %s\n",                         \
-              __func__, str, strerror(errno));                      \
+      fprintf(stderr, "KQ: %s(): %s: %s (errno=%d)\n",              \
+              __func__, str, strerror(errno), errno);               \
 } while (0)
+
+# define reset_errno()          do { errno = 0; } while (0)
 
 #else /* NDEBUG */
 # define dbg_puts(str)           ;
 # define dbg_printf(fmt,...)     ;
 # define dbg_perror(str)         ;
+# define reset_errno()           ;
 #endif 
 
 
@@ -97,6 +103,8 @@ struct knote {
             nlink_t   nlink;  /* Used by vnode */
             off_t     size;   /* Used by vnode */
         } vnode;
+        timer_t       timerid;  
+        pthread_t     tid;          /* Used by posix/timer.c */
     } data;
     TAILQ_ENTRY(knote) event_ent;    /* Used by filter->kf_event */
     RB_ENTRY(knote)   kntree_ent;   /* Used by filter->kntree */
@@ -132,13 +140,15 @@ struct filter {
     struct eventfd *kf_efd;             /* Used by user.c */
     int       kf_pfd;                   /* fd to poll(2) for readiness */
     int       kf_wfd;                   /* fd to write when an event occurs */
-    unsigned int     kf_timeres;        /* timer resolution, in miliseconds */
-    sigset_t  kf_sigmask;
-    struct evfilt_data *kf_data;	/* filter-specific data */
+    sigset_t            kf_sigmask;
+    struct evfilt_data *kf_data;	    /* filter-specific data */
     RB_HEAD(knt, knote) kf_knote;
-    TAILQ_HEAD(, knote)  kf_event;       /* events that have occurred */
-    struct kqueue *kf_kqueue;
+    TAILQ_HEAD(, knote) kf_event;       /* events that have occurred */
+    struct kqueue      *kf_kqueue;
 };
+
+/* Use this to declare a filter that is not implemented */
+#define EVFILT_NOTIMPL { 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL }
 
 struct kqueue {
     int             kq_sockfd[2];
@@ -146,8 +156,9 @@ struct kqueue {
     fd_set          kq_fds, kq_rfds; 
     int             kq_nfds;
     pthread_mutex_t kq_mtx;
-#ifdef SOLARIS
-    int             kq_port;
+#ifdef __sun__
+    int             kq_port;            /* see: port_create(2) */
+    pthread_key_t   kq_port_event;
 #endif
     volatile uint32_t        kq_ref;
     RB_ENTRY(kqueue) entries;
@@ -181,7 +192,6 @@ const char *filter_name(short);
 int         filter_lower(struct filter *);
 int         filter_raise(struct filter *);
 
-int 		kevent_init(struct kqueue *);
 int         kevent_wait(struct kqueue *, const struct timespec *);
 int         kevent_copyout(struct kqueue *, int, struct kevent *, int);
 void 		kevent_free(struct kqueue *);
