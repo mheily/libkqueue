@@ -14,28 +14,43 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <stdlib.h>
-#include <port.h>
-#include <poll.h>
-#include <unistd.h>
-
-#include "sys/event.h"
-#include "private.h"
-
-void
-solaris_kqueue_free(struct kqueue *kq)
-{
-    if (kq->kq_port > 0) 
-        close(kq->kq_port);
-}
+#include "../common/private.h"
 
 int
 solaris_kqueue_init(struct kqueue *kq)
 {
+    if (posix_kqueue_init(kq) < 0)
+        return (-1);
     if ((kq->kq_port = port_create()) < 0) {
         dbg_perror("port_create(2)");
         return (-1);
     }
+    dbg_printf("created event port; fd=%d", kq->kq_port);
     TAILQ_INIT(&kq->kq_events);
     return (0);
 }
+
+void
+solaris_kqueue_free(struct kqueue *kq)
+{
+    posix_kqueue_free(kq);
+    if (kq->kq_port > 0) {
+        (void) close(kq->kq_port);
+        dbg_printf("closed event port; fd=%d", kq->kq_port);
+    }
+}
+
+const struct kqueue_vtable kqops =
+{
+    solaris_kqueue_init,
+    solaris_kqueue_free,
+    solaris_kevent_wait,
+    solaris_kevent_copyout,
+    NULL,
+    NULL,
+    posix_eventfd_init,
+    posix_eventfd_close,
+    posix_eventfd_raise,
+    posix_eventfd_lower,
+    posix_eventfd_descriptor
+};

@@ -38,7 +38,6 @@
 #include <sys/types.h> 
 #include <stdint.h> 
 #define LIBKQUEUE       1
-int _libkqueue_init(void) __attribute__ ((constructor));
 #endif
 
 struct timespec;
@@ -171,10 +170,27 @@ struct kevent {
 extern "C" {
 #endif
 
+#ifdef _WIN32
+
+struct timespec {
+    time_t  tv_sec;
+    long    tv_nsec;
+};
+
+__declspec(dllexport) int
+kqueue(void);
+
+__declspec(dllexport) int
+kevent(int kq, const struct kevent *changelist, int nchanges,
+	    struct kevent *eventlist, int nevents,
+	    const struct timespec *timeout);
+
+#else
 int     kqueue(void);
 int     kevent(int kq, const struct kevent *changelist, int nchanges,
 	    struct kevent *eventlist, int nevents,
 	    const struct timespec *timeout);
+#endif
 
 #ifdef  __cplusplus
 }

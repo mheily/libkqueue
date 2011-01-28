@@ -17,8 +17,37 @@
 #ifndef  _KQUEUE_WINDOWS_PLATFORM_H
 #define  _KQUEUE_WINDOWS_PLATFORM_H
 
-#include <windows.h>
-#include <winsock.h>
+/* Reduces build time by omitting extra system headers */
+#define WIN32_LEAN_AND_MEAN
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <io.h>
+#include <malloc.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <fcntl.h>
+
+#pragma comment(lib, "Ws2_32.lib")
+ 
+/* The #define doesn't seem to work, but the #pragma does.. */
+#define _CRT_SECURE_NO_WARNINGS 1
+#pragma warning( disable : 4996 )
+
+#include "../../include/sys/event.h"
+
+
+/*
+ * Debugging macros
+ */
+#ifndef NDEBUG
+#define dbg_lasterror(str)         do {                                \
+    if (KQUEUE_DEBUG)                                               \
+      fprintf(stderr, "KQ: [%d] %s(): %s: (LastError=%d)\n",              \
+              THREAD_ID, __func__, str, GetLastError()); \
+} while (0)
+
+#endif 
 
 /*
  * Atomic integer operations 
@@ -26,8 +55,40 @@
 #define atomic_inc   InterlockedIncrement
 #define atomic_dec   InterlockedDecrement
 
-/* DllMain() is the only available constructor function */
-#define CONSTRUCTOR int
+/*
+ * Additional members of struct kqueue
+ * FIXME: This forces a thread-per-filter model
+ *			Would be better to 
+ */
+#define KQUEUE_PLATFORM_SPECIFIC \
+	HANDLE kq_handle; \
+	HANDLE kq_apc_dispatcher; \
+    HANDLE kq_filt_handle[EVFILT_SYSCOUNT]; \
+	struct filter *kq_filt_ref[EVFILT_SYSCOUNT]; \
+    size_t kq_filt_count; \
+	DWORD  kq_filt_signalled
+
+/*
+ * Additional members of struct filter
+ */
+#define FILTER_PLATFORM_SPECIFIC \
+	HANDLE kf_event_handle
+
+/*
+ * Hooks and prototypes
+ */
+int     windows_kqueue_init(struct kqueue *);
+void    windows_kqueue_free(struct kqueue *);
+int     windows_kevent_wait(struct kqueue *, const struct timespec *);
+int     windows_kevent_copyout(struct kqueue *, int, struct kevent *, int);
+int     windows_filter_init(struct kqueue *, struct filter *);
+void    windows_filter_free(struct kqueue *, struct filter *);
+
+/* Windows does not support this attribute.
+   DllMain() is the only available constructor function.
+   This means the constructor must be called from within DllMain().
+ */
+#define CONSTRUCTOR
 
 /* Function visibility macros */
 #define VISIBLE __declspec(dllexport)
@@ -37,8 +98,9 @@
 #define __func__ __FUNCDNAME__
 #endif
 
-#define snprintf _snprintf_s
+#define snprintf _snprintf
 #define ssize_t  SSIZE_T
+#define sleep(x) Sleep((x) * 1000)
 
 /* For POSIX compatibility when compiling, not for actual use */
 typedef int socklen_t;
@@ -46,6 +108,7 @@ typedef int nlink_t;
 typedef int timer_t;
 typedef int pthread_t;
 typedef int sigset_t;
+typedef int pid_t;
 
 #define THREAD_ID   (GetCurrentThreadId())
 #define __thread    __declspec(thread)

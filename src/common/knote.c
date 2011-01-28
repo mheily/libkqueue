@@ -149,14 +149,14 @@ knote_get_socket_type(struct knote *kn)
 
     slen = sizeof(lsock);
     lsock = 0;
-    i = getsockopt(kn->kev.ident, SOL_SOCKET, SO_ACCEPTCONN, &lsock, &slen);
+    i = getsockopt(kn->kev.ident, SOL_SOCKET, SO_ACCEPTCONN, (char *) &lsock, &slen);
     if (i < 0) {
         switch (errno) {
             case ENOTSOCK:   /* same as lsock = 0 */
                 return (0);
                 break;
             default:
-                dbg_printf("getsockopt(3) failed: %s", strerror(errno));
+                dbg_perror("getsockopt(3)");
                 return (-1);
         }
     } else {

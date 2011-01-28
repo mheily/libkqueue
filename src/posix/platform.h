@@ -17,22 +17,48 @@
 #ifndef  _KQUEUE_POSIX_PLATFORM_H
 #define  _KQUEUE_POSIX_PLATFORM_H
 
+#include "../../include/sys/event.h"
+
 /*
  * GCC-compatible atomic integer operations 
  */
 #define atomic_inc(p)   __sync_add_and_fetch((p), 1)
 #define atomic_dec(p)   __sync_sub_and_fetch((p), 1)
 
-#define CONSTRUCTOR int __attribute__ ((constructor))
+#define CONSTRUCTOR     __attribute__ ((constructor))
 #define VISIBLE         __attribute__((visibility("default")))
 #define HIDDEN          __attribute__((visibility("hidden")))
 
+#include <fcntl.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <stdint.h>
 #include <pthread.h>
 #include <poll.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
+
+/*
+ * Additional members of 'struct eventfd'
+ */
+#define EVENTFD_PLATFORM_SPECIFIC \
+    int ef_wfd
+
+void    posix_kqueue_free(struct kqueue *);
+int     posix_kqueue_init(struct kqueue *);
+
+int     posix_kevent_wait(struct kqueue *, const struct timespec *);
+int     posix_kevent_copyout(struct kqueue *, int, struct kevent *, int);
+
+int     posix_eventfd_init(struct eventfd *);
+void    posix_eventfd_close(struct eventfd *);
+int     posix_eventfd_raise(struct eventfd *);
+int     posix_eventfd_lower(struct eventfd *);
+int     posix_eventfd_descriptor(struct eventfd *);
 
 #endif  /* ! _KQUEUE_POSIX_PLATFORM_H */

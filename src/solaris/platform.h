@@ -38,16 +38,18 @@
 #define X_PORT_SOURCE_SIGNAL  101
 #define X_PORT_SOURCE_USER    102
 
-/*
- * Hooks and prototypes
- */
-#define kqueue_free_hook      solaris_kqueue_free
 void    solaris_kqueue_free(struct kqueue *);
-
-#define kqueue_init_hook      solaris_kqueue_init
 int     solaris_kqueue_init(struct kqueue *);
+int     solaris_kevent_wait(struct kqueue *, const struct timespec *);
+int     solaris_kevent_copyout(struct kqueue *, int, struct kevent *, int);
+void    port_event_dequeue(port_event_t *, struct kqueue *);
 
-void port_event_dequeue(port_event_t *, struct kqueue *);
+/*
+ * Additional members of struct kqueue
+ */
+#define KQUEUE_PLATFORM_SPECIFIC \
+    int    kq_port; \
+    TAILQ_HEAD(event_buf_listhead,event_buf) kq_events
 
 /*
  * Data structures

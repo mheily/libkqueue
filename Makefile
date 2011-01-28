@@ -22,7 +22,7 @@ include config.mk
 
 .PHONY :: install uninstall check dist dist-upload publish-www clean merge distclean fresh-build rpm edit cscope
 
-all: $(PROGRAM).so $(PROGRAM).a
+all: $(PROGRAM).so.$(ABI_VERSION)
 
 %.o: %.c $(DEPS)
 	$(CC) -c -o $@ -I./include -I./src/common $(CFLAGS) $<
@@ -30,19 +30,20 @@ all: $(PROGRAM).so $(PROGRAM).a
 $(PROGRAM).a: $(OBJS)
 	$(AR) rcs $(PROGRAM).a $(OBJS)
 
-$(PROGRAM).so: $(OBJS)
+$(PROGRAM).so.$(ABI_VERSION): $(OBJS)
 	$(LD) $(LDFLAGS) $(OBJS) $(LDADD)
+	$(LN) -sf $(PROGRAM).so.$(ABI_VERSION) $(PROGRAM).so.$(ABI_MAJOR)
 	$(LN) -sf $(PROGRAM).so.$(ABI_VERSION) $(PROGRAM).so
 
-install: $(PROGRAM).so
+install: $(PROGRAM).so.$(ABI_VERSION)
 	$(INSTALL) -d -m 755 $(INCLUDEDIR)/kqueue/sys
 	$(INSTALL) -m 644 include/sys/event.h $(INCLUDEDIR)/kqueue/sys/event.h
 	$(INSTALL) -d -m 755 $(LIBDIR) 
 	$(INSTALL) -m 644 $(PROGRAM).so.$(ABI_VERSION) $(LIBDIR)
+	$(INSTALL) -m 644 $(PROGRAM).so.$(ABI_MAJOR) $(LIBDIR)
 	$(LN) -sf $(PROGRAM).so.$(ABI_VERSION) $(LIBDIR)/$(PROGRAM).so.$(ABI_MAJOR)
 	$(LN) -sf $(PROGRAM).so.$(ABI_VERSION) $(LIBDIR)/$(PROGRAM).so
 	$(INSTALL) -m 644 $(PROGRAM).la $(LIBDIR)
-	$(INSTALL) -m 644 $(PROGRAM).a $(LIBDIR)
 	$(INSTALL) -d -m 755 $(LIBDIR)/pkgconfig
 	$(INSTALL) -m 644 libkqueue.pc $(LIBDIR)/pkgconfig
 	$(INSTALL) -d -m 755 $(MANDIR)/man2
@@ -57,10 +58,10 @@ uninstall:
 	rm -f $(MANDIR)/man2/kevent.2 
 	rmdir $(INCLUDEDIR)/kqueue/sys $(INCLUDEDIR)/kqueue
 
-check: $(PROGRAM).a
+check: clean $(PROGRAM).so.$(ABI_VERSION)
 	cd test && ./configure && make check
 
-debug-check: clean $(PROGRAM).a
+debug-check: clean
 	cd test && ./configure && KQUEUE_DEBUG=y make check
 
 $(DISTFILE): $(SOURCES) $(HEADERS)
@@ -82,10 +83,11 @@ dist-upload: $(DISTFILE)
 	scp $(DISTFILE) $(DIST)
 
 clean:
-	rm -f tags *.a *.so *.so.*
+	rm -f tags *.a *.so *.so.* *.so.*.*
 	find src -name '*.o' -exec rm {} \;
 	rm -rf pkg
 	cd test && make clean || true
+	if [ -d www ] ; then cd www && make clean ; fi
 
 distclean: clean
 	rm -f *.tar.gz config.mk config.h $(PROGRAM).pc $(PROGRAM).la rpm.spec

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2010 Mark Heily <mark@heily.com>
+ * Copyright (c) 2011 Mark Heily <mark@heily.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -14,60 +14,57 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <errno.h>
-#include <fcntl.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <sys/eventfd.h>
-#include <unistd.h>
+#include "../common/private.h"
 
-#include "private.h"
-
-/* A structure is used to allow other targets to emulate this */
-struct eventfd {
-    int fd;
+const struct kqueue_vtable kqops = {
+    posix_kqueue_init,
+    posix_kqueue_free,
+	posix_kevent_wait,
+	posix_kevent_copyout,
+	NULL,
+	NULL,
+    linux_eventfd_init,
+    linux_eventfd_close,
+    linux_eventfd_raise,
+    linux_eventfd_lower,
+    linux_eventfd_descriptor
 };
 
-struct eventfd *
-eventfd_create(void)
+int
+linux_eventfd_init(struct eventfd *e)
 {
-    struct eventfd *e;
     int evfd;
 
-    e = malloc(sizeof(*e));
-    if (e == NULL)
-        return (NULL);
-
     if ((evfd = eventfd(0, 0)) < 0) {
-        free(e);
-        return (NULL);
+        dbg_perror("eventfd");
+        return (-1);
     }
     if (fcntl(evfd, F_SETFL, O_NONBLOCK) < 0) {
-        free(e);
+        dbg_perror("fcntl");
         close(evfd);
-        return (NULL);
+        return (-1);
     }
-    e->fd = evfd;
+    e->ef_id = evfd;
 
-    return (e);
+    return (0);
 }
 
 void
-eventfd_free(struct eventfd *e)
+linux_eventfd_close(struct eventfd *e)
 {
-    close(e->fd);
-    free(e);
+    close(e->ef_id);
+    e->ef_id = -1;
 }
 
 int
-eventfd_raise(struct eventfd *e)
+linux_eventfd_raise(struct eventfd *e)
 {
     uint64_t counter;
     int rv = 0;
 
     dbg_puts("raising event level");
     counter = 1;
-    if (write(e->fd, &counter, sizeof(counter)) < 0) {
+    if (write(e->ef_id, &counter, sizeof(counter)) < 0) {
         switch (errno) {
             case EAGAIN:    
                 /* Not considered an error */
@@ -86,14 +83,14 @@ eventfd_raise(struct eventfd *e)
 }
 
 int
-eventfd_lower(struct eventfd *e)
+linux_eventfd_lower(struct eventfd *e)
 {
     uint64_t cur;
     int rv = 0;
 
     /* Reset the counter */
     dbg_puts("lowering event level");
-    if (read(e->fd, &cur, sizeof(cur)) < sizeof(cur)) {
+    if (read(e->ef_id, &cur, sizeof(cur)) < sizeof(cur)) {
         switch (errno) {
             case EAGAIN:    
                 /* Not considered an error */
@@ -113,13 +110,7 @@ eventfd_lower(struct eventfd *e)
 }
 
 int
-eventfd_reader(struct eventfd *e)
+linux_eventfd_descriptor(struct eventfd *e)
 {
-    return (e->fd);
-}
-
-int
-eventfd_writer(struct eventfd *e)
-{
-    return (e->fd);
+    return (e->ef_id);
 }

@@ -24,108 +24,53 @@
 
 #include "private.h"
 
-#ifndef NDEBUG
 int KQUEUE_DEBUG = 0;
-#endif
 
 
 static RB_HEAD(kqt, kqueue) kqtree       = RB_INITIALIZER(&kqtree);
 static pthread_rwlock_t     kqtree_mtx;
 
-CONSTRUCTOR
+int CONSTRUCTOR
 _libkqueue_init(void)
 {
-    pthread_rwlock_init(&kqtree_mtx, NULL);
-    return (0);
+#ifdef NDEBUG
+    KQUEUE_DEBUG = 0;
+#elif _WIN32
+	/* Experimental port, always debug */
+	KQUEUE_DEBUG = 1;
+#else
+    KQUEUE_DEBUG = (getenv("KQUEUE_DEBUG") == NULL) ? 0 : 1;
+#endif
+
+   pthread_rwlock_init(&kqtree_mtx, NULL);
+
+   dbg_puts("library initialization complete");
+   return (0);
 }
 
 static int
 kqueue_cmp(struct kqueue *a, struct kqueue *b)
 {
-    return memcmp(&a->kq_sockfd[1], &b->kq_sockfd[1], sizeof(int)); 
+    return memcmp(&a->kq_evfd.ef_id, &b->kq_evfd.ef_id, sizeof(int)); 
 }
 
 RB_GENERATE(kqt, kqueue, entries, kqueue_cmp)
 
 /* Must hold the kqtree_mtx when calling this */
-static void
+void
 kqueue_free(struct kqueue *kq)
 {
     RB_REMOVE(kqt, &kqtree, kq);
     filter_unregister_all(kq);
-
-#ifdef kqueue_free_hook
-    kqueue_free_hook(kq);
-#endif
-
+    kqops.kqueue_free(kq);
     free(kq);
-}
-
-static int
-kqueue_gc(void)
-{
-    int rv;
-    struct kqueue *n1, *n2;
-
-    /* Free any kqueue descriptor that is no longer needed */
-    /* Sadly O(N), however needed in the case that a descriptor is
-       closed and kevent(2) will never again be called on it. */
-    for (n1 = RB_MIN(kqt, &kqtree); n1 != NULL; n1 = n2) {
-        n2 = RB_NEXT(kqt, &kqtree, n1);
-
-        if (n1->kq_ref == 0) {
-            kqueue_free(n1);
-        } else {
-            rv = kqueue_validate(n1);
-            if (rv == 0) 
-                kqueue_free(n1);
-            else if (rv < 0) 
-                return (-1);
-        }
-    }
-
-    return (0);
-}
-
-int
-kqueue_validate(struct kqueue *kq)
-{
-#if defined(_WIN32)
-    return (0); /* FIXME */
-#else
-    int rv;
-    char buf[1];
-    struct pollfd pfd;
-
-    pfd.fd = kq->kq_sockfd[0];
-    pfd.events = POLLIN | POLLHUP;
-    pfd.revents = 0;
-
-    rv = poll(&pfd, 1, 0);
-    if (rv == 0)
-        return (1);
-    if (rv < 0) {
-        dbg_perror("poll(2)");
-        return (-1);
-    }
-    if (rv > 0) {
-        /* NOTE: If the caller accidentally writes to the kqfd, it will
-                 be considered invalid. */
-        rv = recv(kq->kq_sockfd[0], buf, sizeof(buf), MSG_PEEK | MSG_DONTWAIT);
-        if (rv == 0) 
-            return (0);
-        else
-            return (-1);
-    }
-
-    return (0);
-#endif /* WIN32 */
 }
 
 void
 kqueue_put(struct kqueue *kq)
 {
     atomic_dec(&kq->kq_ref);
+    /* TODO: free() object when refcount == 0 */
 }
 
 struct kqueue *
@@ -134,26 +79,21 @@ kqueue_get(int kq)
     struct kqueue query;
     struct kqueue *ent = NULL;
 
-    query.kq_sockfd[1] = kq;
+    query.kq_evfd.ef_id = kq;
     pthread_rwlock_rdlock(&kqtree_mtx);
     ent = RB_FIND(kqt, &kqtree, &query);
     pthread_rwlock_unlock(&kqtree_mtx);
 
-    /* Check for invalid kqueue objects still in the tree */
-    if (ent != NULL && (ent->kq_sockfd[0] < 0 || ent->kq_ref == 0))
-        ent = NULL;
-    else
+    if (ent != NULL)
         atomic_inc(&ent->kq_ref);
 
     return (ent);
 }
 
-
 int VISIBLE
 kqueue(void)
 {
-    struct kqueue *kq;
-    int tmp;
+	struct kqueue *kq;
 
     kq = calloc(1, sizeof(*kq));
     if (kq == NULL)
@@ -161,57 +101,27 @@ kqueue(void)
     kq->kq_ref = 1;
     pthread_mutex_init(&kq->kq_mtx, NULL);
 
-#ifdef NDEBUG
-    KQUEUE_DEBUG = 0;
-#else
-    KQUEUE_DEBUG = (getenv("KQUEUE_DEBUG") == NULL) ? 0 : 1;
-#endif
 
-#ifdef _WIN32
-    static int kqueue_id = 0;
-    pthread_rwlock_wrlock(&kqtree_mtx);
-    kqueue_id++;
-    pthread_rwlock_unlock(&kqtree_mtx);
-    kq->kq_sockfd[0] = kqueue_id;
-    kq->kq_sockfd[1] = kqueue_id;
-#else
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, kq->kq_sockfd) < 0) 
+    if (kqops.eventfd_init(&kq->kq_evfd) < 0)
         goto errout_unlocked;
-#endif
-
-#ifdef kqueue_init_hook
-    if (kqueue_init_hook(kq) < 0)
+    if (kqops.kqueue_init(kq) < 0)
         goto errout_unlocked;
-#endif
 
     pthread_rwlock_wrlock(&kqtree_mtx);
-    if (kqueue_gc() < 0)
-        goto errout;
     /* TODO: move outside of the lock if it is safe */
     if (filter_register_all(kq) < 0)
         goto errout;
     RB_INSERT(kqt, &kqtree, kq);
     pthread_rwlock_unlock(&kqtree_mtx);
 
-    dbg_printf("created kqueue, fd=%d", kq->kq_sockfd[1]);
-    return (kq->kq_sockfd[1]);
+    dbg_printf("created kqueue, fd=%d", kqueue_id(kq));
+    return (kqops.eventfd_descriptor(&kq->kq_evfd));
 
 errout:
     pthread_rwlock_unlock(&kqtree_mtx);
 
 errout_unlocked:
-    if (kq->kq_sockfd[0] != kq->kq_sockfd[1]) {
-        tmp = errno;
-#ifndef _WIN32
-        (void)close(kq->kq_sockfd[0]);
-        (void)close(kq->kq_sockfd[1]);
-#endif
-        errno = tmp;
-    }
-#if defined(__sun__)
-    if (kq->kq_port > 0) 
-	close(kq->kq_port);
-#endif
+    kqops.kqueue_free(kq);
     free(kq);
     return (-1);
 }

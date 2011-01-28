@@ -20,15 +20,16 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include "../../include/sys/event.h"
 #include "tree.h"
 
 struct kqueue;
 struct kevent;
+struct eventfd;
 struct evfilt_data;
 
 #if defined(_WIN32)
 # include "../windows/platform.h"
+# include "../common/queue.h"
 #elif defined(__linux__)
 # include "../posix/platform.h"
 # include "../linux/platform.h"
@@ -43,11 +44,10 @@ struct evfilt_data;
 /* Maximum events returnable in a single kevent() call */
 #define MAX_KEVENT  512
 
-#ifndef NDEBUG
 
 extern int KQUEUE_DEBUG;
 
-
+#ifndef NDEBUG
 #define dbg_puts(str)           do {                                \
     if (KQUEUE_DEBUG)                                               \
       fprintf(stderr, "KQ [%d]: %s(): %s\n", THREAD_ID, __func__,str);              \
@@ -84,6 +84,13 @@ extern int KQUEUE_DEBUG;
  */
 #define KNFL_PASSIVE_SOCKET  (0x01)  /* Socket is in listen(2) mode */
 
+struct eventfd {
+    int ef_id;
+#if defined(EVENTFD_PLATFORM_SPECIFIC)
+    EVENTFD_PLATFORM_SPECIFIC;
+#endif
+};
+
 /* TODO: Make this a variable length structure and allow
    each filter to add custom fields at the end.
  */
@@ -99,6 +106,7 @@ struct knote {
         } vnode;
         timer_t       timerid;  
         pthread_t     tid;          /* Used by posix/timer.c */
+		void          *handle;      /* Used by win32 filters */
     } data;
     TAILQ_ENTRY(knote) event_ent;    /* Used by filter->kf_event */
     RB_ENTRY(knote)   kntree_ent;   /* Used by filter->kntree */
@@ -130,7 +138,7 @@ struct filter {
     int     (*kn_enable)(struct filter *, struct knote *);
     int     (*kn_disable)(struct filter *, struct knote *);
 
-    struct eventfd *kf_efd;             /* Used by user.c */
+    struct eventfd kf_efd;             /* Used by user.c */
     int       kf_pfd;                   /* fd to poll(2) for readiness */
     int       kf_wfd;                   /* fd to write when an event occurs */
     sigset_t            kf_sigmask;
@@ -138,24 +146,41 @@ struct filter {
     RB_HEAD(knt, knote) kf_knote;
     TAILQ_HEAD(, knote) kf_event;       /* events that have occurred */
     struct kqueue      *kf_kqueue;
+#if defined(FILTER_PLATFORM_SPECIFIC)
+    FILTER_PLATFORM_SPECIFIC;
+#endif
 };
 
 /* Use this to declare a filter that is not implemented */
 #define EVFILT_NOTIMPL { 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL }
 
 struct kqueue {
-    int             kq_sockfd[2];
+    struct eventfd  kq_evfd;
     struct filter   kq_filt[EVFILT_SYSCOUNT];
     fd_set          kq_fds, kq_rfds; 
     int             kq_nfds;
     pthread_mutex_t kq_mtx;
-#ifdef __sun__
-    int             kq_port;            /* see: port_create(2) */
-    TAILQ_HEAD(event_buf_listhead,event_buf) kq_events;
+    volatile uint32_t  kq_ref;
+#if defined(KQUEUE_PLATFORM_SPECIFIC)
+    KQUEUE_PLATFORM_SPECIFIC;
 #endif
-    volatile uint32_t        kq_ref;
     RB_ENTRY(kqueue) entries;
 };
+
+struct kqueue_vtable {
+    int  (*kqueue_init)(struct kqueue *);
+    void (*kqueue_free)(struct kqueue *);
+	int  (*kevent_wait)(struct kqueue *, const struct timespec *);
+	int  (*kevent_copyout)(struct kqueue *, int, struct kevent *, int);
+    int  (*filter_init)(struct kqueue *, struct filter *);
+    void (*filter_free)(struct kqueue *, struct filter *);
+    int  (*eventfd_init)(struct eventfd *);
+    void (*eventfd_close)(struct eventfd *);
+    int  (*eventfd_raise)(struct eventfd *);
+    int  (*eventfd_lower)(struct eventfd *);
+    int  (*eventfd_descriptor)(struct eventfd *);
+};
+extern const struct kqueue_vtable kqops;
 
 struct knote *  knote_lookup(struct filter *, short);
 struct knote *  knote_lookup_data(struct filter *filt, intptr_t);
@@ -169,13 +194,6 @@ int         knote_get_socket_type(struct knote *);
 void        knote_enqueue(struct filter *, struct knote *);
 struct knote *  knote_dequeue(struct filter *);
 int         knote_events_pending(struct filter *);
-
-struct eventfd * eventfd_create(void);
-void        eventfd_free(struct eventfd *);
-int         eventfd_raise(struct eventfd *);
-int         eventfd_lower(struct eventfd *);
-int         eventfd_reader(struct eventfd *);
-int         eventfd_writer(struct eventfd *);
 
 int         filter_lookup(struct filter **, struct kqueue *, short);
 int         filter_socketpair(struct filter *);
@@ -195,5 +213,8 @@ void        kqueue_put(struct kqueue *);
 int         kqueue_validate(struct kqueue *);
 #define     kqueue_lock(kq)     pthread_mutex_lock(&(kq)->kq_mtx)
 #define     kqueue_unlock(kq)   pthread_mutex_unlock(&(kq)->kq_mtx)
+#define     kqueue_id(kq)       ((kq)->kq_evfd.ef_id)
+
+int CONSTRUCTOR _libkqueue_init(void);
 
 #endif  /* ! _KQUEUE_PRIVATE_H */

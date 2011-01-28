@@ -77,6 +77,11 @@ filter_register(struct kqueue *kq, short filter, const struct filter *src)
     }
     dbg_printf("filter %d (%s) registered", filter, filter_name(filter));
 
+	/* FIXME: should totally remove const from src */
+	if (kqops.filter_init != NULL
+            && kqops.filter_init(kq, dst) < 0)
+		return (-1);
+
     return (0);
 }
 
@@ -116,7 +121,10 @@ filter_unregister_all(struct kqueue *kq)
             kq->kq_filt[i].kf_destroy(&kq->kq_filt[i]);
 
         knote_free_all(&kq->kq_filt[i]);
-    }
+
+        if (kqops.filter_free != NULL)
+            kqops.filter_free(kq, &kq->kq_filt[i]);
+	}
     memset(&kq->kq_filt[0], 0, sizeof(kq->kq_filt));
 }
 
@@ -125,12 +133,23 @@ filter_socketpair(struct filter *filt)
 {
     int sockfd[2];
 
+#ifdef _WIN32
+	if (_pipe(sockfd, 512, _O_BINARY) == -1) {
+		dbg_puts("_pipe failed");
+		return (-1);
+	}   
+	/* FIXME: want nonblocking behavior for writer */
+    filt->kf_wfd = sockfd[0];
+    filt->kf_pfd = sockfd[1];
+#else
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockfd) < 0)
         return (-1);
 
     fcntl(sockfd[0], F_SETFL, O_NONBLOCK);
     filt->kf_wfd = sockfd[0];
     filt->kf_pfd = sockfd[1];
+#endif
+
     return (0);
 } 
 

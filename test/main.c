@@ -15,7 +15,7 @@
  */
 
 #include <sys/types.h>
-#include <poll.h>
+
 
 #include "common.h"
 
@@ -25,6 +25,51 @@ struct unit_test {
     void      (*ut_func)(int);
 };
 
+
+/*
+ * DEADWOOD: fails on Solaris
+ * Test if calling fstat() on a socketpair returns unique ino_t and dev_t
+ * values. This is something that kqueue_gc() relies on.
+ */
+void
+test_fstat_on_socketpair(void)
+{
+#ifdef _WIN32
+	return;
+#else
+    struct stat sb[4];
+    int a[2], b[2];
+    int unique = 1;
+
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, a) < 0)
+        die("socketpair");
+    if (fstat(a[0], &sb[0]) < 0)
+        die("fstat");
+    if (fstat(a[1], &sb[1]) < 0)
+        die("fstat");
+    if (sb[0].st_ino == sb[1].st_ino) {
+        printf("  inodes=%zu %zu\n", sb[0].st_ino, sb[1].st_ino);
+        die("NO, inode numbers are not unique");
+    }
+    close(a[0]);
+    close(a[1]);
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, b) < 0)
+        die("socketpair");
+    if (fstat(b[0], &sb[2]) < 0)
+        die("fstat");
+    if (fstat(b[1], &sb[3]) < 0)
+        die("fstat");
+    if (sb[0].st_ino == sb[2].st_ino || sb[0].st_ino == sb[3].st_ino)
+        unique = 0;
+    if (sb[1].st_ino == sb[2].st_ino || sb[1].st_ino == sb[3].st_ino)
+        unique = 0;
+    printf("  inodes=%zu %zu %zu %zu\n", 
+            sb[0].st_ino, sb[1].st_ino, sb[2].st_ino,  sb[3].st_ino);
+    if (!unique)
+        die("ERROR - inode numbers are not unique");
+#endif
+}
+
 /*
  * Test the method for detecting when one end of a socketpair 
  * has been closed. This technique is used in kqueue_validate()
@@ -32,6 +77,10 @@ struct unit_test {
 static void
 test_peer_close_detection(void)
 {
+#ifdef _WIN32
+	return;
+	//FIXME
+#else
     int sockfd[2];
     char buf[1];
     struct pollfd pfd;
@@ -53,6 +102,7 @@ test_peer_close_detection(void)
         if (recv(sockfd[0], buf, sizeof(buf), MSG_PEEK | MSG_DONTWAIT) != 0) 
             die("failed to detect peer shutdown");
     }
+#endif
 }
 
 void
@@ -94,13 +144,16 @@ int
 main(int argc, char **argv)
 {
     struct unit_test tests[] = {
-        { "socket", 1, test_evfilt_read },
+#ifndef _WIN32
+		{ "socket", 1, test_evfilt_read },
+
         { "signal", 1, test_evfilt_signal },
+#endif
 #if FIXME
         { "proc", 1, test_evfilt_proc },
 #endif
-        { "vnode", 1, test_evfilt_vnode },
-        { "timer", 1, test_evfilt_timer },
+		{ "timer", 1, test_evfilt_timer },
+		{ "vnode", 1, test_evfilt_vnode },
 #if HAVE_EVFILT_USER
         { "user", 1, test_evfilt_user },
 #endif
@@ -140,6 +193,7 @@ main(int argc, char **argv)
     testing_begin();
 
     test(peer_close_detection);
+    //DEADWOOD:test(fstat_on_socketpair);
 
     test(kqueue);
 
