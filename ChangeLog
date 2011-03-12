@@ -1,3 +1,9 @@
+2010-09-18  v1.0.1  r453
+------------------------------------------------------------------------
+
+  * Eliminate an unused assignment in signal_handler() and 
+    evfilt_signal_copyout(). Fixes a build failure on Fedora.
+
 2010-09-18  v1.0  r344
 ------------------------------------------------------------------------
 

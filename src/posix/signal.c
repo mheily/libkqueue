@@ -45,18 +45,16 @@ static void
 signal_handler(int sig)
 {
     struct sentry *s = &sigtbl[sig];
-    ssize_t n;
 
     dbg_printf("caught sig=%d", sig);
     atomic_inc(&s->s_cnt);
 #if defined(__sun__)
-    n = 0;//FIXME: workaround
     if (port_send(s->s_filt->kf_kqueue->kq_port, 
                    X_PORT_SOURCE_SIGNAL, &sigtbl[sig]) < 0) {
         return; //FIXME: errorhandling
     }
 #else
-    n = write(s->s_filt->kf_wfd, &sig, sizeof(sig));//FIXME:errhandling
+    (void)write(s->s_filt->kf_wfd, &sig, sizeof(sig));//FIXME:errhandling
 #endif
 }
 
@@ -168,16 +166,14 @@ evfilt_signal_copyout(struct filter *filt,
     struct sentry *s;
     struct knote *kn;
     int sig;
-    ssize_t n;
 
 #if defined(__sun__)
     port_event_t *pe = (port_event_t *) pthread_getspecific(filt->kf_kqueue->kq_port_event);
 
     s = (struct sentry *) pe->portev_user;
     sig = s - &sigtbl[0];
-    n = 0; //FIXME: Workaround
 #else
-    n = read(filt->kf_pfd, &sig, sizeof(sig));//FIXME:errhandling
+    read(filt->kf_pfd, &sig, sizeof(sig));//FIXME:errhandling
     s = &sigtbl[sig];
 #endif
 
