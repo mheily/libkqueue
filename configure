@@ -296,13 +296,13 @@ check_archiver
 check_install
 check_diff
 
+
 finalize program    "$program"
 finalize version    "$version"
 finalize abi_major  "$abi_major"
 finalize abi_minor  "$abi_minor"
 finalize abi_version "$abi_major.$abi_minor"
 finalize prefix     "/usr/local"
-finalize libdir     "${prefix}/lib"
 finalize includedir "${prefix}/include"
 finalize mandir     "${prefix}/share/man"
 finalize cflags     "$cflags"
@@ -311,6 +311,14 @@ finalize ldadd      ""
 finalize ldflags    ""
 finalize deps       ""
 finalize ln         "`which ln`"
+
+# WORKAROUND: Fedora multi-arch requires 64-bit libraries in /usr/lib64
+#
+if [ "`uname -m`" = "x86_64" -a -x "${prefix}/lib64" ] ; then
+  finalize libdir "${prefix}/lib64"
+else
+  finalize libdir "${prefix}/lib"
+fi
 
 pre_configure_hook
 
