@@ -21,7 +21,7 @@ license="BSD"
 author="Mark Heily"
 
 pre_configure_hook() {
-  cflags="-fpic -Wall -Werror -std=c99 -D_XOPEN_SOURCE=600 $cflags"
+  cflags="-fpic -Wall -Werror -std=c99 -D_XOPEN_SOURCE=600 -D_BSD_SOURCE $cflags"
   if [ "$debug" = "yes" ] ; then
       cflags="$cflags -g3 -O0 -rdynamic"
   fi
