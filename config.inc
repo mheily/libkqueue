@@ -1,9 +1,9 @@
 program="libkqueue"
-version="1.0.2"
+version="1.0.3"
 abi_major="0"
 abi_minor="0"
 abi_version="$abi_major.$abi_minor"
-cflags="-fpic -Wall -Werror -g -O2 -std=c99 -D_XOPEN_SOURCE=600"
+cflags="-g -O2"
 ldflags=""
 sources="src/common/filter.c src/common/knote.c 
          src/common/kevent.c src/common/kqueue.c" 
@@ -21,6 +21,7 @@ license="BSD"
 author="Mark Heily"
 
 pre_configure_hook() {
+  cflags="-fpic -Wall -Werror -std=c99 -D_XOPEN_SOURCE=600 $cflags"
   if [ "$debug" = "yes" ] ; then
       cflags="$cflags -g3 -O0 -rdynamic"
   fi
