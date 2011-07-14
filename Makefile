@@ -89,6 +89,7 @@ clean:
 
 distclean: clean
 	rm -f *.tar.gz config.mk config.h $(PROGRAM).pc $(PROGRAM).la rpm.spec
+	rm -f test/config.mk test/config.h
 	rm -rf $(PROGRAM)-$(VERSION) 2>/dev/null || true
 
 fresh-build:
