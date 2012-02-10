@@ -15,6 +15,7 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
 
+multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
 
 c_exports="program version target cflags"
 
@@ -91,7 +92,7 @@ check_header() {
    path=$1
 
    printf "checking for $path.. "
-   if [ -f "/usr/include/$path" ] ; then
+   if [ -f "/usr/include/$multiarch/$path" -o -f "/usr/include/$path" ] ; then
      echo "yes"
      echo "#define $uc_sym 1" >> config.h
      eval "$sym=yes"
@@ -138,6 +139,8 @@ check_symbol() {
 
     if [ -f "$header" ] ; then
         path="$header"
+    elif [ -f "/usr/include/$multiarch/$header" ] ; then
+        path="/usr/include/$multiarch/$header"
     elif [ -f "/usr/include/$header" ] ; then
         path="/usr/include/$header"
     else

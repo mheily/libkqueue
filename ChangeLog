@@ -1,3 +1,11 @@
+UNRELEASED  v1.0.5  HEAD
+------------------------------------------------------------------------
+
+  * Fix a crash in kevent() if an invalid kqueue descriptor is provided.
+    Thanks to James William Pye for reporting this bug.
+  * Backport kevent_test() to check for a bad kqueue descriptor.
+  * Support multiarch header locations in Debian.
+
 2011-07-13  v1.0.4  r530
 ------------------------------------------------------------------------
 

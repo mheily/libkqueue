@@ -137,10 +137,13 @@ kqueue_get(int kq)
     pthread_rwlock_unlock(&kqtree_mtx);
 
     /* Check for invalid kqueue objects still in the tree */
-    if (ent != NULL && (ent->kq_sockfd[0] < 0 || ent->kq_ref == 0))
-        ent = NULL;
-    else
-        atomic_inc(&ent->kq_ref);
+    if (ent != NULL) {
+        if (ent->kq_sockfd[0] < 0 || ent->kq_ref == 0) {
+            ent = NULL;
+        } else {
+            atomic_inc(&ent->kq_ref);
+        }
+    }
 
     return (ent);
 }

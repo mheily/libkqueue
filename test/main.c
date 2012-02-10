@@ -68,6 +68,19 @@ test_kqueue(void)
 }
 
 void
+test_kevent(void)
+{
+    struct kevent kev;
+
+    memset(&kev, 0, sizeof(kev));
+
+    /* Provide an invalid kqueue descriptor */
+    if (kevent(-1, &kev, 1, NULL, 0, NULL) == 0)
+        die("invalid kq parameter");
+}
+
+
+void
 test_ev_receipt(void)
 {
     int kq;
@@ -142,6 +155,7 @@ main(int argc, char **argv)
     test(peer_close_detection);
 
     test(kqueue);
+    test(kevent);
 
     if ((kqfd = kqueue()) < 0)
         die("kqueue()");
