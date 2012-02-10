@@ -1,4 +1,4 @@
-UNRELEASED  v1.0.5  HEAD
+2012-02-09  v1.0.5  r534
 ------------------------------------------------------------------------
 
   * Fix a crash in kevent() if an invalid kqueue descriptor is provided.
