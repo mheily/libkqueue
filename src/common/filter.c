@@ -174,7 +174,7 @@ filter_name(short filt)
     };
 
     id = ~filt;
-    if (id < 0 || id >= EVFILT_SYSCOUNT)
+    if (id >= EVFILT_SYSCOUNT)
         return "EVFILT_INVALID";
     else
         return fname[id];
