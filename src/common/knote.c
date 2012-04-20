@@ -81,7 +81,7 @@ knote_free_all(struct filter *filt)
 
 /* TODO: rename to knote_lookup_ident */
 struct knote *
-knote_lookup(struct filter *filt, short ident)
+knote_lookup(struct filter *filt, uintptr_t ident)
 {
     struct knote query;
     struct knote *ent = NULL;
@@ -89,7 +89,7 @@ knote_lookup(struct filter *filt, short ident)
     query.kev.ident = ident;
     ent = RB_FIND(knt, &filt->kf_knote, &query);
 
-    dbg_printf("id=%d ent=%p", ident, ent);
+    /* dbg_printf("id=%d ent=%p", ident, ent); */
 
     return (ent);
 }

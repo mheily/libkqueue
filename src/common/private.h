@@ -164,7 +164,7 @@ struct kqueue {
     RB_ENTRY(kqueue) entries;
 };
 
-struct knote *  knote_lookup(struct filter *, short);
+struct knote *  knote_lookup(struct filter *, uintptr_t);
 struct knote *  knote_lookup_data(struct filter *filt, intptr_t);
 struct knote *  knote_new(void);
 void        knote_free(struct filter *, struct knote *);

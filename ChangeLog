@@ -3,6 +3,10 @@
 ------------------------------------------------------------------------
 
   * Do not check if an unsigned integer is less than zero.
+  
+  * Prevent truncation of the `ident' argument by knote_lookup().
+    Backport of r524 from the trunk.
+    Thanks to Eric Wong for reporting this bug.
 
 2012-02-09  v1.0.5  r534
 ------------------------------------------------------------------------
