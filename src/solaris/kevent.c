@@ -83,15 +83,16 @@ port_event_dump(port_event_t *evt)
 int
 kevent_wait(struct kqueue *kq, const struct timespec *timeout)
 {
-    port_event_t *pe = (port_event_t *) pthread_getspecific(kq->kq_port_event);
+    port_event_t pe;
 
-    int rv;
+    int kq_port, rv;
     uint_t nget = 1;
 
+    port = kq->kq_port;
     reset_errno();
     dbg_printf("waiting for events (timeout=%p)", timeout);
     kqueue_unlock(kq);
-    rv = port_getn(kq->kq_port, pe, 1, &nget, (struct timespec *) timeout);
+    rv = port_getn(port, &pe, 1, &nget, (struct timespec *) timeout);
     dbg_printf("rv=%d errno=%d (%s) nget=%d", 
                 rv, errno, strerror(errno), nget);
     if (rv < 0) {
@@ -109,6 +110,8 @@ kevent_wait(struct kqueue *kq, const struct timespec *timeout)
     }
 
     kqueue_lock(kq);
+    memcpy ((port_event_t *) pthread_getspecific(kq->kq_port_event), &pe, sizeof(pe));
+
     return (rv);
 }
 

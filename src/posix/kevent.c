@@ -24,16 +24,20 @@ const struct filter evfilt_proc = EVFILT_NOTIMPL;
 int
 kevent_wait(struct kqueue *kq, const struct timespec *timeout)
 {
-    int n;
+    int n, nfds;
+    fd_set rfds;
+
+    nfds = kq->kq_nfds;
+    rfds = kq->kq_fds;
 
     dbg_puts("waiting for events");
-    kq->kq_rfds = kq->kq_fds;
     kqueue_unlock(kq);
-    n = pselect(kq->kq_nfds, &kq->kq_rfds, NULL , NULL, timeout, NULL);
+    n = pselect(nfds, &rfds, NULL , NULL, timeout, NULL);
     if (n < 0) 
         dbg_perror("pselect(2)");
-
     kqueue_lock(kq);
+
+    kq->kq_rfds = rfds;
 
     return (n);
 }
