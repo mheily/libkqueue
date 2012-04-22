@@ -1,3 +1,11 @@
+2012-04-22  v1.0.7  r541
+------------------------------------------------------------------------
+
+  * Fix a race condition in kevent_wait() by holding the kqueue lock
+    for the duration of the kevent() function call. To avoid going to
+    sleep with the lock, it is dropped temporarily before calling 
+    pselect() or similar system calls.
+    Thanks to Eric Wong for reporting this bug.
 
 2012-04-19  v1.0.6  r539
 ------------------------------------------------------------------------

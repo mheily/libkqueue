@@ -90,23 +90,26 @@ kevent_wait(struct kqueue *kq, const struct timespec *timeout)
 
     reset_errno();
     dbg_printf("waiting for events (timeout=%p)", timeout);
+    kqueue_unlock(kq);
     rv = port_getn(kq->kq_port, pe, 1, &nget, (struct timespec *) timeout);
     dbg_printf("rv=%d errno=%d (%s) nget=%d", 
                 rv, errno, strerror(errno), nget);
     if (rv < 0) {
         if (errno == ETIME) {
             dbg_puts("no events within the given timeout");
-            return (0);
+            rv = 0;
         }
         if (errno == EINTR) {
             dbg_puts("signal caught");
-            return (-1);
+            rv = -1;
         }
         dbg_perror("port_get(2)");
-        return (-1);
+    } else {
+        rv = nget;
     }
 
-    return (nget);
+    kqueue_lock(kq);
+    return (rv);
 }
 
 int

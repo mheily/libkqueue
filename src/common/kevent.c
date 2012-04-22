@@ -248,21 +248,21 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
         return (-1);
     }
 
+    kqueue_lock(kq);
+
     rv = kqueue_validate(kq);
     if (rv < 0) {
-        return (-1);
+        goto errout;
     } else if (rv == 0) {
         errno = EBADF;
-        return (-1);
+        goto errout;
     }
 
     /*
      * Process each kevent on the changelist.
      */
     if (nchanges) {
-        kqueue_lock(kq);
         rv = kevent_copyin(kq, changelist, nchanges, eventlist, nevents);
-        kqueue_unlock(kq);
         dbg_printf("changelist: rv=%d", rv);
         if (rv < 0)
             goto errout;
@@ -291,9 +291,7 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
             goto out;      /* Timeout */
 
         /* Copy the events to the caller */
-        kqueue_lock(kq);
         nret = kevent_copyout(kq, n, eventlist, nevents);
-        kqueue_unlock(kq);
     }
 
     if (KQUEUE_DEBUG) {
@@ -309,6 +307,7 @@ errout:
     nret = -1;
 
 out:
+    kqueue_unlock(kq);
     kqueue_put(kq);
     return (nret);
 }
