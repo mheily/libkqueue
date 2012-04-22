@@ -85,7 +85,7 @@ kevent_wait(struct kqueue *kq, const struct timespec *timeout)
 {
     port_event_t pe;
 
-    int kq_port, rv;
+    int port, rv;
     uint_t nget = 1;
 
     port = kq->kq_port;

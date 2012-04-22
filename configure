@@ -15,7 +15,11 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
 
-multiarch=$(dpkg-architecture -qDEB_HOST_MULTIARCH)
+if [ -f /etc/debian_version ] ; then
+  multiarch=`dpkg-architecture -qDEB_HOST_MULTIARCH`
+else
+  multiarch='../../../../..'    # Should prevent a match
+fi
 
 c_exports="program version target cflags"
 
