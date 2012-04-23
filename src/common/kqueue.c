@@ -173,7 +173,10 @@ int __attribute__((visibility("default")))
 kqueue(void)
 {
     struct kqueue *kq;
-    int tmp;
+    int tmp, cancelstate;
+
+    if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancelstate) != 0)
+        return (-1);
 
     kq = calloc(1, sizeof(*kq));
     if (kq == NULL)
@@ -203,6 +206,8 @@ kqueue(void)
     pthread_rwlock_unlock(&kqtree_mtx);
 
     dbg_printf("created kqueue, fd=%d", kq->kq_sockfd[1]);
+    (void) pthread_setcancelstate(cancelstate, NULL);
+
     return (kq->kq_sockfd[1]);
 
 errout:
@@ -220,5 +225,6 @@ errout_unlocked:
 	close(kq->kq_port);
 #endif
     free(kq);
+    (void) pthread_setcancelstate(cancelstate, NULL);
     return (-1);
 }

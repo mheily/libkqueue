@@ -1,6 +1,9 @@
 2012-04-22  v1.?  r?
 ------------------------------------------------------------------------
 
+  * Disable thread cancellation while running kqueue() and kevent(),
+    and insert a cancellation point in the epilogue of kevent(). 
+
   * Fix a race condition in kevent_wait() by holding the kqueue lock
     for the duration of the kevent() function call. To avoid going to
     sleep with the lock, it is dropped temporarily before calling 

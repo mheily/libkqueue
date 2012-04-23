@@ -238,7 +238,7 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
         const struct timespec *timeout)
 {
     struct kqueue *kq;
-    int rv, n, nret;
+    int rv, n, nret, cancelstate;
 
     nret = 0;
 
@@ -247,6 +247,9 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
         errno = ENOENT;
         return (-1);
     }
+
+    if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancelstate) != 0)
+        return (-1);
 
     kqueue_lock(kq);
 
@@ -309,5 +312,7 @@ errout:
 out:
     kqueue_unlock(kq);
     kqueue_put(kq);
+    (void) pthread_setcancelstate(cancelstate, NULL);
+    pthread_testcancel();
     return (nret);
 }
