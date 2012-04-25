@@ -10,6 +10,9 @@
     pselect() or similar system calls.
     Thanks to Eric Wong for reporting this bug.
 
+  * Fix signal handling by returning EINTR from kevent() instead of
+    silently ignoring the signal.
+
 2012-04-19  v1.0.6  r539
 ------------------------------------------------------------------------
 

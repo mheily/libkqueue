@@ -183,34 +183,42 @@ filter_name(short filt)
 int
 filter_raise(struct filter *filt)
 {
+    int rv = 0;
+
     for (;;) {
         if (write(filt->kf_wfd, " ", 1) < 0) {
-            if (errno == EINTR) 
+            if (errno == EINTR) {
+                rv = -EINTR;
                 continue;
+            }
 
             if (errno != EAGAIN) {
                 dbg_printf("write(2): %s", strerror(errno));
                 /* TODO: set filter error flag */
-                return (-1);
+                rv = -1;
+                break;
             }
         }
         break;
     }
 
-    return (0);
+    return (rv);
 }
 
 int
 filter_lower(struct filter *filt)
 {
     char buf[1024];
+    int rv = 0;
     ssize_t n;
 
     for (;;) {
         n = read(filt->kf_pfd, &buf, sizeof(buf));
         if (n < 0) {
-            if (errno == EINTR) 
+            if (errno == EINTR) {
+                rv = -EINTR;
                 continue;
+            }
             if (errno == EAGAIN) 
                 break;
 
@@ -220,5 +228,5 @@ filter_lower(struct filter *filt)
         break;
     }
 
-    return (0);
+    return (rv);
 }

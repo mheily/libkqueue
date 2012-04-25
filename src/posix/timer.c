@@ -78,7 +78,7 @@ sleeper_thread(void *arg)
 
         /* Sleep */
         if (nanosleep(&req, &rem) < 0) {
-            //TODO: handle eintr, spurious wakeups
+            //TODO: handle spurious wakeups
             dbg_perror("nanosleep(2)");
         }
         si.counter++;
@@ -106,7 +106,7 @@ sleeper_thread(void *arg)
         if (cts) {
             cnt = write(sr.wfd, &si, sizeof(si));
             if (cnt < 0) {
-                /* FIXME: handle EAGAIN and EINTR */
+                /* FIXME: handle EAGAIN */
                 dbg_perror("write(2)");
             } else if (cnt < sizeof(si)) {
                 dbg_puts("FIXME: handle short write"); 
@@ -204,7 +204,9 @@ evfilt_timer_copyout(struct filter *filt,
     /* Read the ident */
     cnt = read(filt->kf_pfd, &si, sizeof(si));
     if (cnt < 0) {
-        /* FIXME: handle EAGAIN and EINTR */
+        if (errno == EINTR)
+            return (-EINTR);
+        /* FIXME: handle EAGAIN */
         dbg_printf("read(2): %s", strerror(errno));
         return (-1);
     } else if (cnt < sizeof(si)) {

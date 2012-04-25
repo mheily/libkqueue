@@ -98,7 +98,7 @@ get_one_event(struct inotify_event *dst, int pfd)
         n = read(pfd, dst, sizeof(*dst));
         if (n < 0) {
             if (errno == EINTR)
-                continue;
+                return (-EINTR);
             dbg_perror("read");
             return (-1);
         } else {

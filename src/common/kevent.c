@@ -287,7 +287,12 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
         /* Wait for one or more events. */
         n = kevent_wait(kq, timeout);
         if (n < 0) {
-            dbg_puts("kevent_wait failed");
+            if (n == -EINTR) {
+                dbg_puts("interrupted by a signal");
+                errno = EINTR;
+            } else {
+                dbg_puts("unknown failure");
+            }
             goto errout;
         }
         if (n == 0)
@@ -295,9 +300,13 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
 
         /* Copy the events to the caller */
         nret = kevent_copyout(kq, n, eventlist, nevents);
+        if (nret == -EINTR) {
+            dbg_puts("interrupted by a signal");
+            errno = EINTR;
+        }
     }
 
-    if (KQUEUE_DEBUG) {
+    if (KQUEUE_DEBUG && nret >= 0) {
         dbg_printf("returning %d events", nret);
         for (n = 0; n < nret; n++) {
             dbg_printf("eventlist[%d] = %s", n, kevent_dump(&eventlist[n]));

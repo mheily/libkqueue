@@ -102,7 +102,7 @@ kevent_wait(struct kqueue *kq, const struct timespec *timeout)
         }
         if (errno == EINTR) {
             dbg_puts("signal caught");
-            rv = -1;
+            rv = -EINTR;
         }
         dbg_perror("port_get(2)");
     } else {

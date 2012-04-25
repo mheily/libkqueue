@@ -62,29 +62,54 @@ eventfd_free(struct eventfd *e)
 int
 eventfd_raise(struct eventfd *e)
 {
+    int rv = 0;
     dbg_puts("raising event level");
-    if (write(e->fd[0], ".", 1) < 0) {
-        /* FIXME: handle EAGAIN and EINTR */
-        dbg_printf("write(2): %s", strerror(errno));
-        return (-1);
+    for (;;) {
+        if (write(e->fd[0], ".", 1) < 0) {
+            if (errno == EINTR) {
+                rv = -EINTR;
+                continue;
+            }
+
+            /* OK: the buffer is probably full */
+            if (errno == EAGAIN)
+                return;
+
+            dbg_printf("write(2): %s", strerror(errno));
+            return (-1);
+        }
     }
-    return (0);
+    return (rv);
 }
 
 int
 eventfd_lower(struct eventfd *e)
 {
+    int rv = 0;
     char buf[1024];
 
     /* Reset the counter */
     dbg_puts("lowering event level");
-    if (read(e->fd[1], &buf, sizeof(buf)) < 0) {
-        /* FIXME: handle EAGAIN and EINTR */
-        /* FIXME: loop so as to consume all data.. may need mutex */
-        dbg_printf("read(2): %s", strerror(errno));
-        return (-1);
+    for (;;) {
+        if (read(e->fd[1], &buf, sizeof(buf)) < 0) {
+            if (errno == EINTR) {
+                rv = -EINTR;
+                continue;
+            }
+
+            /* OK: the buffer is already empty */
+            if (errno == EAGAIN)
+                return;
+
+            /* FIXME: loop so as to consume all data.. may need mutex */
+            dbg_printf("read(2): %s", strerror(errno));
+            return (-1);
+        } else {
+            break;
+        }
     }
-    return (0);
+
+    return (rv);
 }
 
 int

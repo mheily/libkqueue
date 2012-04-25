@@ -33,8 +33,11 @@ kevent_wait(struct kqueue *kq, const struct timespec *timeout)
     dbg_puts("waiting for events");
     kqueue_unlock(kq);
     n = pselect(nfds, &rfds, NULL , NULL, timeout, NULL);
-    if (n < 0) 
+    if (n < 0) {
         dbg_perror("pselect(2)");
+        if (errno == EINTR)
+            n = -EINTR;
+    }
     kqueue_lock(kq);
 
     kq->kq_rfds = rfds;

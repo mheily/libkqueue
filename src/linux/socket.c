@@ -110,7 +110,7 @@ evfilt_socket_copyout(struct filter *filt,
         nret = epoll_wait(filt->kf_pfd, &epevt[0], nevents, 0);
         if (nret < 0) {
             if (errno == EINTR)
-                continue;
+                return (-EINTR);
             dbg_perror("epoll_wait");
             return (-1);
         } else {
