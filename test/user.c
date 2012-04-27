@@ -92,6 +92,27 @@ test_kevent_user_oneshot(void)
     test_no_kevents(kqfd);
 }
 
+static void
+test_kevent_user_multi_trigger_merged(void)
+{
+    struct kevent kev;
+    int i;
+
+    test_no_kevents(kqfd);
+
+    kevent_add(kqfd, &kev, 2, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+
+    for (i = 0; i < 10; i++)
+        kevent_add(kqfd, &kev, 2, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+
+    kev.flags = EV_CLEAR;
+    kev.fflags &= ~NOTE_FFCTRLMASK;
+    kev.fflags &= ~NOTE_TRIGGER;
+    kevent_cmp(&kev, kevent_get(kqfd));
+
+    test_no_kevents(kqfd);
+}
+
 #if HAVE_EV_DISPATCH
 void
 test_kevent_user_dispatch(void)
@@ -141,6 +162,7 @@ test_evfilt_user(int _kqfd)
     test(kevent_user_get);
     test(kevent_user_disable_and_enable);
     test(kevent_user_oneshot);
+    test(kevent_user_multi_trigger_merged);
 #if HAVE_EV_DISPATCH
     test(kevent_user_dispatch);
 #endif

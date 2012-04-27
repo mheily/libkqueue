@@ -13,6 +13,10 @@
   * Fix signal handling by returning EINTR from kevent() instead of
     silently ignoring the signal.
 
+  * Fix: attempting to trigger identical events will corrupt the TAILQ
+    structure and lead to a segfault. 
+    Thanks to Eric Wong for reporting this bug and providing a patch.
+
 2012-04-19  v1.0.6  r539
 ------------------------------------------------------------------------
 
