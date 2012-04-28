@@ -3,6 +3,7 @@
 program=libkqueue-test
 version=0.1
 cflags="-g -O0 -Wall -Werror"
+ldadd="-lpthread -lrt"
 sources="main.c kevent.c test.c proc.c read.c signal.c timer.c vnode.c"
 
 pre_configure_hook() {
@@ -13,7 +14,7 @@ pre_configure_hook() {
       || {
             sys_event_h="../include/sys/event.h"
             cflags="$cflags -I../include"
-            ldadd="$ldadd ../libkqueue.a -lpthread -lrt"
+            ldadd="../libkqueue.a $ldadd"
          }
 
   
