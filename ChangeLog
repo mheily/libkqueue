@@ -4,6 +4,11 @@
   * Disable thread cancellation while running kqueue() and kevent(),
     and insert a cancellation point in the epilogue of kevent(). 
 
+  * If cancellation is enabled prior to calling kevent(), temporarily
+    enable cancellation before calling system calls that are implicit
+    cancellation points; e.g. pselect(). 
+    Based on a patch from Eric Wong.
+
   * Fix a race condition in kevent_wait() by holding the kqueue lock
     for the duration of the kevent() function call. To avoid going to
     sleep with the lock, it is dropped temporarily before calling 

@@ -16,6 +16,8 @@
 
 #include <sys/types.h>
 #include <poll.h>
+#include <pthread.h>
+#include <time.h>
 
 #include "common.h"
 
@@ -103,6 +105,122 @@ test_ev_receipt(void)
 #endif
 }
 
+static void
+test_cancel_state_unchanged(void)
+{
+    int kq, rc, state;
+    struct timespec ts = { 0, 1000 };
+    struct kevent kev;
+
+    if ((rc = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL)) != 0)
+        err(rc, "pthread_setcancelstate");
+
+    if ((kq = kqueue()) < 0)
+        die("kqueue()");
+
+    if ((rc = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &state)) != 0)
+        err(rc, "pthread_setcancelstate");
+    if (state != PTHREAD_CANCEL_ENABLE)
+        die("kqueue() changed cancel state");
+
+    if ((rc = kevent(kq, NULL, 0, &kev, 1, &ts)) != 0)
+        err(rc, "kevent");
+
+    if ((rc = pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &state)) != 0)
+        err(rc, "pthread_setcancelstate");
+    if (state != PTHREAD_CANCEL_ENABLE)
+        die("kevent() changed cancel state");
+
+    close(kq);
+}
+
+
+static void *
+thr_cancel_enabled(void *arg)
+{
+    int *kq = arg;
+    struct kevent kev;
+    struct timespec ts = { 100, 0 };
+
+    (void)kevent(*kq, NULL, 0, &kev, 1, &ts);
+
+    die("should never get here due to cancel");
+    return NULL;
+}
+
+static void
+test_cancel_enabled(void)
+{
+    int kq, rc;
+    pthread_t thr;
+    void *retval = NULL;
+    time_t cancelled_at;
+
+    if ((kq = kqueue()) < 0)
+        die("kqueue()");
+
+    if ((rc = pthread_create(&thr, NULL, thr_cancel_enabled, &kq)) != 0)
+        err(rc, "pthread_create");
+
+    cancelled_at = time(NULL);
+    if ((rc = pthread_cancel(thr)) != 0)
+        err(rc, "pthread_cancel");
+    if ((rc = pthread_join(thr, &retval)) != 0)
+        err(rc, "pthread_join");
+    if (retval != PTHREAD_CANCELED)
+        die("thread not cancelled");
+
+    if ((time(NULL) - cancelled_at) > 5)
+        die("cancellation took too long");
+
+    close(kq);
+}
+
+static void *
+thr_cancel_disabled(void *arg)
+{
+    int *kq = arg;
+    struct kevent kev;
+    struct timespec ts = { 1, 0 };
+    int rc, state;
+
+    if ((rc = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL)) != 0)
+        err(rc, "pthread_setcancelstate");
+
+    if ((rc = kevent(*kq, NULL, 0, &kev, 1, &ts)) != 0)
+        err(rc, "kevent");
+
+    if ((rc = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &state)) != 0)
+        err(rc, "pthread_setcancelstate");
+
+    if (state != PTHREAD_CANCEL_DISABLE)
+        die("kevent() didn't preserve pthread cancel state");
+
+    return NULL; /* success */
+}
+
+static void
+test_cancel_disabled(void)
+{
+    int kq, rc;
+    pthread_t thr;
+    void *retval = NULL;
+
+    if ((kq = kqueue()) < 0)
+        die("kqueue()");
+
+    if ((rc = pthread_create(&thr, NULL, thr_cancel_disabled, &kq)) != 0)
+        err(rc, "pthread_create");
+    if ((rc = pthread_cancel(thr)) != 0)
+        err(rc, "pthread_cancel");
+    if ((rc = pthread_join(thr, &retval)) != 0)
+        err(rc, "pthread_join");
+    if (retval != NULL)
+        die("thread not cancelled");
+
+    close(kq);
+}
+
 int 
 main(int argc, char **argv)
 {
@@ -156,6 +274,9 @@ main(int argc, char **argv)
 
     test(kqueue);
     test(kevent);
+    test(cancel_state_unchanged);
+    test(cancel_enabled);
+    test(cancel_disabled);
 
     if ((kqfd = kqueue()) < 0)
         die("kqueue()");
