@@ -103,15 +103,8 @@ kevent_wait(struct kqueue *kq, const struct timespec *timeout)
         if (errno == EINTR) {
             dbg_puts("signal caught");
             rv = -EINTR;
-
-            /* kevent() is a cancellation point, but port_getn()
-             * is not -- at least, not according to cancellation(5).
-             */
-            if (kq_cancelstate == PTHREAD_CANCEL_ENABLE)
-                pthread_testcancel();
-
         }
-        dbg_perror("port_get(2)");
+        dbg_perror("port_getn(2)");
     } else {
         rv = nget;
     }

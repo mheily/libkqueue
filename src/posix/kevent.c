@@ -33,14 +33,7 @@ kevent_wait(struct kqueue *kq, const struct timespec *timeout)
     dbg_puts("waiting for events");
     kqueue_unlock(kq);
 
-    pthread_cleanup_push((void *)kqueue_put, kq);
-    kevent_tmp_cancel_enable();
-
-    /* pselect() is a cancellation point */
     n = pselect(nfds, &rfds, NULL , NULL, timeout, NULL);
-
-    kevent_tmp_cancel_disable();
-    pthread_cleanup_pop(0); /* no cleanup needed if we didn't get cancelled */
 
     if (n < 0) {
         dbg_perror("pselect(2)");

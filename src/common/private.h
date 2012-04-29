@@ -196,8 +196,6 @@ int         kevent_wait(struct kqueue *, const struct timespec *);
 int         kevent_copyout(struct kqueue *, int, struct kevent *, int);
 void 		kevent_free(struct kqueue *);
 const char *kevent_dump(const struct kevent *);
-void        kevent_tmp_cancel_enable(void);
-void        kevent_tmp_cancel_disable(void);
 
 struct kqueue * kqueue_get(int);
 void        kqueue_put(struct kqueue *);

@@ -33,22 +33,6 @@
 #include "sys/event.h"
 #include "private.h"
 
-static int __thread kq_cancelstate;
-
-void 
-kevent_tmp_cancel_enable(void)
-{
-    if (kq_cancelstate == PTHREAD_CANCEL_ENABLE) 
-        (void) pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-}
-
-void 
-kevent_tmp_cancel_disable(void)
-{
-    if (kq_cancelstate == PTHREAD_CANCEL_ENABLE)
-        (void) pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
-}
-
 static char *
 kevent_filter_dump(const struct kevent *kev)
 {
@@ -254,7 +238,7 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
         const struct timespec *timeout)
 {
     struct kqueue *kq;
-    int rv, n, nret;
+    int rv, n, nret, cancelstate;
 
     nret = 0;
 
@@ -264,7 +248,7 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
         return (-1);
     }
 
-    if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &kq_cancelstate) != 0)
+    if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancelstate) != 0)
         return (-1);
 
     kqueue_lock(kq);
@@ -337,7 +321,6 @@ errout:
 out:
     kqueue_unlock(kq);
     kqueue_put(kq);
-    (void) pthread_setcancelstate(kq_cancelstate, NULL);
-    pthread_testcancel();
+    (void) pthread_setcancelstate(cancelstate, NULL);
     return (nret);
 }

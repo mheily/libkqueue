@@ -140,9 +140,10 @@ thr_cancel_enabled(void *arg)
 {
     int *kq = arg;
     struct kevent kev;
-    struct timespec ts = { 100, 0 };
+    struct timespec ts = { 1, 0 };
 
     (void)kevent(*kq, NULL, 0, &kev, 1, &ts);
+    pthread_testcancel();
 
     die("should never get here due to cancel");
     return NULL;
