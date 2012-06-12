@@ -100,6 +100,34 @@ test_kevent_vnode_note_delete(void)
     kevent_cmp(&kev, kevent_get(kqfd));
 }
 
+/* 
+ * Verify that the knote is deleted when close() is called on the
+ * watched descriptor. 
+ */
+void
+test_kevent_vnode_close(void)
+{
+    int fd;
+    struct kevent kev;
+
+    testfile_create();
+    fd = open(testfile, O_RDONLY);
+    if (fd < 0)
+        err(1, "open of %s", testfile);
+
+    kevent_add(kqfd, &kev, fd, EVFILT_VNODE, EV_ADD, 
+            NOTE_WRITE | NOTE_ATTRIB | NOTE_RENAME | NOTE_DELETE, 0, NULL);
+
+    test_no_kevents(kqfd);
+    close(fd);
+
+    testfile_write();
+    test_no_kevents(kqfd);
+
+    unlink(testfile);
+}
+
+
 void
 test_kevent_vnode_note_write(void)
 {
@@ -257,4 +285,6 @@ test_evfilt_vnode(int _kqfd)
     test(kevent_vnode_note_rename);
     test(kevent_vnode_note_delete);
     unlink(testfile);
+
+    test(kevent_vnode_close);
 }
