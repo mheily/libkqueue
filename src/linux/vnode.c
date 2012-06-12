@@ -126,7 +126,7 @@ add_watch(struct filter *filt, struct knote *kn)
         return (-1);
 
     /* Convert the fflags to the inotify mask */
-    mask = 0;
+    mask = IN_CLOSE;
     if (kn->kev.fflags & NOTE_DELETE)
         mask |= IN_ATTRIB | IN_DELETE_SELF;
     if (kn->kev.fflags & NOTE_WRITE)      
@@ -201,10 +201,23 @@ evfilt_vnode_copyout(struct filter *filt,
         return (0);
     }
 
+    /* Check if the watched file has been closed 
+       XXX-this may not exactly match the kevent() behavior if multiple file descriptors reference the same file.
+     */
+    if (evt.mask & IN_CLOSE_WRITE || evt.mask & IN_CLOSE_NOWRITE) {
+        kn = knote_lookup_data(filt, evt.wd);
+        if (kn != NULL)  {
+            delete_watch(filt, kn);
+            knote_free(filt, kn);
+        }
+        return (0);
+    }
+
     kn = knote_lookup_data(filt, evt.wd);
     if (kn == NULL) {
         dbg_printf("no match for wd # %d", evt.wd);
-        return (-1);
+        /* Assume that we called delete_watch() while there were pending events.. */
+        return (0);
     }
 
     memcpy(dst, &kn->kev, sizeof(*dst));
