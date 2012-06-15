@@ -81,6 +81,9 @@ test_kqueue_pselect(void)
     fd_set rfds;
     struct timespec ts = { 60, 0 };
 
+    puts("    TODO -- not implemented yet");
+    return;
+
     if ((kq = kqueue()) < 0)
         die("kqueue()");
     test_no_kevents(kq);
@@ -89,7 +92,9 @@ test_kqueue_pselect(void)
 
     FD_ZERO(&rfds);
     FD_SET(kq, &rfds);
-    (void)pselect(kq + 1, &rfds, NULL, NULL, &ts, NULL);
+    if (pselect(kq + 1, &rfds, NULL, NULL, &ts, NULL) < 1) {
+        die("pselect() timed out or returned an error");
+    }
 
     (void)kevent(kq, NULL, 0, &kev2, 1, &ts);
     kev1.data = kev2.data; /* Ignore this field */
