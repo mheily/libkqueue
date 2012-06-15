@@ -69,6 +69,34 @@ test_kqueue(void)
         die("close()");
 }
 
+/*
+ * Verify that a kqueue descriptor can be monitored for readiness
+ * with pselect().
+ */
+void
+test_kqueue_pselect(void)
+{
+    int kq;
+    struct kevent kev1, kev2;
+    fd_set rfds;
+    struct timespec ts = { 60, 0 };
+
+    if ((kq = kqueue()) < 0)
+        die("kqueue()");
+    test_no_kevents(kq);
+
+    kevent_add(kq, &kev1, 2, EVFILT_TIMER, EV_ADD | EV_ONESHOT | EV_CLEAR, 0, 2000, NULL);
+
+    FD_ZERO(&rfds);
+    FD_SET(kq, &rfds);
+    (void)pselect(kq + 1, &rfds, NULL, NULL, &ts, NULL);
+
+    (void)kevent(kq, NULL, 0, &kev2, 1, &ts);
+    kev1.data = kev2.data; /* Ignore this field */
+    kevent_cmp(&kev1, &kev2);
+    test_no_kevents(kq);
+}
+
 void
 test_kevent(void)
 {
@@ -138,14 +166,20 @@ test_cancel_state_unchanged(void)
 static void *
 thr_cancel_enabled(void *arg)
 {
+    fd_set rfds;
     int *kq = arg;
     struct kevent kev;
-    struct timespec ts = { 1, 0 };
+    struct timespec ts = { 60, 0 };
 
-    (void)kevent(*kq, NULL, 0, &kev, 1, &ts);
-    pthread_testcancel();
-
+    FD_ZERO(&rfds);
+    FD_SET(*kq, &rfds);
+    (void)pselect(1, &rfds, NULL, NULL, &ts, NULL);
     die("should never get here due to cancel");
+
+    /* NOTREACHED - but for example purposes */
+    memset(&ts, 0, sizeof(ts));
+    (void)kevent(*kq, NULL, 0, &kev, 1, &ts);
+
     return NULL;
 }
 
@@ -274,6 +308,7 @@ main(int argc, char **argv)
     test(peer_close_detection);
 
     test(kqueue);
+    test(kqueue_pselect);
     test(kevent);
     test(cancel_state_unchanged);
     test(cancel_enabled);
