@@ -270,7 +270,12 @@ test_kevent_vnode_dispatch(void)
 void
 test_evfilt_vnode(int _kqfd)
 {
-    snprintf(testfile, sizeof(testfile), "/tmp/kqueue-test%d.tmp",
+    char *tmpdir = getenv("TMPDIR");
+    if (tmpdir == NULL)
+        tmpdir = "/tmp";
+
+    snprintf(testfile, sizeof(testfile), "%s/kqueue-test%d.tmp",
+            tmpdir,
             testing_make_uid());
 
 	kqfd = _kqfd;
