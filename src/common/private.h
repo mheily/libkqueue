@@ -50,6 +50,10 @@
 /* Maximum events returnable in a single kevent() call */
 #define MAX_KEVENT  512
 
+/* Workaround for Android */
+#ifndef EPOLLONESHOT
+#define EPOLLONESHOT (1 << 30)
+#endif
 
 #ifndef NDEBUG
 
@@ -84,6 +88,7 @@ extern int KQUEUE_DEBUG;
 struct kqueue;
 struct kevent;
 struct evfilt_data;
+struct sleepreq;
 
 /* 
  * Flags used by knote->flags
@@ -104,7 +109,7 @@ struct knote {
             off_t     size;   /* Used by vnode */
         } vnode;
         timer_t       timerid;  
-        pthread_t     tid;          /* Used by posix/timer.c */
+        struct sleepreq *sleepreq; /* Used by posix/timer.c */
     } data;
     TAILQ_ENTRY(knote) event_ent;    /* Used by filter->kf_event */
     RB_ENTRY(knote)   kntree_ent;   /* Used by filter->kntree */

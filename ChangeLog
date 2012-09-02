@@ -1,6 +1,10 @@
 2012-06-14  v1.1  r?
 ------------------------------------------------------------------------
 
+  * Switch the build system to Makeconf
+
+  * Add support for cross-compiling for Android
+
   * Ensure that calling close() on a file descriptor will remove any 
     knotes that reference the descriptor.
     Thanks to Eric Radman for reporting this bug.

@@ -138,6 +138,7 @@ test_ev_receipt(void)
 #endif
 }
 
+#ifndef ANDROID
 static void
 test_cancel_state_unchanged(void)
 {
@@ -260,6 +261,7 @@ test_cancel_disabled(void)
 
     close(kq);
 }
+#endif /* ! ANDROID */
 
 int 
 main(int argc, char **argv)
@@ -315,9 +317,11 @@ main(int argc, char **argv)
     test(kqueue);
     test(kqueue_pselect);
     test(kevent);
+#ifndef ANDROID
     test(cancel_state_unchanged);
     test(cancel_enabled);
     test(cancel_disabled);
+#endif
 
     if ((kqfd = kqueue()) < 0)
         die("kqueue()");

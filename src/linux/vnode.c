@@ -105,7 +105,7 @@ get_one_event(struct inotify_event *dst, int pfd)
             break;
         }
     }
-    dbg_printf("read(2) from inotify wd: %zu bytes", n);
+    dbg_printf("read(2) from inotify wd: %lu bytes", (long) n);
 
     /* FIXME-TODO: if len > 0, read(len) */
     if (dst->len != 0) 
