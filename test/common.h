@@ -44,7 +44,7 @@
 
 #include <sys/event.h>
 
-#include "config.h"
+#include "../config.h"
 
 void test_evfilt_read(int);
 void test_evfilt_signal(int);
