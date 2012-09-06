@@ -272,7 +272,11 @@ test_evfilt_vnode(int _kqfd)
 {
     char *tmpdir = getenv("TMPDIR");
     if (tmpdir == NULL)
+#ifdef ANDROID
+        tmpdir = "/data";
+#else
         tmpdir = "/tmp";
+#endif
 
     snprintf(testfile, sizeof(testfile), "%s/kqueue-test%d.tmp",
             tmpdir,
