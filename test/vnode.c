@@ -272,8 +272,8 @@ test_evfilt_vnode(int _kqfd)
 {
     char *tmpdir = getenv("TMPDIR");
     if (tmpdir == NULL)
-#ifdef ANDROID
-        tmpdir = "/data";
+#ifdef __ANDROID__
+        tmpdir = "/data/local/tmp";
 #else
         tmpdir = "/tmp";
 #endif

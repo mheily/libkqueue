@@ -175,7 +175,7 @@ kqueue(void)
     struct kqueue *kq;
     int tmp;
 
-#ifndef ANDROID
+#ifndef __ANDROID__
     int cancelstate;
     if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancelstate) != 0)
         return (-1);
@@ -209,7 +209,7 @@ kqueue(void)
     pthread_rwlock_unlock(&kqtree_mtx);
 
     dbg_printf("created kqueue, fd=%d", kq->kq_sockfd[1]);
-#ifndef ANDROID
+#ifndef __ANDROID__
     (void) pthread_setcancelstate(cancelstate, NULL);
 #endif
 
@@ -230,7 +230,7 @@ errout_unlocked:
 	close(kq->kq_port);
 #endif
     free(kq);
-#ifndef ANDROID
+#ifndef __ANDROID__
     (void) pthread_setcancelstate(cancelstate, NULL);
 #endif
     return (-1);

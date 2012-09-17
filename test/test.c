@@ -14,7 +14,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#if defined(__linux__) && !defined(ANDROID)
+#if defined(__linux__) && !defined(__ANDROID__)
 #include <execinfo.h>
 #endif
 #include <sys/types.h>
@@ -31,7 +31,7 @@ static char __thread * cur_test_id = NULL;
 static void
 error_handler(int signum)
 {
-#if defined(__linux__) && !defined(ANDROID)
+#if defined(__linux__) && !defined(__ANDROID__)
 	void *buf[32];
 
     /* FIXME: the symbols aren't printing */
