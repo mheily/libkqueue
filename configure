@@ -51,10 +51,11 @@ def get_source_list(cc)
 
   if Platform.is_linux?
     src.push 'src/posix/kevent.c',
-             'src/posix/signal.c',
-             'src/linux/proc.c',
-             'src/linux/socket.c',
-             'src/posix/user.c',
+             'src/linux/signal.c',
+             #DISABLED:'src/linux/proc.c',
+             'src/linux/read.c',
+             'src/linux/write.c',
+             'src/linux/user.c',
              'src/linux/vnode.c',
              'src/linux/platform.c'
 
