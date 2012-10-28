@@ -14,30 +14,13 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <errno.h>
-#include <err.h>
-#include <fcntl.h>
-#include <pthread.h>
-#include <signal.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <sys/queue.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <string.h>
-#include <unistd.h>
-
-#include <limits.h>
-#include <sys/inotify.h>
-#include <sys/epoll.h>
-
 #include "private.h"
 
+#ifndef NDEBUG
 static char *
 inotify_mask_dump(uint32_t mask)
 {
-    static char __thread buf[1024];
+    static __thread char buf[1024];
 
 #define INEVT_MASK_DUMP(attrib) \
     if (mask & attrib) \
@@ -64,7 +47,7 @@ inotify_mask_dump(uint32_t mask)
 static char *
 inotify_event_dump(struct inotify_event *evt)
 {
-    static char __thread buf[1024];
+    static __thread char buf[1024];
 
     snprintf(buf, sizeof(buf), "wd=%d mask=%s", 
             evt->wd,
@@ -73,28 +56,18 @@ inotify_event_dump(struct inotify_event *evt)
     return (buf);
 }
 
-static int
-fd_to_path(char *buf, size_t bufsz, int fd)
-{
-    char path[1024];    //TODO: Maxpathlen, etc.
-
-    if (snprintf(&path[0], sizeof(path), "/proc/%d/fd/%d", getpid(), fd) < 0)
-        return (-1);
-
-    memset(buf, 0, bufsz);
-    return (readlink(path, buf, bufsz));
-}
+#endif /* !NDEBUG */
 
 
 /* TODO: USE this to get events with name field */
 int
-get_one_event(struct inotify_event *dst, int pfd)
+get_one_event(struct inotify_event *dst, int inofd)
 {
     ssize_t n;
 
     dbg_puts("reading one inotify event");
     for (;;) {
-        n = read(pfd, dst, sizeof(*dst));
+        n = read(inofd, dst, sizeof(*dst));
         if (n < 0) {
             if (errno == EINTR)
                 return (-EINTR);
@@ -121,7 +94,7 @@ add_watch(struct filter *filt, struct knote *kn)
     uint32_t mask;
 
     /* Convert the fd to a pathname */
-    if (fd_to_path(&path[0], sizeof(path), kn->kev.ident) < 0)
+    if (linux_fd_to_path(&path[0], sizeof(path), kn->kev.ident) < 0)
         return (-1);
 
     /* Convert the fflags to the inotify mask */
@@ -289,6 +262,9 @@ int
 evfilt_vnode_knote_modify(struct filter *filt, struct knote *kn, 
         const struct kevent *kev)
 {
+    (void)filt;
+    (void)kn;
+    (void)kev;
     return (-1); /* FIXME - STUB */
 }
 
