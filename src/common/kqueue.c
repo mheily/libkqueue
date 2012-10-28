@@ -43,27 +43,6 @@ kqueue_close(kqueue_t kq)
     return (0);
 }
 
-/* Non-portable kqueue initalization code. */
-static int
-kqueue_sys_init(struct kqueue *kq)
-{
-#if defined(__sun__)
-    port_event_t *pe;
-
-    if ((kq->kq_port = port_create()) < 0) {
-        dbg_perror("port_create(2)");
-        return (-1);
-    }
-    if (pthread_key_create(&kq->kq_port_event, NULL) != 0)
-       abort();
-    if ((pe = calloc(1, sizeof(*pe))) == NULL) 
-       abort();
-    if (pthread_setspecific(kq->kq_port_event, pe) != 0)
-       abort();
-#endif
-    return (0);
-}
-
 kqueue_t
 kqueue_open(void)
 {
@@ -87,13 +66,13 @@ kqueue_open(void)
     DEBUG_KQUEUE = (getenv("KQUEUE_DEBUG") == NULL) ? 0 : 1;
 #endif
 
-    if (kqueue_sys_init(kq) < 0)
-        goto errout;
+    if (kqops.kqueue_init(kq) < 0) {
+        free(kq);
+		goto errout;
+    }
 
-    if (filter_register_all(kq) < 0)
-        goto errout;
+    dbg_printf("created kqueue, fd=%d", kq->kq_id);
 
-    dbg_printf("created kqueue, id=%d", kq->kq_id);
 #ifndef __ANDROID__
     (void) pthread_setcancelstate(cancelstate, NULL);
 #endif
