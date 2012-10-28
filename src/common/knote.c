@@ -20,6 +20,15 @@
 
 #include "private.h"
 
+#include "alloc.h"
+
+int
+knote_init(void)
+{
+    return 0;
+//    return (mem_init(sizeof(struct knote), 1024));
+}
+
 static int
 knote_cmp(struct knote *a, struct knote *b)
 {
@@ -76,7 +85,6 @@ knote_free_all(struct filter *filt)
     }
 }
 
-/* TODO: rename to knote_lookup_ident */
 struct knote *
 knote_lookup(struct filter *filt, uintptr_t ident)
 {
@@ -86,11 +94,25 @@ knote_lookup(struct filter *filt, uintptr_t ident)
     query.kev.ident = ident;
     ent = RB_FIND(knt, &filt->kf_knote, &query);
 
-    /* dbg_printf("id=%d ent=%p", ident, ent); */
+#ifdef __x86_64__
+    dbg_printf("id=%lu ent=%p", ident, ent);
+#else
+    dbg_printf("id=%u ent=%p", ident, ent);
+#endif
 
     return (ent);
 }
-    
+
+int
+knote_disable(struct filter *filt, struct knote *kn)
+{
+    assert(!(kn->kev.flags & EV_DISABLE));
+
+    filt->kn_disable(filt, kn); //TODO: Error checking
+    KNOTE_DISABLE(kn);
+    return (0);
+}
+
 struct knote *
 knote_lookup_data(struct filter *filt, intptr_t data)
 {
