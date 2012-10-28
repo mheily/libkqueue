@@ -30,7 +30,6 @@
 
 #include <sys/epoll.h>
 
-#include "sys/event.h"
 #include "private.h"
 
 

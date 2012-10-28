@@ -27,29 +27,17 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "sys/event.h"
+#include "../../kqueue.h"
 #include "private.h"
 
 #ifndef NDEBUG
 int KQUEUE_DEBUG = 0;
 #endif
 
-static RB_HEAD(kqt, kqueue) kqtree       = RB_INITIALIZER(&kqtree);
-static pthread_rwlock_t     kqtree_mtx   = PTHREAD_RWLOCK_INITIALIZER;
-
-static int
-kqueue_cmp(struct kqueue *a, struct kqueue *b)
-{
-    return memcmp(&a->kq_sockfd[1], &b->kq_sockfd[1], sizeof(int)); 
-}
-
-RB_GENERATE(kqt, kqueue, entries, kqueue_cmp)
-
 /* Must hold the kqtree_mtx when calling this */
-static void
-kqueue_free(struct kqueue *kq)
+int
+kqueue_close(kqueue_t kq)
 {
-    RB_REMOVE(kqt, &kqtree, kq);
     filter_unregister_all(kq);
 #if defined(__sun__)
     port_event_t *pe = (port_event_t *) pthread_getspecific(kq->kq_port_event);
@@ -59,93 +47,8 @@ kqueue_free(struct kqueue *kq)
     free(pe);
 #endif
     free(kq);
-}
-
-static int
-kqueue_gc(void)
-{
-    int rv;
-    struct kqueue *n1, *n2;
-
-    /* Free any kqueue descriptor that is no longer needed */
-    /* Sadly O(N), however needed in the case that a descriptor is
-       closed and kevent(2) will never again be called on it. */
-    for (n1 = RB_MIN(kqt, &kqtree); n1 != NULL; n1 = n2) {
-        n2 = RB_NEXT(kqt, &kqtree, n1);
-
-        if (n1->kq_ref == 0) {
-            kqueue_free(n1);
-        } else {
-            rv = kqueue_validate(n1);
-            if (rv == 0) 
-                kqueue_free(n1);
-            else if (rv < 0) 
-                return (-1);
-        }
-    }
 
     return (0);
-}
-
-
-int
-kqueue_validate(struct kqueue *kq)
-{
-    int rv;
-    char buf[1];
-    struct pollfd pfd;
-
-    pfd.fd = kq->kq_sockfd[0];
-    pfd.events = POLLIN | POLLHUP;
-    pfd.revents = 0;
-
-    rv = poll(&pfd, 1, 0);
-    if (rv == 0)
-        return (1);
-    if (rv < 0) {
-        dbg_perror("poll(2)");
-        return (-1);
-    }
-    if (rv > 0) {
-        /* NOTE: If the caller accidentally writes to the kqfd, it will
-                 be considered invalid. */
-        rv = recv(kq->kq_sockfd[0], buf, sizeof(buf), MSG_PEEK | MSG_DONTWAIT);
-        if (rv == 0) 
-            return (0);
-        else
-            return (-1);
-    }
-
-    return (0);
-}
-
-void
-kqueue_put(struct kqueue *kq)
-{
-    atomic_dec(&kq->kq_ref);
-}
-
-struct kqueue *
-kqueue_get(int kq)
-{
-    struct kqueue query;
-    struct kqueue *ent = NULL;
-
-    query.kq_sockfd[1] = kq;
-    pthread_rwlock_rdlock(&kqtree_mtx);
-    ent = RB_FIND(kqt, &kqtree, &query);
-    pthread_rwlock_unlock(&kqtree_mtx);
-
-    /* Check for invalid kqueue objects still in the tree */
-    if (ent != NULL) {
-        if (ent->kq_sockfd[0] < 0 || ent->kq_ref == 0) {
-            ent = NULL;
-        } else {
-            atomic_inc(&ent->kq_ref);
-        }
-    }
-
-    return (ent);
 }
 
 /* Non-portable kqueue initalization code. */
@@ -169,21 +72,20 @@ kqueue_sys_init(struct kqueue *kq)
     return (0);
 }
 
-int __attribute__((visibility("default")))
-kqueue(void)
+kqueue_t
+kqueue_open(void)
 {
     struct kqueue *kq;
-    int tmp;
 
 #ifndef __ANDROID__
     int cancelstate;
     if (pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancelstate) != 0)
-        return (-1);
+        return (NULL);
 #endif
 
     kq = calloc(1, sizeof(*kq));
     if (kq == NULL)
-        return (-1);
+        return (NULL);
     kq->kq_ref = 1;
     pthread_mutex_init(&kq->kq_mtx, NULL);
 
@@ -193,38 +95,21 @@ kqueue(void)
     KQUEUE_DEBUG = (getenv("KQUEUE_DEBUG") == NULL) ? 0 : 1;
 #endif
 
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, kq->kq_sockfd) < 0) 
-        goto errout_unlocked;
-
     if (kqueue_sys_init(kq) < 0)
-        goto errout_unlocked;
-
-    pthread_rwlock_wrlock(&kqtree_mtx);
-    if (kqueue_gc() < 0)
         goto errout;
-    /* TODO: move outside of the lock if it is safe */
+
     if (filter_register_all(kq) < 0)
         goto errout;
-    RB_INSERT(kqt, &kqtree, kq);
-    pthread_rwlock_unlock(&kqtree_mtx);
 
-    dbg_printf("created kqueue, fd=%d", kq->kq_sockfd[1]);
+    dbg_printf("created kqueue, id=%d", kq->kq_id);
 #ifndef __ANDROID__
     (void) pthread_setcancelstate(cancelstate, NULL);
 #endif
 
-    return (kq->kq_sockfd[1]);
+    return (kq);
 
 errout:
-    pthread_rwlock_unlock(&kqtree_mtx);
 
-errout_unlocked:
-    if (kq->kq_sockfd[0] != kq->kq_sockfd[1]) {
-        tmp = errno;
-        (void)close(kq->kq_sockfd[0]);
-        (void)close(kq->kq_sockfd[1]);
-        errno = tmp;
-    }
 #if defined(__sun__)
     if (kq->kq_port > 0) 
 	close(kq->kq_port);
@@ -233,5 +118,5 @@ errout_unlocked:
 #ifndef __ANDROID__
     (void) pthread_setcancelstate(cancelstate, NULL);
 #endif
-    return (-1);
+    return (NULL);
 }

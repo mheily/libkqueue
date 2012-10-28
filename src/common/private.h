@@ -28,11 +28,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdbool.h>
-#include <stdio.h>
 #include <string.h>
-#include <sys/select.h>
-#include "../../include/sys/event.h"
-
 #include "tree.h"
 
 /* GCC atomic builtins. 
@@ -49,11 +45,6 @@
 
 /* Maximum events returnable in a single kevent() call */
 #define MAX_KEVENT  512
-
-/* Workaround for Android */
-#ifndef EPOLLONESHOT
-#define EPOLLONESHOT (1 << 30)
-#endif
 
 #ifndef NDEBUG
 
@@ -84,20 +75,43 @@ extern int KQUEUE_DEBUG;
 # define reset_errno()           ;
 #endif 
 
-
 struct kqueue;
 struct kevent;
+struct knote;
+struct eventfd;
 struct evfilt_data;
 struct sleepreq;
+
+#if defined(_WIN32)
+# include "../windows/platform.h"
+# include "../common/queue.h"
+# if !defined(NDEBUG) && !defined(__GNUC__)
+#  include <crtdbg.h>
+# endif
+#elif defined(__linux__)
+# include "../posix/platform.h"
+# include "../linux/platform.h"
+#elif defined(__sun)
+# include "../posix/platform.h"
+# include "../solaris/platform.h"
+#else
+# error Unknown platform
+#endif
+
+struct eventfd {
+    int ef_id;
+#if defined(EVENTFD_PLATFORM_SPECIFIC)
+    EVENTFD_PLATFORM_SPECIFIC;
+#endif
+};
 
 /* 
  * Flags used by knote->flags
  */
 #define KNFL_PASSIVE_SOCKET  (0x01)  /* Socket is in listen(2) mode */
-
-/* TODO: Make this a variable length structure and allow
-   each filter to add custom fields at the end.
- */
+#define KNFL_REGULAR_FILE    (0x02)  /* File descriptor is a regular file */
+#define KNFL_KNOTE_DELETED   (0x10)  /* The knote object is no longer valid */
+ 
 struct knote {
     struct kevent     kev;
     int               flags;       
@@ -110,9 +124,13 @@ struct knote {
         } vnode;
         timer_t       timerid;  
         struct sleepreq *sleepreq; /* Used by posix/timer.c */
+		void          *handle;      /* Used by win32 filters */
     } data;
     TAILQ_ENTRY(knote) event_ent;    /* Used by filter->kf_event */
     RB_ENTRY(knote)   kntree_ent;   /* Used by filter->kntree */
+#if defined(KNOTE_PLATFORM_SPECIFIC)
+    KNOTE_PLATFORM_SPECIFIC;
+#endif
 };
 LIST_HEAD(knotelist, knote);
 
@@ -142,7 +160,7 @@ struct filter {
     int     (*kn_enable)(struct filter *, struct knote *);
     int     (*kn_disable)(struct filter *, struct knote *);
 
-    struct eventfd *kf_efd;             /* Used by user.c */
+    struct eventfd kf_efd;             /* Used by user.c */
     int       kf_pfd;                   /* fd to poll(2) for readiness */
     int       kf_wfd;                   /* fd to write when an event occurs */
     sigset_t            kf_sigmask;
@@ -156,7 +174,7 @@ struct filter {
 #define EVFILT_NOTIMPL { 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL }
 
 struct kqueue {
-    int             kq_sockfd[2];
+    int             kq_id;
     struct filter   kq_filt[EVFILT_SYSCOUNT];
     fd_set          kq_fds, kq_rfds; 
     int             kq_nfds;
@@ -166,8 +184,34 @@ struct kqueue {
     pthread_key_t   kq_port_event;
 #endif
     volatile uint32_t        kq_ref;
+#if defined(KQUEUE_PLATFORM_SPECIFIC)
+    KQUEUE_PLATFORM_SPECIFIC;
+#endif
     RB_ENTRY(kqueue) entries;
 };
+
+struct kqueue_vtable {
+    int  (*kqueue_init)(struct kqueue *);
+    void (*kqueue_free)(struct kqueue *);
+    // @param timespec can be given as timeout
+    // @param int the number of events to wait for
+    // @param kqueue the queue to wait on
+	int  (*kevent_wait)(struct kqueue *, int, const struct timespec *);
+    // @param kqueue the queue to look at
+    // @param int The number of events that should be ready
+    // @param kevent the structure to copy the events into
+    // @param int The number of events to copy
+    // @return the actual number of events copied
+    int  (*kevent_copyout)(struct kqueue *, int, struct kevent *, int);
+    int  (*filter_init)(struct kqueue *, struct filter *);
+    void (*filter_free)(struct kqueue *, struct filter *);
+    int  (*eventfd_init)(struct eventfd *);
+    void (*eventfd_close)(struct eventfd *);
+    int  (*eventfd_raise)(struct eventfd *);
+    int  (*eventfd_lower)(struct eventfd *);
+    int  (*eventfd_descriptor)(struct eventfd *);
+};
+extern const struct kqueue_vtable kqops;
 
 struct knote *  knote_lookup(struct filter *, uintptr_t);
 struct knote *  knote_lookup_data(struct filter *filt, intptr_t);

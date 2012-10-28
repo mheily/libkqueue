@@ -17,7 +17,7 @@
 #include "../common/private.h"
 
 //XXX-FIXME TEMP
-const struct filter evfilt_proc = EVFILT_NOTIMPL;
+//const struct filter evfilt_proc = EVFILT_NOTIMPL;
 
 /*
  * Per-thread epoll event buffer used to ferry data between
@@ -39,8 +39,6 @@ const struct kqueue_vtable kqops = {
     linux_eventfd_descriptor
 };
 
-// NOT USED YET: taken from trunk
-#ifdef TODO
 int
 linux_kqueue_init(struct kqueue *kq)
 {
@@ -150,6 +148,8 @@ int
 linux_kevent_copyout(struct kqueue *kq, int nready,
         struct kevent *eventlist, int nevents UNUSED)
 {
+#if FIXME
+    // semantics different from 1.x branch
     struct epoll_event *ev;
     struct filter *filt;
     struct knote *kn;
@@ -159,7 +159,7 @@ linux_kevent_copyout(struct kqueue *kq, int nready,
     for (i = 0; i < nready; i++) {
         ev = &epevt[i];
         kn = (struct knote *) ev->data.ptr;
-        knote_lock(kn);
+        ///knote_lock(kn)
         filt = &kq->kq_filt[~(kn->kev.filter)];
         rv = filt->kf_copyout(eventlist, kn, ev);
         if (slowpath(rv < 0)) {
@@ -191,9 +191,11 @@ linux_kevent_copyout(struct kqueue *kq, int nready,
     }
 
     return (nret);
+#else
+    return (0);
+#endif
 }
 
-#endif //NOT USED
 
 
 int
@@ -302,7 +304,7 @@ linux_get_descriptor_type(struct knote *kn)
     }
     if (! S_ISSOCK(sb.st_mode)) {
         //FIXME: could be a pipe, device file, or other non-regular file
-        kn->kn_flags |= KNFL_REGULAR_FILE;
+        kn->flags |= KNFL_REGULAR_FILE;
         dbg_printf("fd %d is a regular file\n", (int)kn->kev.ident);
         return (0);
     }
@@ -324,7 +326,7 @@ linux_get_descriptor_type(struct knote *kn)
         }
     } else {
         if (lsock) 
-            kn->kn_flags |= KNFL_PASSIVE_SOCKET;
+            kn->flags |= KNFL_PASSIVE_SOCKET;
         return (0);
     }
 }

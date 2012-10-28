@@ -16,7 +16,6 @@
 
 #include <stdlib.h>
 
-#include "sys/event.h"
 #include "private.h"
 
 const struct filter evfilt_proc = EVFILT_NOTIMPL;

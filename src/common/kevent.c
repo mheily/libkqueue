@@ -30,7 +30,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "sys/event.h"
+#include "../../kqueue.h"
 #include "private.h"
 
 static char *
@@ -233,16 +233,14 @@ err_path:
 }
 
 int __attribute__((visibility("default")))
-kevent(int kqfd, const struct kevent *changelist, int nchanges,
+kevent_compat(kqueue_t kq, const struct kevent *changelist, int nchanges,
         struct kevent *eventlist, int nevents,
         const struct timespec *timeout)
 {
-    struct kqueue *kq;
     int rv, n, nret;
 
     nret = 0;
 
-    kq = kqueue_get(kqfd);
     if (kq == NULL) {
         errno = ENOENT;
         return (-1);
@@ -256,14 +254,6 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
 #endif
 
     kqueue_lock(kq);
-
-    rv = kqueue_validate(kq);
-    if (rv < 0) {
-        goto errout;
-    } else if (rv == 0) {
-        errno = EBADF;
-        goto errout;
-    }
 
     /*
      * Process each kevent on the changelist.
@@ -324,7 +314,6 @@ errout:
 
 out:
     kqueue_unlock(kq);
-    kqueue_put(kq);
 #ifndef ANDROID
     (void) pthread_setcancelstate(cancelstate, NULL);
 #endif

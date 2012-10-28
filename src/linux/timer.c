@@ -31,7 +31,6 @@
 /* Linux equivalents to kqueue(2) */
 #include <sys/timerfd.h>
 
-#include "sys/event.h"
 #include "private.h"
 
 #ifndef NDEBUG

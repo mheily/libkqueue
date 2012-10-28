@@ -17,10 +17,7 @@
 #ifndef  _KQUEUE_POSIX_PLATFORM_H
 #define  _KQUEUE_POSIX_PLATFORM_H
 
-/* Required by glibc for MAP_ANON */
-#define __USE_MISC 1
-
-#include "../../include/sys/event.h"
+#include "../../kqueue.h"
 
 /*
  * GCC-compatible atomic operations 

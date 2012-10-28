@@ -32,7 +32,6 @@
 #include <sys/inotify.h>
 #include <sys/epoll.h>
 
-#include "sys/event.h"
 #include "private.h"
 
 static char *

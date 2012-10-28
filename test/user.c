@@ -16,7 +16,7 @@
 
 #include "common.h"
 
-static int __thread kqfd;
+static kqueue_t kqfd;
 
 static void
 test_kevent_user_add_and_delete(void)
@@ -154,7 +154,7 @@ test_kevent_user_dispatch(void)
 #endif 	/* HAVE_EV_DISPATCH */
 
 void
-test_evfilt_user(int _kqfd)
+test_evfilt_user(kqueue_t _kqfd)
 {
     kqfd = _kqfd;
 

@@ -1,6 +1,6 @@
-/* ------------ EXPERIMENTAL DESIGN PROTOTYPE -- DO NOT USE ------------ */
 /*-
- * Copyright (c) 2012 Mark Heily <mark@heily.com>
+ * Copyright (c) 2009 Mark Heily <mark@heily.com>
+ * Copyright (c) 1999,2000,2001 Jonathan Lemon <jlemon@FreeBSD.org>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -24,6 +24,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
+ * $FreeBSD SVN Revision 197533$
  */
 
 #ifndef _KQUEUE_H_
@@ -35,30 +36,49 @@ extern "C" {
 
 /* Determine if the platform provides a native kqueue() subsystem */
 #if defined(__Darwin__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
-# define _KQ_NATIVE
-#endif
-
-/* For platforms that have kqueue, use the native functions */
-#ifdef _KQ_NATIVE
 # include <sys/event.h>
 # define kqueue_t      int
-# define kevent_t      struct kevent
-# define kq_new        kqueue
-# define kq_update     kevent
-# define kq_close(kq)  close((kq))
-# define kq_socket_t   int
-# define kq_file_t     int
+# define kqueue_open   kqueue
+# define KQUEUE_OPEN_ERROR -1
+# define kqueue_close  close
 #else
-
-#ifdef __linux__
-#include <sys/epoll.h>
-#include <sys/timerfd.h>
-#endif
 #include <sys/types.h>
+
+#ifdef __KERNEL__
+#define intptr_t long
+#else
+#include <sys/queue.h> 
+#include <sys/types.h> 
+#include <stdint.h> 
+#define LIBKQUEUE       1
+#endif
 
 struct timespec;
 
-struct _kevent_compat {
+#define EVFILT_READ		(-1)
+#define EVFILT_WRITE		(-2)
+#define EVFILT_AIO		(-3)	/* attached to aio requests */
+#define EVFILT_VNODE		(-4)	/* attached to vnodes */
+#define EVFILT_PROC		(-5)	/* attached to struct proc */
+#define EVFILT_SIGNAL		(-6)	/* attached to struct proc */
+#define EVFILT_TIMER		(-7)	/* timers */
+#define EVFILT_NETDEV		(-8)	/* network devices */
+#define EVFILT_FS		(-9)	/* filesystem events */
+#define EVFILT_LIO		(-10)	/* attached to lio requests */
+#define EVFILT_USER		(-11)	/* User events */
+#define EVFILT_SYSCOUNT		11
+
+#define EV_SET(kevp_, a, b, c, d, e, f) do {	\
+	struct kevent *kevp = (kevp_);		\
+	(kevp)->ident = (a);			\
+	(kevp)->filter = (b);			\
+	(kevp)->flags = (c);			\
+	(kevp)->fflags = (d);			\
+	(kevp)->data = (e);			\
+	(kevp)->udata = (f);			\
+} while(0)
+
+struct kevent {
 	uintptr_t	ident;		/* identifier for this event */
 	short		filter;		/* filter for event */
 	unsigned short flags;
@@ -66,159 +86,109 @@ struct _kevent_compat {
 	intptr_t	data;
 	void		*udata;		/* opaque user data identifier */
 };
-typedef struct _kevent_compat* kevent_t;
 
-struct _kqueue_compat {
-    int sig;      /* Object signature */
-#elif defined(__linux__)
-    int kq_epollfd;
-#endif
-} kqueue_t;
-typedef struct _kqueue* kqueue_t;
+/* actions */
+#define EV_ADD		0x0001		/* add event to kq (implies enable) */
+#define EV_DELETE	0x0002		/* delete event from kq */
+#define EV_ENABLE	0x0004		/* enable event */
+#define EV_DISABLE	0x0008		/* disable event (not reported) */
 
+/* flags */
+#define EV_ONESHOT	0x0010		/* only report one occurrence */
+#define EV_CLEAR	0x0020		/* clear event state after reporting */
+#define EV_RECEIPT	0x0040		/* force EV_ERROR on success, data=0 */
+#define EV_DISPATCH	0x0080		/* disable event after reporting */
 
-/* Analog to kqueue() */
-static inline kqueue_t 
-kqueue_new(void)
-{
-    kqueue_t kq;
+#define EV_SYSFLAGS	0xF000		/* reserved by system */
+#define EV_FLAG1	0x2000		/* filter-specific flag */
 
-    if ((kq = malloc(sizeof(*kq))) == NULL)
-        return(NULL);
+/* returned values */
+#define EV_EOF		0x8000		/* EOF detected */
+#define EV_ERROR	0x4000		/* error, data contains errno */
 
-    kq->sig = 0xABCD;
+ /*
+  * data/hint flags/masks for EVFILT_USER
+  *
+  * On input, the top two bits of fflags specifies how the lower twenty four
+  * bits should be applied to the stored value of fflags.
+  *
+  * On output, the top two bits will always be set to NOTE_FFNOP and the
+  * remaining twenty four bits will contain the stored fflags value.
+  */
+#define NOTE_FFNOP	0x00000000		/* ignore input fflags */
+#define NOTE_FFAND	0x40000000		/* AND fflags */
+#define NOTE_FFOR	0x80000000		/* OR fflags */
+#define NOTE_FFCOPY	0xc0000000		/* copy fflags */
+#define NOTE_FFCTRLMASK	0xc0000000		/* masks for operations */
+#define NOTE_FFLAGSMASK	0x00ffffff
 
-#ifdef __linux__
-    kq->kq_epollfd = epoll_create(1);
-    if (kq->kq_epollfd < 0) {
-        free(kq);
-        return(NULL);
-    }
-#else
-#error Unsupported OS
-#endif
+#define NOTE_TRIGGER	0x01000000		/* Cause the event to be
+						   triggered for output. */
 
-    return (kq);
-}
-
-/* Analog to closing a kqueue descriptor */
-static int
-kqueue_close(kqueue_t kq)
-{
-    int rv = 0;
-
-    if (kq == NULL || kq->sig != 0xABCD)
-        return(-1);
-
-#ifdef __linux__
-    if (close(kq->kq_epollfd) < 0) 
-        rv = -1;
-#else
-#error Unsupported OS
-#endif
-
-    return (rv);
-}
-
-
-
-/* Similar to kevent(2) */
-static int
-kqueue_update(kqueue_t kq, const struct kevent *changelist, int nchanges,
-	    struct kevent *eventlist, int nevents,
-	    const struct timespec *timeout)
-{
-    int i, nret, rv = 0;
-    struct kevent *kev;
-#ifdef __linux__
-    struct epoll_event epevt;
-#endif
-
-    // TODO: assert nevents == 1, to simplify things for now
-
-    if (kq == NULL || kq->sig != 0xABCD)
-        return(-1);
-
-    /* Process each event on the changelist */
-    for (i = 0; i < nchanges; i++) {
-        kev = changelist[i];
-        switch (kev.flags) {
-            case EV_ADD:
-#ifdef __linux__
-                // TODO
-#endif
-                break;
-
-            case EV_DELETE:
-#ifdef __linux__
-                // TODO
-#endif
-                break;
-
-            default:
-                //ERROR:
-                return (-2);
-        }
-    }
-
-    /* Wait for kernel events */
-#ifdef __linux__
-    nret = epoll_wait(kq->kq_epollfd, &epevt, 1, 0);
-    if (nret < 0) {
-        return (nret);
-#endif
-
-    return (rv);
-}
-
-#endif /* ! _KQ_NATIVE */
-
-/*--------------------------------------------------------------*/
-/*      These should be used instead of EV_SET
-/*--------------------------------------------------------------*/
-
-/* Wait for a descriptor to become readable 
-
-   Does not support: 
-      * getting the listen backlog length
-      * setting low watermark
-      * setting high watermark
-      * returning number of bytes available to read
-      * vnodes, bpf devices
-
-   Need to think about how to support:
-      * EV_EOF equivalent
+/*
+ * data/hint flags for EVFILT_{READ|WRITE}
  */
-# define evfilt_read_socket(kev, fd, udata) \
-    EV_SET((kev), fd, EVFILT_READ, 0, 0, 0, udata)
+#define NOTE_LOWAT	0x0001			/* low water mark */
+#undef  NOTE_LOWAT                  /* Not supported on Linux */
 
-/* Wait for a descriptor to become writable 
-   Does not support: 
-      * getting the listen backlog length
-      * setting low watermark
-      * setting high watermark
-      * returning number of bytes available to read
-      * vnodes, bpf devices
+/*
+ * data/hint flags for EVFILT_VNODE
+ */
+#define	NOTE_DELETE	0x0001			/* vnode was removed */
+#define	NOTE_WRITE	0x0002			/* data contents changed */
+#define	NOTE_EXTEND	0x0004			/* size increased */
+#define	NOTE_ATTRIB	0x0008			/* attributes changed */
+#define	NOTE_LINK	0x0010			/* link count changed */
+#define	NOTE_RENAME	0x0020			/* vnode was renamed */
+#define	NOTE_REVOKE	0x0040			/* vnode access was revoked */
+#undef  NOTE_REVOKE                 /* Not supported on Linux */
 
-   Need to think about how to support:
-      * EV_EOF equivalent
-*/
-# define evfilt_write_socket(kev, fd, udata) \
-    EV_SET((kev), (fd), EVFILT_WRITE, EV_ADD, 0, 0, (udata))
+/*
+ * data/hint flags for EVFILT_PROC
+ */
+#define	NOTE_EXIT	0x80000000		/* process exited */
+#define	NOTE_FORK	0x40000000		/* process forked */
+#define	NOTE_EXEC	0x20000000		/* process exec'd */
+#define	NOTE_PCTRLMASK	0xf0000000		/* mask for hint bits */
+#define	NOTE_PDATAMASK	0x000fffff		/* mask for pid */
 
-/* TODO:  EVFILT_VNODE  */
+/* additional flags for EVFILT_PROC */
+#define	NOTE_TRACK	0x00000001		/* follow across forks */
+#define	NOTE_TRACKERR	0x00000002		/* could not track child */
+#define	NOTE_CHILD	0x00000004		/* am a child process */
 
-/* Wait for a signal to be delivered */
-# define evfilt_signal(kev, signum, udata) \
-    EV_SET((kev), (signum), EVFILT_SIGNAL, EV_ADD, 0, 0, (udata))
+/*
+ * data/hint flags for EVFILT_NETDEV
+ */
+#define NOTE_LINKUP	0x0001			/* link is up */
+#define NOTE_LINKDOWN	0x0002			/* link is down */
+#define NOTE_LINKINV	0x0004			/* link state is invalid */
 
-/* Wait for a periodic timer to expire */
-# define evfilt_timer(kev, ident, udata) \
-    EV_SET((kev), (ident), EVFILT_TIMER, EV_ADD, 0, 0, (udata))
+/* KLUDGE: This is from <sys/mount.h> on FreeBSD and is used by 
+           the EVFILT_FS filter. */
+/* vfsquery flags */
+#define VQ_NOTRESP      0x0001  /* server down */
+#define VQ_NEEDAUTH     0x0002  /* server bad auth */
+#define VQ_LOWDISK      0x0004  /* we're low on space */
+#define VQ_MOUNT        0x0008  /* new filesystem arrived */
+#define VQ_UNMOUNT      0x0010  /* filesystem has left */
+#define VQ_DEAD         0x0020  /* filesystem is dead, needs force unmount */
+#define VQ_ASSIST       0x0040  /* filesystem needs assistance from external
+                                   program */
+#define VQ_NOTRESPLOCK  0x0080  /* server lockd down */
 
-/* Wait for a one-time timer to expire */
-# define evfilt_timeout(kev, ident, udata) \
-    EV_SET((kev), (ident), EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 0, (udata))
+
+struct kqueue;
+# define kqueue_t      struct kqueue *
+# define KQUEUE_OPEN_ERROR ((void *)-1)
+# define kevent(a,b,c,d,e,f) kevent_compat(a,b,c,d,e,f)
+kqueue_t kqueue_open(void);
+int kqueue_close(kqueue_t kq);
+int kevent_compat(kqueue_t kq, const struct kevent *changelist, int nchanges,
+	    struct kevent *eventlist, int nevents,
+	    const struct timespec *timeout);
+
+#endif /* Non-native kqueue platform */
 
 
 #ifdef  __cplusplus

@@ -16,7 +16,7 @@
 
 #include "common.h"
 
-static int __thread kqfd;
+static kqueue_t kqfd;
 
 void
 test_kevent_timer_add(void)
@@ -151,7 +151,7 @@ test_kevent_timer_dispatch(void)
 #endif  /* HAVE_EV_DISPATCH */
 
 void
-test_evfilt_timer(int _kqfd)
+test_evfilt_timer(kqueue_t _kqfd)
 {
 	kqfd = _kqfd;
     test(kevent_timer_add);

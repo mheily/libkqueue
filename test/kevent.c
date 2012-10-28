@@ -20,7 +20,7 @@ extern int kqfd;
 
 /* Checks if any events are pending, which is an error. */
 void 
-test_no_kevents(int kqfd)
+test_no_kevents(kqueue_t kqfd)
 {
     int nfds;
     struct timespec timeo;
@@ -38,7 +38,7 @@ test_no_kevents(int kqfd)
 
 /* Retrieve a single kevent */
 struct kevent *
-kevent_get(int kqfd)
+kevent_get(kqueue_t kqfd)
 {
     int nfds;
     static struct kevent __thread kev;
@@ -137,7 +137,7 @@ kevent_to_str(struct kevent *kev)
 }
 
 void
-kevent_update(int kqfd, struct kevent *kev)
+kevent_update(kqueue_t kqfd, struct kevent *kev)
 {
     if (kevent(kqfd, kev, 1, NULL, 0, NULL) < 0) {
         printf("Unable to add the following kevent:\n%s\n",
@@ -147,7 +147,7 @@ kevent_update(int kqfd, struct kevent *kev)
 }
 
 void
-kevent_add(int kqfd, struct kevent *kev, 
+kevent_add(kqueue_t kqfd, struct kevent *kev, 
         uintptr_t ident,
         short     filter,
         u_short   flags,

@@ -16,7 +16,7 @@
 
 #include "common.h"
 
-static int __thread kqfd;
+static kqueue_t kqfd;
 
 void
 test_kevent_signal_add(void)
@@ -171,7 +171,7 @@ test_kevent_signal_dispatch(void)
 #endif  /* HAVE_EV_DISPATCH */
 
 void
-test_evfilt_signal(int _kqfd)
+test_evfilt_signal(kqueue_t _kqfd)
 {
     signal(SIGUSR1, SIG_IGN);
 

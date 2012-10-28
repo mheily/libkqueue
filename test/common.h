@@ -42,17 +42,16 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <sys/event.h>
-
+#include "../kqueue.h"
 #include "../config.h"
 
-void test_evfilt_read(int);
-void test_evfilt_signal(int);
-void test_evfilt_vnode(int);
-void test_evfilt_timer(int);
-void test_evfilt_proc(int);
+void test_evfilt_read(kqueue_t);
+void test_evfilt_signal(kqueue_t);
+void test_evfilt_vnode(kqueue_t);
+void test_evfilt_timer(kqueue_t);
+void test_evfilt_proc(kqueue_t);
 #if HAVE_EVFILT_USER
-void test_evfilt_user(int);
+void test_evfilt_user(kqueue_t);
 #endif
 
 #define test(f,...) do {                                             \
@@ -62,15 +61,15 @@ void test_evfilt_user(int);
 } while (/*CONSTCOND*/0)
 
 extern const char * kevent_to_str(struct kevent *);
-struct kevent * kevent_get(int);
+struct kevent * kevent_get(kqueue_t);
 
 
-void kevent_update(int kqfd, struct kevent *kev);
+void kevent_update(kqueue_t kqfd, struct kevent *kev);
 
 void kevent_cmp(struct kevent *, struct kevent *);
 
 void
-kevent_add(int kqfd, struct kevent *kev, 
+kevent_add(kqueue_t kqfd, struct kevent *kev, 
         uintptr_t ident,
         short     filter,
         u_short   flags,
@@ -89,7 +88,7 @@ kevent_add(int kqfd, struct kevent *kev,
 } while (0);
 
 /* Checks if any events are pending, which is an error. */
-void test_no_kevents(int);
+void test_no_kevents(kqueue_t);
 
 /* From test.c */
 void    test_begin(const char *);

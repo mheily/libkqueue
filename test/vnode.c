@@ -16,8 +16,8 @@
 
 #include "common.h"
 
-static int __thread kqfd;
-static int __thread vnode_fd;
+static kqueue_t kqfd;
+static int vnode_fd;
 static char __thread testfile[1024];
 
 
@@ -268,7 +268,7 @@ test_kevent_vnode_dispatch(void)
 #endif 	/* HAVE_EV_DISPATCH */
 
 void
-test_evfilt_vnode(int _kqfd)
+test_evfilt_vnode(kqueue_t _kqfd)
 {
     char *tmpdir = getenv("TMPDIR");
     if (tmpdir == NULL)

@@ -24,7 +24,9 @@ require 'makeconf'
 
 # Determine the list of compiler flags
 def get_cflags(cc)
-  cflags="-g -O2 -fpic -Wall -Werror -std=c99 -D_XOPEN_SOURCE=600 -D_BSD_SOURCE -I./include -Isrc/common".split(/ /) 
+  cflags="-g -O2 -Wall -Werror -std=c99 -D_XOPEN_SOURCE=600 -D_BSD_SOURCE -I./include -Isrc/common".split(/ /) 
+
+  cflags.push '-fpic' unless cc.is_mingw?
 
   if Platform.is_solaris?
     cflags.push "-D__EXTENSIONS__"
@@ -54,7 +56,7 @@ def get_source_list(cc)
              'src/linux/socket.c',
              'src/posix/user.c',
              'src/linux/vnode.c',
-             'src/linux/eventfd.c'
+             'src/linux/platform.c'
 
     # Android does not have timerfd support
     if SystemType.host =~ /android/
@@ -81,7 +83,7 @@ project.add(
       :cflags => get_cflags(cc),
       :sources => get_source_list(cc)
   ),
-#  Header.new( :id => 'headers', :sources => %w{ Block.h Block_private.h } ),
+  Header.new( :id => 'headers', :sources => %w{ kqueue.h } ),
   Test.new(
     :id => 'kqtest', 
     :cflags => '-g -O0 -Wall -Werror -Iinclude',

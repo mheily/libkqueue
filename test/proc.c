@@ -18,7 +18,7 @@
 
 static int sigusr1_caught = 0;
 static pid_t pid;
-static int __thread kqfd;
+static kqueue_t kqfd;
 
 static void
 sig_handler(int signum)
@@ -199,7 +199,7 @@ test_kevent_signal_oneshot(void)
 #endif
 
 void
-test_evfilt_proc(int _kqfd)
+test_evfilt_proc(kqueue_t _kqfd)
 {
     kqfd = _kqfd;
 

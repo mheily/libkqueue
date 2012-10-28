@@ -19,8 +19,8 @@
 #include <netinet/in.h>
 #include "common.h"
 
-static int __thread kqfd;
-static int __thread sockfd[2];
+static kqueue_t kqfd;
+static int sockfd[2];
 
 static void
 kevent_socket_drain(void)
@@ -316,7 +316,7 @@ test_kevent_socket_eof(void)
 }
 
 void
-test_evfilt_read(int _kqfd)
+test_evfilt_read(kqueue_t _kqfd)
 {
     /* Create a connected pair of full-duplex sockets for testing socket events */
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockfd) < 0) 
