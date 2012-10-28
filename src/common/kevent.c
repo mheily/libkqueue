@@ -26,7 +26,6 @@
 #include <sys/types.h>
 #include <string.h>
 
-#include "../../kqueue.h"
 #include "private.h"
 
 static const char *
@@ -145,6 +144,7 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent *src)
             memcpy(&kn->kev, src, sizeof(kn->kev));
             kn->kev.flags &= ~EV_ENABLE;
             kn->kev.flags |= EV_ADD;//FIXME why?
+			kn->kn_kq = kq;
             assert(filt->kn_create);
             if (filt->kn_create(filt, kn) < 0) {
                 knote_free(filt, kn);
@@ -226,18 +226,26 @@ err_path:
     return (nret);
 }
 
-int __attribute__((visibility("default")))
+int VISIBLE
 kevent_compat(kqueue_t kq, const struct kevent *changelist, int nchanges,
         struct kevent *eventlist, int nevents,
         const struct timespec *timeout)
 {
-    int rv, n, nret;
-
-    nret = 0;
+    static unsigned int _kevent_counter = 0;
+    int rv = 0;
+    unsigned int myid;
 
     if (kq == NULL) {
         errno = ENOENT;
         return (-1);
+    }
+
+    if (DEBUG_KQUEUE) {
+        myid = atomic_inc(&_kevent_counter);
+        dbg_printf("--- kevent %u --- (nchanges = %d, nevents = %d)", myid, nchanges, nevents);
+    } else {
+        myid = 0;
+        (void) myid;
     }
 
 #ifndef ANDROID
@@ -252,64 +260,54 @@ kevent_compat(kqueue_t kq, const struct kevent *changelist, int nchanges,
     /*
      * Process each kevent on the changelist.
      */
-    if (nchanges) {
+    if (nchanges > 0) {
         rv = kevent_copyin(kq, changelist, nchanges, eventlist, nevents);
-        dbg_printf("changelist: rv=%d", rv);
+        dbg_printf("(%u) changelist: rv=%d", myid, rv);
         if (rv < 0)
-            goto errout;
+            goto out;
         if (rv > 0) {
             eventlist += rv;
             nevents -= rv;
         }
     }
 
-    /* Determine if we need to wait for events. */
+    rv = 0;
+    
+    /*
+     * Wait for events and copy them to the eventlist
+     */
     if (nevents > MAX_KEVENT)
         nevents = MAX_KEVENT;
-    if (nevents == 0)
-        goto out;
-
-    /* Handle spurious wakeups where no events are generated. */
-    for (nret = 0; nret == 0;) 
-    {
-        /* Wait for one or more events. */
-        n = kevent_wait(kq, timeout);
-        if (n < 0) {
-            if (n == -EINTR) {
+    if (nevents > 0) {
+        rv = kqops.kevent_wait(kq, nevents, timeout);
+        dbg_printf("kqops.kevent_wait returned %d", rv);
+        if (rv < 0) {
+            if (rv == -EINTR) {
                 dbg_puts("interrupted by a signal");
                 errno = EINTR;
-            } else {
-                dbg_puts("unknown failure");
+				rv = -1;
             }
-            goto errout;
-        }
-        if (n == 0)
-            goto out;      /* Timeout */
-
-        /* Copy the events to the caller */
-        nret = kevent_copyout(kq, n, eventlist, nevents);
-        if (nret == -EINTR) {
-            dbg_puts("interrupted by a signal");
-            errno = EINTR;
+  		} else if (rv > 0) {
+            rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
+        } else if (rv == 0) {
+            /* Timeout reached */
         }
     }
 
-    if (DEBUG_KQUEUE && nret >= 0) {
-        dbg_printf("returning %d events", nret);
-        for (n = 0; n < nret; n++) {
-            dbg_printf("eventlist[%d] = %s", n, kevent_dump(&eventlist[n]));
+    if (DEBUG_KQUEUE) {
+        int n;
+
+        dbg_printf("(%u) returning %d events", myid, rv);
+        for (n = 0; n < rv; n++) {
+	    dbg_printf("(%u) eventlist[%d] = %s", myid, n, kevent_dump(&eventlist[n]));
         }
     }
-
-    goto out;
-
-errout:
-    nret = -1;
 
 out:
     kqueue_unlock(kq);
 #ifndef ANDROID
     (void) pthread_setcancelstate(cancelstate, NULL);
 #endif
-    return (nret);
+    dbg_printf("--- END kevent %u ret %d ---", myid, rv);
+    return (rv);
 }
