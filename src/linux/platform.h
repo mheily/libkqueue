@@ -26,6 +26,11 @@ struct filter;
 #include <sys/signalfd.h>
 #include <sys/timerfd.h>
 
+/* Workaround for Android */
+#ifndef EPOLLONESHOT
+#define EPOLLONESHOT (1 << 30)
+#endif
+
 /*
  * Get the current thread ID
  */
