@@ -29,24 +29,6 @@
 #include "private.h"
 
 int
-evfilt_user_init(struct filter *filt)
-{
-    if (kqops.eventfd_init(&filt->kf_efd) < 0)
-        return (-1);
-
-    filt->kf_pfd = kqops.eventfd_descriptor(&filt->kf_efd);
-
-    return (0);
-}
-
-void
-evfilt_user_destroy(struct filter *filt)
-{
-    kqops.eventfd_close(&filt->kf_efd);
-    return;
-}
-
-int
 evfilt_user_copyout(struct filter *filt, 
             struct kevent *dst, 
             int maxevents)
@@ -166,8 +148,8 @@ evfilt_user_knote_disable(struct filter *filt, struct knote *kn)
 
 const struct filter evfilt_user = {
     EVFILT_USER,
-    evfilt_user_init,
-    evfilt_user_destroy,
+    NULL,
+    NULL,
     evfilt_user_copyout,
     evfilt_user_knote_create,
     evfilt_user_knote_modify,
