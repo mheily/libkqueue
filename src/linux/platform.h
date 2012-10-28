@@ -87,5 +87,9 @@ int     linux_eventfd_descriptor(struct eventfd *);
 int     linux_get_descriptor_type(struct knote *);
 int     linux_fd_to_path(char *, size_t, int);
 
+/* In read.c */
+extern char * epoll_event_dump(struct epoll_event *evt);
+extern int epoll_update(int op, struct filter *filt, struct knote *kn, struct epoll_event *ev);
+
 
 #endif  /* ! _KQUEUE_LINUX_PLATFORM_H */

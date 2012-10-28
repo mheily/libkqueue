@@ -148,8 +148,6 @@ int
 linux_kevent_copyout(struct kqueue *kq, int nready,
         struct kevent *eventlist, int nevents UNUSED)
 {
-#if FIXME
-    // semantics different from 1.x branch
     struct epoll_event *ev;
     struct filter *filt;
     struct knote *kn;
@@ -159,7 +157,6 @@ linux_kevent_copyout(struct kqueue *kq, int nready,
     for (i = 0; i < nready; i++) {
         ev = &epevt[i];
         kn = (struct knote *) ev->data.ptr;
-        ///knote_lock(kn)
         filt = &kq->kq_filt[~(kn->kev.filter)];
         rv = filt->kf_copyout(eventlist, kn, ev);
         if (slowpath(rv < 0)) {
@@ -175,9 +172,7 @@ linux_kevent_copyout(struct kqueue *kq, int nready,
         if (eventlist->flags & EV_DISPATCH) 
             knote_disable(filt, kn); //FIXME: Error checking
         if (eventlist->flags & EV_ONESHOT) {
-            knote_delete(filt, kn); //FIXME: Error checking
-        } else {
-            knote_unlock(kn);
+            knote_free(filt, kn); //FIXME: Error checking
         }
 
         /* If an empty kevent structure is returned, the event is discarded. */
@@ -191,9 +186,6 @@ linux_kevent_copyout(struct kqueue *kq, int nready,
     }
 
     return (nret);
-#else
-    return (0);
-#endif
 }
 
 
@@ -360,8 +352,8 @@ epoll_event_dump(struct epoll_event *evt)
 int
 epoll_update(int op, struct filter *filt, struct knote *kn, struct epoll_event *ev)
 {
-    dbg_printf("op=%d fd=%d events=%s", op, (int)kn->kev.ident, 
-            epoll_event_dump(ev));
+    dbg_printf("epfd=%d op=%d fd=%d events=%s", 
+            filter_epfd(filt), op, (int)kn->kev.ident, epoll_event_dump(ev));
     if (epoll_ctl(filter_epfd(filt), op, kn->kev.ident, ev) < 0) {
         dbg_printf("epoll_ctl(2): %s", strerror(errno));
         return (-1);

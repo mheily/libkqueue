@@ -14,30 +14,13 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <errno.h>
-#include <fcntl.h>
-#include <pthread.h>
-#include <signal.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <sys/epoll.h>
-#include <sys/queue.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <string.h>
-#include <time.h>
-#include <unistd.h>
-
-/* Linux equivalents to kqueue(2) */
-#include <sys/timerfd.h>
-
 #include "private.h"
 
 #ifndef NDEBUG
 static char *
 itimerspec_dump(struct itimerspec *ts)
 {
-    static char __thread buf[1024];
+    static __thread char buf[1024];
 
     snprintf(buf, sizeof(buf),
             "itimer: [ interval=%lu s %lu ns, next expire=%lu s %lu ns ]",
@@ -75,105 +58,28 @@ convert_msec_to_itimerspec(struct itimerspec *dst, int src, int oneshot)
     dbg_printf("%s", itimerspec_dump(dst));
 }
 
-static int
-ktimer_delete(struct filter *filt, struct knote *kn)
-{
-    int rv = 0;
-
-    if (kn->data.pfd == -1)
-        return (0);
-
-    dbg_printf("removing timerfd %d from %d", kn->data.pfd, filt->kf_pfd);
-    if (epoll_ctl(filt->kf_pfd, EPOLL_CTL_DEL, kn->data.pfd, NULL) < 0) {
-        dbg_printf("epoll_ctl(2): %s", strerror(errno));
-        rv = -1;
-    }
-    if (close(kn->data.pfd) < 0) {
-        dbg_printf("close(2): %s", strerror(errno));
-        rv = -1;
-    }
-
-    kn->data.pfd = -1;
-    return (rv);
-}
-
 int
-evfilt_timer_init(struct filter *filt)
+evfilt_timer_copyout(struct kevent *dst, struct knote *src, void *ptr)
 {
-    filt->kf_pfd = epoll_create(1);
-    if (filt->kf_pfd < 0)
-        return (-1);
-
-    dbg_printf("timer epollfd = %d", filt->kf_pfd);
-    return (0);
-}
-
-void
-evfilt_timer_destroy(struct filter *filt)
-{
-    close (filt->kf_pfd);//LAME
-}
-
-/* TODO: This entire function is copy+pasted from socket.c
-   with minor changes for timerfds.
-   Perhaps it could be refactored into a generic epoll_copyout()
-   that calls custom per-filter actions.
-   */
-int
-evfilt_timer_copyout(struct filter *filt, 
-            struct kevent *dst, 
-            int nevents)
-{
-    struct epoll_event epevt[MAX_KEVENT];
-    struct epoll_event *ev;
-    struct knote *kn;
+    struct epoll_event * const ev = (struct epoll_event *) ptr;
     uint64_t expired;
-    int i, nret;
     ssize_t n;
 
-    for (;;) {
-        nret = epoll_wait(filt->kf_pfd, &epevt[0], nevents, 0);
-        if (nret < 0) {
-            if (errno == EINTR)
-                return (-EINTR);
-            dbg_perror("epoll_wait");
-            return (-1);
-        } else {
-            break;
-        }
-    }
-
-    for (i = 0, nevents = 0; i < nret; i++) {
-        ev = &epevt[i];
-        /* TODO: put in generic debug.c: epoll_event_dump(ev); */
-        kn = ev->data.ptr;
-        memcpy(dst, &kn->kev, sizeof(*dst));
-        if (ev->events & EPOLLERR)
-            dst->fflags = 1; /* FIXME: Return the actual timer error */
+    memcpy(dst, &src->kev, sizeof(*dst));
+    if (ev->events & EPOLLERR)
+        dst->fflags = 1; /* FIXME: Return the actual timer error */
           
-        /* On return, data contains the number of times the
-           timer has been trigered.
-             */
-        n = read(kn->data.pfd, &expired, sizeof(expired));
-        if (n < 0 || n < sizeof(expired)) {
-            dbg_puts("invalid read from timerfd");
-            expired = 1;  /* Fail gracefully */
-        } 
-        dst->data = expired;
+    /* On return, data contains the number of times the
+       timer has been trigered.
+     */
+    n = read(src->data.pfd, &expired, sizeof(expired));
+    if (n != sizeof(expired)) {
+        dbg_puts("invalid read from timerfd");
+        expired = 1;  /* Fail gracefully */
+    } 
+    dst->data = expired;
 
-        if (kn->kev.flags & EV_DISPATCH) {
-            KNOTE_DISABLE(kn);
-            ktimer_delete(filt, kn);
-        } else if (kn->kev.flags & EV_ONESHOT) {
-            ktimer_delete(filt, kn);
-            knote_free(filt, kn);
-        }
-
-        nevents++;
-        dst++;
-    }
-
-    return (nevents);
+    return (0);
 }
 
 int
@@ -202,7 +108,7 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
     memset(&ev, 0, sizeof(ev));
     ev.events = EPOLLIN;
     ev.data.ptr = kn;
-    if (epoll_ctl(filt->kf_pfd, EPOLL_CTL_ADD, tfd, &ev) < 0) {
+    if (epoll_ctl(filter_epfd(filt), EPOLL_CTL_ADD, tfd, &ev) < 0) {
         dbg_printf("epoll_ctl(2): %d", errno);
         close(tfd);
         return (-1);
@@ -216,13 +122,31 @@ int
 evfilt_timer_knote_modify(struct filter *filt, struct knote *kn, 
         const struct kevent *kev)
 {
+    (void)filt;
+    (void)kn;
+    (void)kev;
     return (0); /* STUB */
 }
 
 int
 evfilt_timer_knote_delete(struct filter *filt, struct knote *kn)
 {
-    return (ktimer_delete(filt,kn));
+    int rv = 0;
+
+    if (kn->data.pfd == -1)
+        return (0);
+
+    if (epoll_ctl(filter_epfd(filt), EPOLL_CTL_DEL, kn->data.pfd, NULL) < 0) {
+        dbg_printf("epoll_ctl(2): %s", strerror(errno));
+        rv = -1;
+    }
+    if (close(kn->data.pfd) < 0) {
+        dbg_printf("close(2): %s", strerror(errno));
+        rv = -1;
+    }
+
+    kn->data.pfd = -1;
+    return (rv);
 }
 
 int
@@ -239,8 +163,8 @@ evfilt_timer_knote_disable(struct filter *filt, struct knote *kn)
 
 const struct filter evfilt_timer = {
     EVFILT_TIMER,
-    evfilt_timer_init,
-    evfilt_timer_destroy,
+    NULL,
+    NULL,
     evfilt_timer_copyout,
     evfilt_timer_knote_create,
     evfilt_timer_knote_modify,
