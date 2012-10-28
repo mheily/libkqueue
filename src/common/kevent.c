@@ -294,7 +294,7 @@ kevent_compat(kqueue_t kq, const struct kevent *changelist, int nchanges,
         }
     }
 
-    if (KQUEUE_DEBUG && nret >= 0) {
+    if (DEBUG_KQUEUE && nret >= 0) {
         dbg_printf("returning %d events", nret);
         for (n = 0; n < nret; n++) {
             dbg_printf("eventlist[%d] = %s", n, kevent_dump(&eventlist[n]));

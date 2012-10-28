@@ -24,10 +24,8 @@
 
 #include "private.h"
 
-#ifndef NDEBUG
-int KQUEUE_DEBUG = 0;
-#endif
-
+int DEBUG_KQUEUE = 0;
+char *KQUEUE_DEBUG_IDENT = "KQ";
 
 int
 kqueue_close(kqueue_t kq)
@@ -84,9 +82,9 @@ kqueue_open(void)
     pthread_mutex_init(&kq->kq_mtx, NULL);
 
 #ifdef NDEBUG
-    KQUEUE_DEBUG = 0;
+    DEBUG_KQUEUE = 0;
 #else
-    KQUEUE_DEBUG = (getenv("KQUEUE_DEBUG") == NULL) ? 0 : 1;
+    DEBUG_KQUEUE = (getenv("KQUEUE_DEBUG") == NULL) ? 0 : 1;
 #endif
 
     if (kqueue_sys_init(kq) < 0)

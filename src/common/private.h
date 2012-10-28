@@ -28,8 +28,7 @@
 #endif
 
 #include <errno.h>
-#include <pthread.h>
-#include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 #include "tree.h"
 
@@ -47,35 +46,6 @@
 
 /* Maximum events returnable in a single kevent() call */
 #define MAX_KEVENT  512
-
-#ifndef NDEBUG
-
-extern int KQUEUE_DEBUG;
-
-#define dbg_puts(str)           do {                                \
-    if (KQUEUE_DEBUG)                                               \
-      fprintf(stderr, "KQ: %s(): %s\n", __func__,str);              \
-} while (0)
-
-#define dbg_printf(fmt,...)     do {                                \
-    if (KQUEUE_DEBUG)                                               \
-      fprintf(stderr, "KQ: %s(): "fmt"\n", __func__,__VA_ARGS__);   \
-} while (0)
-
-#define dbg_perror(str)         do {                                \
-    if (KQUEUE_DEBUG)                                               \
-      fprintf(stderr, "KQ: %s(): %s: %s (errno=%d)\n",              \
-              __func__, str, strerror(errno), errno);               \
-} while (0)
-
-# define reset_errno()          do { errno = 0; } while (0)
-
-#else /* NDEBUG */
-# define dbg_puts(str)           ;
-# define dbg_printf(fmt,...)     ;
-# define dbg_perror(str)         ;
-# define reset_errno()           ;
-#endif 
 
 struct kqueue;
 struct kevent;
@@ -99,6 +69,8 @@ struct sleepreq;
 #else
 # error Unknown platform
 #endif
+
+#include "debug.h"
 
 struct eventfd {
     int ef_id;
