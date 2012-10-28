@@ -17,6 +17,8 @@
 #ifndef  _KQUEUE_PRIVATE_H
 #define  _KQUEUE_PRIVATE_H
 
+#include "../../kqueue.h"
+
 #if defined (__SVR4) && defined (__sun)
 # define SOLARIS
 # include <port.h>

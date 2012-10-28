@@ -16,23 +16,18 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
-#include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <sys/queue.h>
-#include <sys/socket.h>
 #include <sys/types.h>
 #include <string.h>
-#include <unistd.h>
 
-#include "../../kqueue.h"
 #include "private.h"
 
 #ifndef NDEBUG
 int KQUEUE_DEBUG = 0;
 #endif
+
 
 int
 kqueue_close(kqueue_t kq)
