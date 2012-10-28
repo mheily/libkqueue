@@ -34,7 +34,6 @@
 int KQUEUE_DEBUG = 0;
 #endif
 
-/* Must hold the kqtree_mtx when calling this */
 int
 kqueue_close(kqueue_t kq)
 {

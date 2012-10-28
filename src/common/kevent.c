@@ -20,37 +20,33 @@
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <sys/queue.h>
-#include <sys/socket.h>
 #include <sys/types.h>
 #include <string.h>
-#include <unistd.h>
 
 #include "../../kqueue.h"
 #include "private.h"
 
-static char *
+static const char *
 kevent_filter_dump(const struct kevent *kev)
 {
-    static char __thread buf[64];
+    static __thread char buf[64];
 
     snprintf(&buf[0], sizeof(buf), "%d (%s)", 
             kev->filter, filter_name(kev->filter));
-    return (&buf[0]);
+    return ((const char *) &buf[0]);
 }
 
-static char *
+static const char *
 kevent_fflags_dump(const struct kevent *kev)
 {
-    static char __thread buf[1024];
+    static __thread char buf[1024];
 
 #define KEVFFL_DUMP(attrib) \
     if (kev->fflags & attrib) \
-    strncat(buf, #attrib" ", 64);
+    strncat((char *) &buf[0], #attrib" ", 64);
 
     snprintf(buf, sizeof(buf), "fflags=0x%04x (", kev->fflags);
     if (kev->filter == EVFILT_VNODE) {
@@ -67,23 +63,23 @@ kevent_fflags_dump(const struct kevent *kev)
         KEVFFL_DUMP(NOTE_FFCOPY);
         KEVFFL_DUMP(NOTE_TRIGGER);
     }  else {
-        strncat(buf, " ", 1);
+        strncat((char *) &buf[0], " ", 1);
     }
     buf[strlen(buf) - 1] = ')';
 
 #undef KEVFFL_DUMP
 
-    return (buf);
+    return ((const char *) &buf[0]);
 }
 
-static char *
+static const char *
 kevent_flags_dump(const struct kevent *kev)
 {
-    static char __thread buf[1024];
+    static __thread char buf[1024];
 
 #define KEVFL_DUMP(attrib) \
     if (kev->flags & attrib) \
-	strncat(buf, #attrib" ", 64);
+	strncat((char *) &buf[0], #attrib" ", 64);
 
     snprintf(buf, sizeof(buf), "flags=0x%04x (", kev->flags);
     KEVFL_DUMP(EV_ADD);
@@ -100,15 +96,15 @@ kevent_flags_dump(const struct kevent *kev)
 
 #undef KEVFL_DUMP
 
-    return (buf);
+    return ((const char *) &buf[0]);
 }
 
 const char *
 kevent_dump(const struct kevent *kev)
 {
-    static char __thread buf[1024];
+    static __thread char buf[1024];
 
-    snprintf(buf, sizeof(buf), 
+    snprintf((char *) &buf[0], sizeof(buf), 
             "{ ident=%d, filter=%s, %s, %s, data=%d, udata=%p }",
             (u_int) kev->ident,
             kevent_filter_dump(kev),
@@ -117,7 +113,7 @@ kevent_dump(const struct kevent *kev)
             (int) kev->data,
             kev->udata);
 
-    return (buf);
+    return ((const char *) &buf[0]);
 }
 
 static int
@@ -125,9 +121,10 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent *src)
 {
     struct knote  *kn = NULL;
     struct filter *filt;
-    int rv;
+    int rv = 0;
 
     if (src->flags & EV_DISPATCH && src->flags & EV_ONESHOT) {
+        dbg_puts("Error: EV_DISPATCH and EV_ONESHOT are mutually exclusive");
         errno = EINVAL;
         return (-1);
     }
@@ -135,9 +132,10 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent *src)
     if (filter_lookup(&filt, kq, src->filter) < 0) 
         return (-1);
 
-    //dbg_printf("src=%s\n", kevent_dump(src));
+    dbg_printf("src=%s", kevent_dump(src));
 
     kn = knote_lookup(filt, src->ident);
+    dbg_printf("knote_lookup: ident %d == %p", (int)src->ident, kn);
     if (kn == NULL) {
         if (src->flags & EV_ADD) {
             if ((kn = knote_new()) == NULL) {
@@ -154,13 +152,18 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent *src)
                 return (-1);
             } 
             knote_insert(filt, kn);
-            dbg_printf("created kevent %s\n", kevent_dump(src));
+            dbg_printf("created kevent %s", kevent_dump(src));
+
+/* XXX- FIXME Needs to be handled in kn_create() to prevent races */
             if (src->flags & EV_DISABLE) {
                 kn->kev.flags |= EV_DISABLE;
                 return (filt->kn_disable(filt, kn));
             }
+            //........................................
+
             return (0);
         } else {
+            dbg_printf("no entry found for ident=%u", (unsigned int)src->ident); 
             errno = ENOENT;
             return (-1);
         }
@@ -181,15 +184,6 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent *src)
     /* Implicit EV_ADD */
     kn->kev.udata = src->udata;
     return (filt->kn_modify(filt, kn, src));
-
-#if DEADWOOD
-    /* Special case for EVFILT_USER:
-       Ignore user-generated events that are not of interest */
-    if (src->fflags & NOTE_TRIGGER) {
-        filter_unlock(filt);
-        continue;
-    }
-#endif
 }
 
 /** @return number of events added to the eventlist */
