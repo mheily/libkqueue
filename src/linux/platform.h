@@ -42,12 +42,18 @@ struct filter;
 /*
  * Get the current thread ID
  */
+#ifdef DARLING
+# define syscall __linux_syscall
+extern long int syscall (long int __sysno, ...);
+#else
 # define _GNU_SOURCE
 # include <linux/unistd.h>
 # include <unistd.h>
 #ifndef __ANDROID__
+
 extern long int syscall (long int __sysno, ...);
 #endif
+#endif /* DARLING */
  
 /* Convenience macros to access the epoll descriptor for the kqueue */
 #define kqueue_epfd(kq)     ((kq)->kq_id)

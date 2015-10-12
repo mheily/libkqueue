@@ -19,6 +19,14 @@ INCLUDE (CheckIncludeFiles)
 
 project(kqueue)
 
+if (DARLING)
+	include_directories("${DARLING_TOP_DIRECTORY}/libc/include")
+	
+	# For epoll
+	include_directories("${DARLING_TOP_DIRECTORY}/kernel/emulation/linux/ext")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostdinc -DHAVE_SYS_EVENTFD_H -DHAVE_SYS_SIGNALFD_H -DHAVE_SYS_TIMERFD_H")
+endif (DARLING)
+
 #files
 file(GLOB_RECURSE INCL include/*.h)
 source_group(includes FILES ${INCL})
@@ -84,6 +92,11 @@ include_directories(
 
 #library (static or shared)
 option(STATIC_KQUEUE "Enable to build libkqueue as static lib" OFF)
+
+if (DARLING)
+	set (STATIC_KQUEUE ON)
+endif (DARLING)
+
 if(STATIC_KQUEUE)
 	message("-- building libkqueue as static lib")
     add_library(kqueue STATIC ${SRC} ${INCL})
@@ -94,7 +107,7 @@ endif()
 if(WIN32)
 	set(LIB ${LIB} Ws2_32)
 endif()
-if(NOT WIN32)
+if(NOT WIN32 AND NOT DARLING)
 	set(LIB ${LIB} pthread)
 endif()
 target_link_libraries(kqueue ${LIB})

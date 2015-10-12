@@ -20,7 +20,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include "config.h"
+// #include "config.h"
 #include "tree.h"
 
 /* Maximum events returnable in a single kevent() call */
@@ -47,6 +47,10 @@ struct evfilt_data;
 # include "../solaris/platform.h"
 #else
 # error Unknown platform
+#endif
+
+#ifdef DARLING
+typedef int timer_t;
 #endif
 
 #include "debug.h"
