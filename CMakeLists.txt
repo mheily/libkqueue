@@ -99,7 +99,7 @@ endif (DARLING)
 
 if(STATIC_KQUEUE)
 	message("-- building libkqueue as static lib")
-    add_library(kqueue STATIC ${SRC} ${INCL})
+	add_library(kqueue OBJECT ${SRC} ${INCL})
 else()
     add_library(kqueue SHARED ${SRC} ${INCL})
 endif()
@@ -110,8 +110,6 @@ endif()
 if(NOT WIN32 AND NOT DARLING)
 	set(LIB ${LIB} pthread)
 endif()
-target_link_libraries(kqueue ${LIB})
-set_target_properties(kqueue PROPERTIES DEBUG_POSTFIX "D")
 
 #tests
 option(KQUEUE_TESTS "Enable to build tests for libkqueue" OFF)
