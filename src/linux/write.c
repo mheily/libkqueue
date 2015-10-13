@@ -16,7 +16,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/sockios.h>
+#include <sys/ioctl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -48,7 +48,7 @@ evfilt_socket_copyout(struct kevent *dst, struct knote *src, void *ptr)
         dst->fflags = 1; /* FIXME: Return the actual socket error */
           
     /* On return, data contains the the amount of space remaining in the write buffer */
-    if (ioctl(dst->ident, SIOCOUTQ, &dst->data) < 0) {
+    if (ioctl(dst->ident, TIOCOUTQ, &dst->data) < 0) {
             /* race condition with socket close, so ignore this error */
             dbg_puts("ioctl(2) of socket failed");
             dst->data = 0;

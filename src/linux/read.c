@@ -16,7 +16,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/sockios.h>
+#include <sys/ioctl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -124,7 +124,7 @@ evfilt_read_copyout(struct kevent *dst, struct knote *src, void *ptr)
         /* On return, data contains the number of bytes of protocol
            data available to read.
          */
-        if (ioctl(dst->ident, SIOCINQ, &dst->data) < 0) {
+        if (ioctl(dst->ident, FIONREAD, &dst->data) < 0) {
             /* race condition with socket close, so ignore this error */
             dbg_puts("ioctl(2) of socket failed");
             dst->data = 0;
