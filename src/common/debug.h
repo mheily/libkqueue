@@ -29,8 +29,8 @@ extern int DEBUG_KQUEUE;
 extern char *KQUEUE_DEBUG_IDENT;
 
 #if defined(DARLING)
-extern int thread_selfid();
-# define THREAD_ID (thread_selfid())
+extern int __thread_selfid();
+# define THREAD_ID (__thread_selfid())
 #elif defined(__linux__)
 # include <sys/syscall.h>
 # define THREAD_ID ((pid_t)  syscall(__NR_gettid))
