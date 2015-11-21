@@ -167,7 +167,7 @@ filter_name(short filt)
         "EVFILT_TIMER", 
         "EVFILT_NETDEV", 
         "EVFILT_FS",    
-        "EVFILT_LIO",  
+        // "EVFILT_LIO",  
         "EVFILT_USER"
     };
 

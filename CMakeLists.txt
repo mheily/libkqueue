@@ -24,7 +24,7 @@ if (DARLING)
 	
 	# For epoll
 	include_directories("${DARLING_TOP_DIRECTORY}/src/kernel/emulation/linux/ext")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostdinc -DHAVE_SYS_EVENTFD_H -DHAVE_SYS_SIGNALFD_H -DHAVE_SYS_TIMERFD_H")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostdinc -DHAVE_SYS_EVENTFD_H -DHAVE_SYS_SIGNALFD_H -DHAVE_SYS_TIMERFD_H -ggdb -O0")
 endif (DARLING)
 
 #files
