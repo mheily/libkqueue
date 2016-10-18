@@ -51,7 +51,6 @@ make check
 %{_includedir}/kqueue/sys/event.h
 %{_libdir}/pkgconfig/libkqueue.pc
 %{_mandir}/man2/kqueue.2.*
-%{_mandir}/man2/kevent.2.*
 
 %changelog
 * Wed May 08 2013 Mark Heily <mark@heily.com> - 2.0.1-1
