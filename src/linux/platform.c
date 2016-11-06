@@ -16,6 +16,7 @@
 
 # define _GNU_SOURCE
 # include <poll.h>
+#include <pthread.h>
 #include "../common/private.h"
 
 //XXX-FIXME TEMP
@@ -25,7 +26,8 @@ const struct filter evfilt_proc = EVFILT_NOTIMPL;
  * Per-thread epoll event buffer used to ferry data between
  * kevent_wait() and kevent_copyout().
  */
-static __thread struct epoll_event epevt[MAX_KEVENT];
+//static __thread struct epoll_event epevt[MAX_KEVENT];
+static pthread_key_t epevt_key;
 
 const struct kqueue_vtable kqops = {
     linux_kqueue_init,
@@ -54,6 +56,8 @@ linux_kqueue_init(struct kqueue *kq)
         close(kq->kq_id);
         return (-1);
     }
+
+	pthread_key_create(&epevt_key, free);
 
 
  #if DEADWOOD
@@ -126,6 +130,20 @@ linux_kevent_wait_hires(
     return (n);
 }
 
+static struct epoll_event* epevt_get()
+{
+	struct epoll_event* epevt;
+
+	epevt = pthread_getspecific(epevt_key);
+	if (epevt == NULL)
+	{
+		epevt = malloc(MAX_KEVENT * sizeof(*epevt));
+		pthread_setspecific(epevt_key, epevt);
+	}
+
+	return epevt;
+}
+
 int
 linux_kevent_wait(
         struct kqueue *kq, 
@@ -133,6 +151,7 @@ linux_kevent_wait(
         const struct timespec *ts)
 {
     int timeout, nret;
+	struct epoll_event* epevt;
 
     /* Use a high-resolution syscall if the timeout value is less than one millisecond.  */
     if (ts != NULL && ts->tv_sec == 0 && ts->tv_nsec > 0 && ts->tv_nsec < 1000000) {
@@ -150,6 +169,7 @@ linux_kevent_wait(
             timeout = (1000 * ts->tv_sec) + (ts->tv_nsec / 1000000);
     }
 
+	epevt = epevt_get();
     dbg_puts("waiting for events");
     nret = epoll_wait(kqueue_epfd(kq), &epevt[0], nevents, timeout);
     if (nret < 0) {
@@ -171,7 +191,7 @@ linux_kevent_copyout(struct kqueue *kq, int nready,
 
     nret = nready;
     for (i = 0; i < nready; i++) {
-        ev = &epevt[i];
+        ev = &epevt_get()[i];
         kn = (struct knote *) ev->data.ptr;
         filt = &kq->kq_filt[~(kn->kev.filter)];
         rv = filt->kf_copyout(eventlist, kn, ev);
