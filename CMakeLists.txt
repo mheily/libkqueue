@@ -76,7 +76,7 @@ else()
 		src/common
 	)
 	add_definitions(
-		-Wall -Werror
+		-Wall
 		-fpic
 		-D_XOPEN_SOURCE=600
 		-std=c99
