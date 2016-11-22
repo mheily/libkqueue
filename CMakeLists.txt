@@ -117,3 +117,5 @@ if(KQUEUE_TESTS)
     message("-- Adding tests for libkqueue")
     add_subdirectory(test)
 endif()
+
+install(FILES kqueue.2 DESTINATION libexec/darling/usr/share/man/man2)
