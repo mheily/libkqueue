@@ -14,10 +14,11 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
 
-cmake_minimum_required(VERSION 2.8.4)
+cmake_minimum_required(VERSION 3.4.3)
 cmake_policy(SET CMP0063 OLD)
 
-project(kqueue C)
+project(kqueue VERSION 2.1.1 LANGUAGES C)
+enable_testing()
 
 set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -25,25 +26,25 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 99)
 
 option(STATIC_KQUEUE "build libkqueue as static library" OFF)
-option(ENABLE_TESTS "build tests for libkqueue" OFF)
 
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
-set(THREADS_PREFER_PTHREADS_FLAG TRUE)
+set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)
 
 include(CheckIncludeFiles)
 include(CheckSymbolExists)
+include(GNUInstallDirs)
 
 check_include_files(sys/signalfd.h HAVE_SYS_SIGNALFD_H)
 check_include_files(sys/timerfd.h HAVE_SYS_TIMERFD_H)
 check_include_files(sys/eventfd.h HAVE_SYS_EVENTFD_H)
-if(ENABLE_TESTS)
+if(ENABLE_TESTING)
   check_include_files(err.h HAVE_ERR_H)
 endif()
 
 check_symbol_exists(EPOLLRDHUP sys/epoll.h HAVE_EPOLLRDHUP)
 check_symbol_exists(NOTE_TRUNCATE sys/event.h HAVE_NOTE_TRUNCATE)
-if(ENABLE_TESTS)
+if(ENABLE_TESTING)
   check_symbol_exists(NOTE_REVOKE sys/event.h HAVE_NOTE_REVOKE)
 endif()
 
@@ -117,7 +118,7 @@ else()
 endif()
 
 add_library(kqueue ${LIBRARY_TYPE} ${LIBKQUEUE_SOURCES} ${LIBKQUEUE_HEADERS})
-set_target_properties(kqueue PROPERTIES DEBUG_POSTFIX "D")
+set_target_properties(kqueue PROPERTIES DEBUG_POSTFIX "d")
 
 if(WIN32)
   target_compile_definitions(kqueue PRIVATE _USRDLL;_WINDLL)
@@ -141,9 +142,35 @@ endif()
 if(WIN32)
   target_link_libraries(kqueue PRIVATE Ws2_32)
 endif()
-target_link_libraries(kqueue PRIVATE ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(kqueue PRIVATE Threads::Threads)
 
-if(ENABLE_TESTS)
+if(ENABLE_TESTING)
   add_subdirectory(test)
 endif()
+
+configure_file("${CMAKE_SOURCE_DIR}/libkqueue.pc.in"
+               "${CMAKE_BINARY_DIR}/libkqueue.pc"
+               @ONLY)
+
+install(FILES
+          "include/sys/event.h"
+        DESTINATION
+          "${CMAKE_INSTALL_FULL_INCLUDEDIR}/sys")
+install(TARGETS
+          kqueue
+        DESTINATION
+          "${CMAKE_INSTALL_FULL_LIBDIR}")
+install(FILES
+          kqueue.2
+        DESTINATION
+          "${CMAKE_INSTALL_FULL_MANDIR}")
+install(FILES
+          "${CMAKE_BINARY_DIR}/libkqueue.pc"
+        DESTINATION
+          "${CMAKE_INSTALL_FULL_LIBDIR}/pkgconfig")
+
+set(CPACK_PACKAGE_NAME ${PACKAGE_NAME})
+set(CPACK_PACKAGE_VERSION ${PACKAGE_VERSION})
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Mark Heily <mark@heily.com>")
+include(CPack)
 
