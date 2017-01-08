@@ -81,6 +81,7 @@ else()
 		-D_XOPEN_SOURCE=600
 		-std=c99
 		-fvisibility=hidden
+		-D__linux__
 	)
 endif()
 source_group(src FILES ${SRC})
