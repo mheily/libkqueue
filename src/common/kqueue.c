@@ -122,17 +122,50 @@ kqueue_lookup(int kq)
     return ((struct kqueue *) map_lookup(kqmap, kq));
 }
 
-int kqueue_close(int kqfd)
+static void _kqueue_close_cb(int kqfd, void* kqptr, void* private)
 {
+	struct kqueue* kq = (struct kqueue*) kqptr;
+	int closing_fd = (int) private;
+	struct kevent ev[2];
+
+	ev[0].ident = closing_fd;
+	ev[0].flags = EV_DELETE;
+	ev[0].filter = EVFILT_READ;
+	ev[1].ident = closing_fd;
+	ev[1].flags = EV_DELETE;
+	ev[1].filter = EVFILT_WRITE;
+
+	// We don't care if it fails or not...
+	kevent(kqfd, ev, 2, NULL, 0, NULL);
+}
+
+void VISIBLE
+kqueue_close(int kqfd)
+{
+    if (kqmap == NULL)
+        return;
+
     struct kqueue* kq = kqueue_lookup(kqfd);
-    if (kq == NULL)
-        return -EBADF;
+    if (kq == NULL) {
+        // It is not a kqueue fd, but it could be a fd inside a kqueue
+        // Since we're creating duplicates of all fd's, we now have to walk
+        // through all known kqueues and remove the fd from them.
+		map_foreach(kqmap, _kqueue_close_cb, (void*) kqfd);
+    }
+	else {
+		kqueue_delref(kq);
+    }
+}
 
-    pthread_mutex_lock(&kq_mtx);
-    kqueue_free(kq);
-    pthread_mutex_unlock(&kq_mtx);
+void kqueue_addref(struct kqueue *kq)
+{
+	atomic_inc(&kq->kq_ref);
+}
 
-    return 0;
+void kqueue_delref(struct kqueue *kq)
+{
+	if (!atomic_dec(&kq->kq_ref))
+		kqueue_free(kq);
 }
 
 int VISIBLE
@@ -159,6 +192,7 @@ kqueue(void)
     if (kq == NULL)
         return (-1);
 
+    kq->kq_ref = 1;
 	tracing_mutex_init(&kq->kq_mtx, NULL);
 
     if (kqops.kqueue_init(kq) < 0) {
@@ -168,7 +202,6 @@ kqueue(void)
 
     dbg_printf("created kqueue, fd=%d", kq->kq_id);
 
-    pthread_mutex_lock(&kq_mtx);
     tmp = map_delete(kqmap, kq->kq_id);
     if (tmp != NULL) {
         dbg_puts("FIXME -- memory leak here");
@@ -181,7 +214,7 @@ kqueue(void)
         kqops.kqueue_free(kq);
         return (-1);
     }
-    pthread_mutex_unlock(&kq_mtx);
 
     return (kq->kq_id);
 }
+

@@ -112,6 +112,16 @@ map_lookup(struct map *m, int idx)
     return m->data[idx];
 }
 
+void
+map_foreach(struct map *m, void(*cb)(int, void*, void*), void* private)
+{
+    int i;
+    for (i = 0; i < (int)m->len; i++) {
+        if (m->data[i])
+            cb(i, m->data[i], private);
+    }
+}
+
 void *
 map_delete(struct map *m, int idx)
 {

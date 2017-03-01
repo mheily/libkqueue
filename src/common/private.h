@@ -209,6 +209,8 @@ void 		kevent_free(struct kqueue *);
 const char *kevent_dump(const struct kevent *);
 struct kqueue * kqueue_lookup(int);
 int         kqueue_validate(struct kqueue *);
+void        kqueue_addref(struct kqueue *);
+void        kqueue_delref(struct kqueue *);
 
 struct map *map_new(size_t);
 int         map_insert(struct map *, int, void *);
@@ -217,6 +219,7 @@ int         map_replace(struct map *, int, void *, void *);
 void       *map_lookup(struct map *, int);
 void       *map_delete(struct map *, int);
 void        map_free(struct map *);
+void        map_foreach(struct map *, void(*cb)(int, void*, void*), void*);
 
 /* DEADWOOD: No longer needed due to the un-smerging of POSIX and Linux
 

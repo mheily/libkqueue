@@ -252,6 +252,8 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
         return (-1);
     }
 
+    kqueue_addref(kq);
+
 #ifndef NDEBUG
     if (DEBUG_KQUEUE) {
         myid = atomic_inc(&_kevent_counter);
@@ -273,9 +275,8 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
             eventlist += rv;
             nevents -= rv;
             
-             
             /* There are events to return, so let's return now */
-            return rv;
+            goto out;
         }
     }
 
@@ -314,5 +315,6 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
 
 out:
     dbg_printf("--- END kevent %u ret %d ---", myid, rv);
+    kqueue_delref(kq);
     return (rv);
 }
