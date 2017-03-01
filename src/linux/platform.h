@@ -74,6 +74,7 @@ extern long int syscall (long int __sysno, ...);
         int kn_signalfd; \
         int kn_inotifyfd; \
         int kn_eventfd; \
+        int kn_dupfd; \
     } kdata
 
 /*

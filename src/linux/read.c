@@ -159,12 +159,12 @@ evfilt_read_knote_create(struct filter *filt, struct knote *kn)
     memset(&ev, 0, sizeof(ev));
     ev.events = kn->data.events;
     ev.data.ptr = kn;
+	kn->kn_epollfd = filter_epfd(filt);
 
     /* Special case: for regular files, add a surrogate eventfd that is always readable */
     if (kn->kn_flags & KNFL_REGULAR_FILE) {
         int evfd;
 
-        kn->kn_epollfd = filter_epfd(filt);
         evfd = eventfd(0, 0);
         if (evfd < 0) {
             dbg_perror("eventfd(2)");
@@ -183,6 +183,13 @@ evfilt_read_knote_create(struct filter *filt, struct knote *kn)
             return (-1);
         }
         return (0);
+    }
+    else {
+        kn->kdata.kn_dupfd = dup(kn->kev.ident);
+        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kdata.kn_dupfd, &ev) < 0) {
+            dbg_printf("epoll_ctl(2): %s", strerror(errno));
+            return (-1);
+        }
     }
 
     return epoll_update(EPOLL_CTL_ADD, filt, kn, &ev);
@@ -212,11 +219,15 @@ evfilt_read_knote_delete(struct filter *filt, struct knote *kn)
         (void) close(kn->kdata.kn_eventfd);
         kn->kdata.kn_eventfd = -1;
     } else {
-        return epoll_update(EPOLL_CTL_DEL, filt, kn, NULL);
+        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
+            dbg_perror("epoll_ctl(2)");
+            return (-1);
+        }
+        (void) close(kn->kdata.kn_dupfd);
+        kn->kdata.kn_dupfd = -1;
     }
 
-    // clang will complain about not returning a value otherwise
-    return (-1);
+    return 0;
 }
 
 int
@@ -235,11 +246,12 @@ evfilt_read_knote_enable(struct filter *filt, struct knote *kn)
         }
         return (0);
     } else {
-        return epoll_update(EPOLL_CTL_ADD, filt, kn, &ev);
+        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kdata.kn_dupfd, &ev) < 0) {
+            dbg_perror("epoll_ctl(2)");
+            return (-1);
+        }
+        return (0);
     }
-
-    // clang will complain about not returning a value otherwise
-    return (-1);
 }
 
 int
@@ -252,7 +264,11 @@ evfilt_read_knote_disable(struct filter *filt, struct knote *kn)
         }
         return (0);
     } else {
-        return epoll_update(EPOLL_CTL_DEL, filt, kn, NULL);
+        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
+            dbg_perror("epoll_ctl(2)");
+            return (-1);
+        }
+        return (0);
     }
 }
 
