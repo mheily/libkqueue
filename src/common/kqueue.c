@@ -110,7 +110,7 @@ kqueue_cmp(struct kqueue *a, struct kqueue *b)
 void
 kqueue_free(struct kqueue *kq)
 {
-    RB_REMOVE(kqt, &kqtree, kq);
+    map_delete(kqmap, kq->kq_id);
     filter_unregister_all(kq);
     kqops.kqueue_free(kq);
     free(kq);
@@ -122,9 +122,9 @@ kqueue_lookup(int kq)
     return ((struct kqueue *) map_lookup(kqmap, kq));
 }
 
-int kqueue_close(int kq)
+int kqueue_close(int kqfd)
 {
-    struct kqueue* kq = kqueue_lookup(kq);
+    struct kqueue* kq = kqueue_lookup(kqfd);
     if (kq == NULL)
         return -EBADF;
 
@@ -181,6 +181,7 @@ kqueue(void)
         kqops.kqueue_free(kq);
         return (-1);
     }
+    pthread_mutex_unlock(&kq_mtx);
 
     return (kq->kq_id);
 }
