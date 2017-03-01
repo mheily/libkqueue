@@ -146,9 +146,10 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent *src)
             kn->kev.flags |= EV_ADD;//FIXME why?
 			kn->kn_kq = kq;
             assert(filt->kn_create);
+
             if (filt->kn_create(filt, kn) < 0) {
                 knote_release(kn);
-                errno = EFAULT;
+                errno = EBADF;
                 return (-1);
             } 
             knote_insert(filt, kn);
@@ -218,6 +219,7 @@ err_path:
         if (nevents > 0) {
             memcpy(eventlist, src, sizeof(*src));
             eventlist->data = status;
+            eventlist->flags = EV_ERROR;
             nevents--;
             eventlist++;
             nret++;
@@ -270,6 +272,10 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
         if (rv > 0) {
             eventlist += rv;
             nevents -= rv;
+            
+             
+            /* There are events to return, so let's return now */
+            return rv;
         }
     }
 
