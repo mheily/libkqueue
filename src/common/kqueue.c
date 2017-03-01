@@ -104,6 +104,7 @@ kqueue_cmp(struct kqueue *a, struct kqueue *b)
 {
     return memcmp(&a->kq_id, &b->kq_id, sizeof(int)); 
 }
+#endif
 
 /* Must hold the kqtree_mtx when calling this */
 void
@@ -115,12 +116,23 @@ kqueue_free(struct kqueue *kq)
     free(kq);
 }
 
-#endif
-
 struct kqueue *
 kqueue_lookup(int kq)
 {
     return ((struct kqueue *) map_lookup(kqmap, kq));
+}
+
+int kqueue_close(int kq)
+{
+    struct kqueue* kq = kqueue_lookup(kq);
+    if (kq == NULL)
+        return -EBADF;
+
+    pthread_mutex_lock(&kq_mtx);
+    kqueue_free(kq);
+    pthread_mutex_unlock(&kq_mtx);
+
+    return 0;
 }
 
 int VISIBLE
@@ -156,12 +168,15 @@ kqueue(void)
 
     dbg_printf("created kqueue, fd=%d", kq->kq_id);
 
+    pthread_mutex_lock(&kq_mtx);
     tmp = map_delete(kqmap, kq->kq_id);
     if (tmp != NULL) {
         dbg_puts("FIXME -- memory leak here");
         // TODO: kqops.kqueue_free(tmp), or (better yet) decrease it's refcount
     }
     if (map_insert(kqmap, kq->kq_id, kq) < 0) {
+        pthread_mutex_unlock(&kq_mtx);
+
         dbg_puts("map insertion failed");
         kqops.kqueue_free(kq);
         return (-1);

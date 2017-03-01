@@ -58,7 +58,8 @@ knote_release(struct knote *kn)
     assert (kn->kn_ref > 0);
 
 	if (atomic_dec(&kn->kn_ref) == 0) {
-        if (kn->kn_flags & KNFL_KNOTE_DELETED) {
+        // This can happen if the note never made it into a filter
+        if (/*kn->kn_flags & KNFL_KNOTE_DELETED*/ 1) {
             dbg_printf("freeing knote at %p", kn);
             free(kn);
         } else {
