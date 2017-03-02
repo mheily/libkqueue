@@ -42,6 +42,8 @@ extern int __thread_selfid();
 # error Unsupported platform
 #endif
 
+FILE* debug_file();
+
 #ifndef NDEBUG
 #define dbg_puts(str)           do {                                \
     if (DEBUG_KQUEUE)                                                      \
@@ -51,7 +53,7 @@ extern int __thread_selfid();
 
 #define dbg_printf(fmt,...)     do {                                \
     if (DEBUG_KQUEUE)                                                      \
-      fprintf(stderr, "%s [%d]: %s(): "fmt"\n",                     \
+      fprintf(debug_file(), "%s [%d]: %s(): "fmt"\n",                     \
               KQUEUE_DEBUG_IDENT, THREAD_ID, __func__, __VA_ARGS__);       \
 } while (0)
 

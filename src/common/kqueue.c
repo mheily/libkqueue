@@ -218,3 +218,12 @@ kqueue(void)
     return (kq->kq_id);
 }
 
+FILE* debug_file()
+{
+	static FILE* file = NULL;
+	if (!file)
+	{
+		file = fopen("/tmp/kqueue-debug.log", "w");
+	}
+	return file;
+}

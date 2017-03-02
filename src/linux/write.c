@@ -95,10 +95,25 @@ int
 evfilt_socket_knote_modify(struct filter *filt, struct knote *kn, 
         const struct kevent *kev)
 {
-    (void) filt;
-    (void) kn;
-    (void) kev;
-    return (-1); /* STUB */
+    struct epoll_event ev;
+
+    /* Convert the kevent into an epoll_event */
+    kn->data.events = EPOLLOUT;
+    if (kn->kev.flags & EV_ONESHOT || kn->kev.flags & EV_DISPATCH)
+        kn->data.events |= EPOLLONESHOT;
+    if (kn->kev.flags & EV_CLEAR)
+        kn->data.events |= EPOLLET;
+	kn->kn_epollfd = filter_epfd(filt);
+
+    memset(&ev, 0, sizeof(ev));
+    ev.events = kn->data.events;
+    ev.data.ptr = kn;
+
+	if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_MOD, kn->kdata.kn_dupfd, &ev) < 0) {
+		dbg_printf("epoll_ctl(2): %s", strerror(errno));
+		return (-1);
+	}
+    return 0;
 }
 
 int
