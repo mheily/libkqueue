@@ -103,7 +103,6 @@ if (DARLING)
 endif (DARLING)
 
 if(STATIC_KQUEUE)
-	message("-- building libkqueue as static lib")
 	add_library(kqueue OBJECT ${SRC} ${INCL})
 else()
     add_library(kqueue SHARED ${SRC} ${INCL})
