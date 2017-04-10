@@ -48,9 +48,9 @@ posix_evfilt_user_destroy(struct filter *filt)
 }
 
 int
-posix_evfilt_user_copyout(struct kevent *dst, struct knote *src, void *ptr UNUSED)
+posix_evfilt_user_copyout(struct kevent64_s *dst, struct knote *src, void *ptr UNUSED)
 {
-    memcpy(dst, &src->kev, sizeof(*dst));
+    kevent_int_to_64(&src->kev, dst);
     struct knote *kn;
     int nevents = 0;
   
@@ -91,7 +91,7 @@ posix_evfilt_user_knote_create(struct filter *filt, struct knote *kn)
 
 int
 posix_evfilt_user_knote_modify(struct filter *filt, struct knote *kn, 
-        const struct kevent *kev)
+        const struct kevent64_s *kev)
 {
     unsigned int ffctrl;
     unsigned int fflags;

@@ -131,10 +131,10 @@ evfilt_proc_destroy(struct filter *filt)
 
 int
 evfilt_proc_copyin(struct filter *filt, 
-        struct knote *dst, const struct kevent *src)
+        struct knote *dst, const struct kevent64_s *src)
 {
     if (src->flags & EV_ADD && KNOTE_EMPTY(dst)) {
-        memcpy(&dst->kev, src, sizeof(*src));
+        kevent_64_to_int(src, &dst->kev);
         /* TODO: think about locking the mutex first.. */
         pthread_cond_signal(&wait_cond);
     }
@@ -148,7 +148,7 @@ evfilt_proc_copyin(struct filter *filt,
 
 int
 evfilt_proc_copyout(struct filter *filt, 
-            struct kevent *dst, 
+            struct kevent64_s *dst, 
             int maxevents)
 {
     struct knote *kn;
@@ -157,8 +157,8 @@ evfilt_proc_copyout(struct filter *filt,
     filter_lower(filt);
 
     LIST_FOREACH(kn, &filt->kf_eventlist, entries) {
-        kevent_dump(&kn->kev);
-        memcpy(dst, &kn->kev, sizeof(*dst));
+        kevent_int_to_64(&kn->kev, dst);
+        kevent_dump(dst);
         dst->fflags = NOTE_EXIT;
 
         if (kn->kev.flags & EV_DISPATCH) {

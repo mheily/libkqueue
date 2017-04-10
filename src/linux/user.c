@@ -90,9 +90,9 @@ eventfd_lower(int evfd)
 }
 
 int
-linux_evfilt_user_copyout(struct kevent *dst, struct knote *src, void *ptr UNUSED)
+linux_evfilt_user_copyout(struct kevent64_s *dst, struct knote *src, void *ptr UNUSED)
 {
-    memcpy(dst, &src->kev, sizeof(*dst));
+    kevent_int_to_64(&src->kev, dst);
     dst->fflags &= ~NOTE_FFCTRLMASK;     //FIXME: Not sure if needed
     dst->fflags &= ~NOTE_TRIGGER;
     if (src->kev.flags & EV_ADD) {
@@ -147,7 +147,7 @@ errout:
 
 int
 linux_evfilt_user_knote_modify(struct filter *filt UNUSED, struct knote *kn, 
-        const struct kevent *kev)
+        const struct kevent64_s *kev)
 {
     unsigned int ffctrl;
     unsigned int fflags;

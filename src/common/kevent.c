@@ -29,7 +29,7 @@
 #include "private.h"
 
 static const char *
-kevent_filter_dump(const struct kevent *kev)
+kevent_filter_dump(const struct kevent64_s *kev)
 {
     static __thread char buf[64];
 
@@ -39,7 +39,7 @@ kevent_filter_dump(const struct kevent *kev)
 }
 
 static const char *
-kevent_fflags_dump(const struct kevent *kev)
+kevent_fflags_dump(const struct kevent64_s *kev)
 {
     static __thread char buf[1024];
 
@@ -72,7 +72,7 @@ kevent_fflags_dump(const struct kevent *kev)
 }
 
 static const char *
-kevent_flags_dump(const struct kevent *kev)
+kevent_flags_dump(const struct kevent64_s *kev)
 {
     static __thread char buf[1024];
 
@@ -99,12 +99,12 @@ kevent_flags_dump(const struct kevent *kev)
 }
 
 const char *
-kevent_dump(const struct kevent *kev)
+kevent_dump(const struct kevent64_s *kev)
 {
     static __thread char buf[1024];
 
     snprintf((char *) &buf[0], sizeof(buf), 
-            "{ ident=%d, filter=%s, %s, %s, data=%d, udata=%p }",
+            "{ ident=%d, filter=%s, %s, %s, data=%d, udata=%llx }",
             (u_int) kev->ident,
             kevent_filter_dump(kev),
             kevent_flags_dump(kev),
@@ -116,7 +116,7 @@ kevent_dump(const struct kevent *kev)
 }
 
 static int
-kevent_copyin_one(struct kqueue *kq, const struct kevent *src)
+kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src)
 {
     struct knote  *kn = NULL;
     struct filter *filt;
@@ -141,7 +141,7 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent *src)
                 errno = ENOENT;
                 return (-1);
             }
-            memcpy(&kn->kev, src, sizeof(kn->kev));
+            kevent_64_to_int(src, &kn->kev);
             kn->kev.flags &= ~EV_ENABLE;
             kn->kev.flags |= EV_ADD;//FIXME why?
 			kn->kn_kq = kq;
@@ -192,8 +192,8 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent *src)
 
 /** @return number of events added to the eventlist */
 static int
-kevent_copyin(struct kqueue *kq, const struct kevent *src, int nchanges,
-        struct kevent *eventlist, int nevents)
+kevent_copyin(struct kqueue *kq, const struct kevent64_s *src, int nchanges,
+        struct kevent64_s *eventlist, int nevents)
 {
     int status, nret;
 
@@ -231,12 +231,101 @@ err_path:
     return (nret);
 }
 
+static void
+kevent_to_64(const struct kevent* ev, struct kevent64_s* ev64)
+{
+	ev64->ident = ev->ident;
+	ev64->filter = ev->filter;
+	ev64->flags = ev->flags;
+	ev64->fflags = ev->fflags;
+	ev64->data = ev->data;
+	ev64->udata = (uint64_t)(uintptr_t) ev->udata;
+	ev64->ext[0] = ev64->ext[1] = 0;
+}
+
+static void
+kevent_from_64(struct kevent* ev, const struct kevent64_s* ev64)
+{
+	ev->ident = ev64->ident;
+	ev->filter = ev64->filter;
+	ev->flags = ev64->flags;
+	ev->fflags = ev64->fflags;
+	ev->data = ev64->data;
+	ev->udata = (void*) ev64->udata;
+}
+
+void kevent_64_to_int(const struct kevent64_s* e64, struct kevent_internal_s* eint)
+{
+	eint->ident = e64->ident;
+	eint->filter = e64->filter;
+	eint->flags = e64->flags;
+	eint->fflags = e64->fflags;
+	eint->data = e64->data;
+	eint->udata = e64->udata;
+	eint->ext[0] = e64->ext[0];
+	eint->ext[1] = e64->ext[1];
+	eint->ext[2] = eint->ext[3] = 0;
+}
+
+void kevent_int_to_64(const struct kevent_internal_s* eint, struct kevent64_s* e64)
+{
+	e64->ident = eint->ident;
+	e64->filter = eint->filter;
+	e64->flags = eint->flags;
+	e64->fflags = eint->fflags;
+	e64->data = eint->data;
+	e64->udata = eint->udata;
+	e64->ext[0] = eint->ext[0];
+	e64->ext[1] = eint->ext[1];
+}
+
 int VISIBLE
-kevent(int kqfd, const struct kevent *changelist, int nchanges,
+kevent_impl(int kqfd, const struct kevent *changelist, int nchanges,
         struct kevent *eventlist, int nevents,
         const struct timespec *timeout)
 {
+    struct kevent64_s* changelist64 = NULL;
+    struct kevent64_s* eventlist64 = NULL;
+    int rv;
+
+    if (eventlist && nevents > 0)
+        eventlist64 = (struct kevent64_s*) __builtin_alloca(nevents * sizeof(struct kevent64_s));
+
+    if (changelist && nchanges > 0)
+    {
+        int i;
+
+        changelist64 = (struct kevent64_s*) __builtin_alloca(nchanges * sizeof(struct kevent64_s));
+
+        for (i = 0; i < nchanges; i++)
+            kevent_to_64(&changelist[i], &changelist64[i]);
+    }
+
+    rv = kevent64(kqfd, changelist64, nchanges, eventlist64, nevents, 0, timeout);
+
+    if (rv > 0)
+    {
+        int i;
+
+        for (i = 0; i < rv; i++)
+            kevent_from_64(&eventlist[i], &eventlist64[i]);
+    }
+
+    // Replaced malloc with alloca
+    // free(changelist64);
+    // free(eventlist64);
+    return rv;
+}
+
+
+int VISIBLE
+kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
+        struct kevent64_s *eventlist, int nevents,
+        unsigned int flags,
+        const struct timespec *timeout)
+{
     struct kqueue *kq;
+    struct timespec timeout_zero = { 0, 0 };
     int rv = 0;
 #ifndef NDEBUG
     static unsigned int _kevent_counter = 0;
@@ -288,7 +377,7 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
     if (nevents > MAX_KEVENT)
         nevents = MAX_KEVENT;
     if (nevents > 0) {
-        rv = kqops.kevent_wait(kq, nevents, timeout);
+        rv = kqops.kevent_wait(kq, nevents, (flags & KEVENT_FLAG_IMMEDIATE) ? (&timeout_zero) : timeout);
         dbg_printf("kqops.kevent_wait returned %d", rv);
         if (fastpath(rv > 0)) {
             kqueue_lock(kq);

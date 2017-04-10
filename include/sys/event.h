@@ -27,8 +27,25 @@
  * $FreeBSD SVN Revision 197533$
  */
 
-#ifndef _SYS_EVENT_H_
-#define _SYS_EVENT_H_
+#ifndef _SYS_EVENT_KQ_H_
+#define _SYS_EVENT_KQ_H_
+
+#ifdef DARLING
+#	include <sys/event.h>
+
+struct kevent_internal_s {
+    uint64_t    ident;      /* identifier for this event */
+    int16_t     filter;     /* filter for event */
+    uint16_t    flags;      /* general flags */
+    int32_t     qos;        /* quality of service */
+    uint32_t    fflags;     /* filter-specific flags */
+//  uint32_t    xflags;     /* extra filter-specific flags */
+    int64_t     data;       /* filter-specific data */
+    uint64_t    udata;      /* opaque user data identifier */
+    uint64_t    ext[4];     /* filter-specific extensions */
+};
+
+#else
 
 #include <sys/types.h>
 
@@ -209,4 +226,5 @@ int     libkqueue_init();
 #endif
 #endif /* !__KERNEL__* */
 
+#endif
 #endif /* !_SYS_EVENT_H_ */

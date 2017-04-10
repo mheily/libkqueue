@@ -168,7 +168,7 @@ delete_watch(struct filter *filt, struct knote *kn)
 }
 
 int
-evfilt_vnode_copyout(struct kevent *dst, struct knote *src, void *ptr UNUSED)
+evfilt_vnode_copyout(struct kevent64_s *dst, struct knote *src, void *ptr UNUSED)
 {
     struct inotify_event evt;
     struct stat sb;
@@ -193,7 +193,7 @@ scriptors reference the same file.
         return (0);
     }
 
-    memcpy(dst, &src->kev, sizeof(*dst));
+    kevent_int_to_64(&src->kev, dst);
     dst->data = 0;
 
     /* No error checking because fstat(2) should rarely fail */
@@ -253,7 +253,7 @@ evfilt_vnode_knote_create(struct filter *filt, struct knote *kn)
 
 int
 evfilt_vnode_knote_modify(struct filter *filt, struct knote *kn, 
-        const struct kevent *kev)
+        const struct kevent64_s *kev)
 {
     (void)filt;
     (void)kn;

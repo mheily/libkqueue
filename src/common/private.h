@@ -27,7 +27,7 @@
 #define MAX_KEVENT  512
 
 struct kqueue;
-struct kevent;
+struct kevent64;
 struct knote;
 struct map;
 struct eventfd;
@@ -75,7 +75,7 @@ struct eventfd {
 #define KNFL_KNOTE_DELETED   (0x10)  /* The knote object is no longer valid */
  
 struct knote {
-    struct kevent     kev;
+    struct kevent_internal_s     kev;
     int               kn_flags;       
     union {
         /* OLD */
@@ -112,13 +112,13 @@ struct filter {
 
     int     (*kf_init)(struct filter *);
     void    (*kf_destroy)(struct filter *);
-    int     (*kf_copyout)(struct kevent *, struct knote *, void *);
+    int     (*kf_copyout)(struct kevent64_s *, struct knote *, void *);
 
     /* knote operations */
 
     int     (*kn_create)(struct filter *, struct knote *);
     int     (*kn_modify)(struct filter *, struct knote *, 
-                            const struct kevent *);
+                            const struct kevent64_s *);
     int     (*kn_delete)(struct filter *, struct knote *);
     int     (*kn_enable)(struct filter *, struct knote *);
     int     (*kn_disable)(struct filter *, struct knote *);
@@ -167,7 +167,7 @@ struct kqueue_vtable {
     // @param kevent the structure to copy the events into
     // @param int The number of events to copy
     // @return the actual number of events copied
-    int  (*kevent_copyout)(struct kqueue *, int, struct kevent *, int);
+    int  (*kevent_copyout)(struct kqueue *, int, struct kevent64_s *, int);
     int  (*filter_init)(struct kqueue *, struct filter *);
     void (*filter_free)(struct kqueue *, struct filter *);
     int  (*eventfd_init)(struct eventfd *);
@@ -204,9 +204,9 @@ void     	filter_unregister_all(struct kqueue *);
 const char *filter_name(short);
 
 int         kevent_wait(struct kqueue *, const struct timespec *);
-int         kevent_copyout(struct kqueue *, int, struct kevent *, int);
+int         kevent_copyout(struct kqueue *, int, struct kevent64_s *, int);
 void 		kevent_free(struct kqueue *);
-const char *kevent_dump(const struct kevent *);
+const char *kevent_dump(const struct kevent64_s *);
 struct kqueue * kqueue_lookup(int);
 int         kqueue_validate(struct kqueue *);
 void        kqueue_addref(struct kqueue *);
@@ -221,13 +221,16 @@ void       *map_delete(struct map *, int);
 void        map_free(struct map *);
 void        map_foreach(struct map *, void(*cb)(int, void*, void*), void*);
 
+void kevent_64_to_int(const struct kevent64_s* e64, struct kevent_internal_s* eint);
+void kevent_int_to_64(const struct kevent_internal_s* eint, struct kevent64_s* e64);
+
 /* DEADWOOD: No longer needed due to the un-smerging of POSIX and Linux
 
 int  posix_evfilt_user_init(struct filter *);
 void posix_evfilt_user_destroy(struct filter *);
-int  posix_evfilt_user_copyout(struct kevent *, struct knote *, void *ptr UNUSED);
+int  posix_evfilt_user_copyout(struct kevent64_s *, struct knote *, void *ptr UNUSED);
 int  posix_evfilt_user_knote_create(struct filter *, struct knote *);
-int  posix_evfilt_user_knote_modify(struct filter *, struct knote *, const struct kevent *);
+int  posix_evfilt_user_knote_modify(struct filter *, struct knote *, const struct kevent64_s *);
 int  posix_evfilt_user_knote_delete(struct filter *, struct knote *);
 int  posix_evfilt_user_knote_enable(struct filter *, struct knote *);
 int  posix_evfilt_user_knote_disable(struct filter *, struct knote *);

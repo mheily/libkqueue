@@ -142,7 +142,7 @@ evfilt_signal_knote_create(struct filter *filt, struct knote *kn)
 
 int
 evfilt_signal_knote_modify(struct filter *filt, struct knote *kn, 
-                const struct kevent *kev)
+                const struct kevent64_s *kev)
 {
     (void) filt;
     kn->kev.flags = kev->flags | EV_CLEAR;
@@ -170,7 +170,7 @@ evfilt_signal_knote_disable(struct filter *filt, struct knote *kn)
 }
 
 int
-evfilt_signal_copyout(struct kevent *dst, struct knote *src, void *ptr UNUSED)
+evfilt_signal_copyout(struct kevent64_s *dst, struct knote *src, void *ptr UNUSED)
 {
     struct sentry *s;
     struct knote *kn;

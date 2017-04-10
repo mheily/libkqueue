@@ -70,7 +70,7 @@ void    posix_kqueue_free(struct kqueue *);
 int     posix_kqueue_init(struct kqueue *);
 
 int     posix_kevent_wait(struct kqueue *, const struct timespec *);
-int     posix_kevent_copyout(struct kqueue *, int, struct kevent *, int);
+int     posix_kevent_copyout(struct kqueue *, int, struct kevent64_s *, int);
 
 int     posix_eventfd_init(struct eventfd *);
 void    posix_eventfd_close(struct eventfd *);

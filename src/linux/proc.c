@@ -157,7 +157,7 @@ evfilt_proc_destroy(struct filter *filt)
 
 int
 evfilt_proc_copyout(struct filter *filt, 
-            struct kevent *dst, 
+            struct kevent64_s *dst, 
             int maxevents)
 {
     struct knote *kn;
@@ -172,8 +172,8 @@ evfilt_proc_copyout(struct filter *filt,
     dbg_printf("  counter=%llu", (unsigned long long) cur);
 
     for (kn = knote_dequeue(filt); kn != NULL; kn = knote_dequeue(filt)) {
-        kevent_dump(&kn->kev);
-        memcpy(dst, &kn->kev, sizeof(*dst));
+        kevent_int_to_64(&kn->kev, dst);
+        kevent_dump(dst);
 
         if (kn->kev.flags & EV_DISPATCH) {
             KNOTE_DISABLE(kn);
@@ -207,7 +207,7 @@ evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
 
 int
 evfilt_proc_knote_modify(struct filter *filt, struct knote *kn, 
-        const struct kevent *kev)
+        const struct kevent64_s *kev)
 {
     return (0); /* STUB */
 }

@@ -54,13 +54,13 @@ get_eof_offset(int fd)
 }
 
 int
-evfilt_read_copyout(struct kevent *dst, struct knote *src, void *ptr)
+evfilt_read_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 {
     struct epoll_event * const ev = (struct epoll_event *) ptr;
 
     /* Special case: for regular files, return the offset from current position to end of file */
     if (src->kn_flags & KNFL_REGULAR_FILE) {
-        memcpy(dst, &src->kev, sizeof(*dst));
+        kevent_int_to_64(&src->kev, dst);
         dst->data = get_eof_offset(src->kev.ident);
 
         if (dst->data == 0) {
@@ -104,7 +104,7 @@ evfilt_read_copyout(struct kevent *dst, struct knote *src, void *ptr)
     }
 
     dbg_printf("epoll: %s", epoll_event_dump(ev));
-    memcpy(dst, &src->kev, sizeof(*dst));
+    kevent_int_to_64(&src->kev, dst);
 #if defined(HAVE_EPOLLRDHUP)
     if (ev->events & EPOLLRDHUP || ev->events & EPOLLHUP)
         dst->flags |= EV_EOF;
@@ -197,7 +197,7 @@ evfilt_read_knote_create(struct filter *filt, struct knote *kn)
 
 int
 evfilt_read_knote_modify(struct filter *filt, struct knote *kn, 
-        const struct kevent *kev)
+        const struct kevent64_s *kev)
 {
     struct epoll_event ev;
 

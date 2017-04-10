@@ -31,12 +31,12 @@
 #include "private.h"
 
 int
-evfilt_socket_copyout(struct kevent *dst, struct knote *src, void *ptr)
+evfilt_socket_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 {
     struct epoll_event * const ev = (struct epoll_event *) ptr;
 
     epoll_event_dump(ev);
-    memcpy(dst, &src->kev, sizeof(*dst));
+    kevent_int_to_64(&src->kev, dst);
 #if defined(HAVE_EPOLLRDHUP)
     if (ev->events & EPOLLRDHUP || ev->events & EPOLLHUP)
         dst->flags |= EV_EOF;
@@ -93,7 +93,7 @@ evfilt_socket_knote_create(struct filter *filt, struct knote *kn)
 
 int
 evfilt_socket_knote_modify(struct filter *filt, struct knote *kn, 
-        const struct kevent *kev)
+        const struct kevent64_s *kev)
 {
     struct epoll_event ev;
 

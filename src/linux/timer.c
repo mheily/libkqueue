@@ -61,6 +61,8 @@ int timerfd_gettime(int ufc, struct itimerspec *otmr)
 
 #endif
 
+#define LINUX_CLOCK_MONOTONIC 1
+
 #ifndef NDEBUG
 static char *
 itimerspec_dump(struct itimerspec *ts)
@@ -104,13 +106,13 @@ convert_msec_to_itimerspec(struct itimerspec *dst, int src, int oneshot)
 }
 
 int
-evfilt_timer_copyout(struct kevent *dst, struct knote *src, void *ptr)
+evfilt_timer_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 {
     struct epoll_event * const ev = (struct epoll_event *) ptr;
     uint64_t expired;
     ssize_t n;
 
-    memcpy(dst, &src->kev, sizeof(*dst));
+    kevent_int_to_64(&src->kev, dst);
     if (ev->events & EPOLLERR)
         dst->fflags = 1; /* FIXME: Return the actual timer error */
           
@@ -136,7 +138,7 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
 
     kn->kev.flags |= EV_CLEAR;
 
-    tfd = timerfd_create(CLOCK_MONOTONIC, 0);
+    tfd = timerfd_create(LINUX_CLOCK_MONOTONIC, 0);
     if (tfd < 0) {
         dbg_printf("timerfd_create(2): %s", strerror(errno));
         return (-1);
@@ -165,7 +167,7 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
 
 int
 evfilt_timer_knote_modify(struct filter *filt, struct knote *kn, 
-        const struct kevent *kev)
+        const struct kevent64_s *kev)
 {
     (void)filt;
     (void)kn;

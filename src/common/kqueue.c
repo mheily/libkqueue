@@ -126,7 +126,7 @@ static void _kqueue_close_cb(int kqfd, void* kqptr, void* private)
 {
 	struct kqueue* kq = (struct kqueue*) kqptr;
 	int closing_fd = (int) private;
-	struct kevent ev[2];
+	struct kevent64_s ev[2];
 
 	ev[0].ident = closing_fd;
 	ev[0].flags = EV_DELETE;
@@ -136,7 +136,7 @@ static void _kqueue_close_cb(int kqfd, void* kqptr, void* private)
 	ev[1].filter = EVFILT_WRITE;
 
 	// We don't care if it fails or not...
-	kevent(kqfd, ev, 2, NULL, 0, NULL);
+	kevent64(kqfd, ev, 2, NULL, 0, 0, NULL);
 }
 
 void VISIBLE
@@ -169,7 +169,7 @@ void kqueue_delref(struct kqueue *kq)
 }
 
 int VISIBLE
-kqueue(void)
+kqueue_impl(void)
 {
 	struct kqueue *kq;
     struct kqueue *tmp;

@@ -182,7 +182,7 @@ linux_kevent_wait(
 
 int
 linux_kevent_copyout(struct kqueue *kq, int nready,
-        struct kevent *eventlist, int nevents UNUSED)
+        struct kevent64_s *eventlist, int nevents UNUSED)
 {
     struct epoll_event *ev;
     struct filter *filt;

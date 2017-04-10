@@ -50,7 +50,7 @@ posix_kevent_wait(
 
 int
 posix_kevent_copyout(struct kqueue *kq, int nready,
-        struct kevent *eventlist, int nevents)
+        struct kevent64_s *eventlist, int nevents)
 {
     struct filter *filt;
     int i, rv, nret;

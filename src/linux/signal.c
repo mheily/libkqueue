@@ -122,7 +122,7 @@ errout:
 }
 
 int
-evfilt_signal_copyout(struct kevent *dst, struct knote *src, void *x UNUSED)
+evfilt_signal_copyout(struct kevent64_s *dst, struct knote *src, void *x UNUSED)
 {
     int sigfd;
 
@@ -130,7 +130,7 @@ evfilt_signal_copyout(struct kevent *dst, struct knote *src, void *x UNUSED)
 
     signalfd_reset(sigfd);
 
-    memcpy(dst, &src->kev, sizeof(*dst));
+    kevent_int_to_64(&src->kev, dst);
     /* NOTE: dst->data should be the number of times the signal occurred,
        but that information is not available.
      */
@@ -158,7 +158,7 @@ evfilt_signal_knote_create(struct filter *filt, struct knote *kn)
 int
 evfilt_signal_knote_modify(struct filter *filt UNUSED, 
         struct knote *kn UNUSED, 
-        const struct kevent *kev UNUSED)
+        const struct kevent64_s *kev UNUSED)
 {
     /* Nothing to do since the signal number does not change. */
 

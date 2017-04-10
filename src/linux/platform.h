@@ -88,9 +88,9 @@ int     linux_kqueue_init(struct kqueue *);
 void    linux_kqueue_free(struct kqueue *);
 
 int     linux_kevent_wait(struct kqueue *, int, const struct timespec *);
-int     linux_kevent_copyout(struct kqueue *, int, struct kevent *, int);
+int     linux_kevent_copyout(struct kqueue *, int, struct kevent64_s *, int);
 
-int     linux_knote_copyout(struct kevent *, struct knote *);
+int     linux_knote_copyout(struct kevent64_s *, struct knote *);
 
 int     linux_eventfd_init(struct eventfd *);
 void    linux_eventfd_close(struct eventfd *);

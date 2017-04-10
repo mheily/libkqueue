@@ -217,7 +217,7 @@ evfilt_timer_destroy(struct filter *filt)
 }
 
 int
-evfilt_timer_copyout(struct kevent *dst, struct knote *src, void *ptr UNUSED)
+evfilt_timer_copyout(struct kevent64_s *dst, struct knote *src, void *ptr UNUSED)
 {
     struct filter *filt;
     struct sleepinfo    si;
@@ -258,7 +258,7 @@ evfilt_timer_copyout(struct kevent *dst, struct knote *src, void *ptr UNUSED)
         return (0);
 
     dbg_printf("knote=%p", kn);
-    memcpy(dst, &kn->kev, sizeof(*dst));
+    kevent_int_to_64(&kn->kev, dst);
 
     dst->data = si.counter;
 
@@ -283,7 +283,7 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
 
 int
 evfilt_timer_knote_modify(struct filter *filt, struct knote *kn, 
-        const struct kevent *kev)
+        const struct kevent64_s *kev)
 {
     (void) filt;
     (void) kn;
