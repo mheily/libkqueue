@@ -15,6 +15,7 @@
  */
 
 #include "private.h"
+#include <sys/time.h>
 
 #ifndef HAVE_SYS_TIMERFD_H
 
@@ -81,14 +82,54 @@ itimerspec_dump(struct itimerspec *ts)
 }
 #endif
 
-/* Convert milliseconds into seconds+nanoseconds */
-static void
-convert_msec_to_itimerspec(struct itimerspec *dst, int src, int oneshot)
+static void convert_to_itimerspec(struct itimerspec *dst, uint64_t src, bool oneshot, int fflags)
 {
-    time_t sec, nsec;
+	time_t sec, nsec;
+	struct timeval now;
 
-    sec = src / 1000;
-    nsec = (src % 1000) * 1000000;
+	if (fflags & NOTE_ABSOLUTE)
+	{
+		dbg_printf("%s", "...timer is absolute\n");
+		oneshot = true;
+		gettimeofday(&now, NULL);
+	}
+
+	if (fflags & NOTE_SECONDS)
+	{
+		dbg_printf("...timer is in seconds: %llu\n", src);
+		if (fflags & NOTE_ABSOLUTE)
+			src -= now.tv_sec;
+
+		sec = src;
+		nsec = 0;
+	}
+	else if (fflags & NOTE_USECONDS)
+	{
+		dbg_printf("...timer is in useconds: %llu\n", src);
+		if (fflags & NOTE_ABSOLUTE)
+			src -= (now.tv_sec * 1000000ull) + now.tv_usec;
+
+		sec = src / 1000000;
+		nsec = (src % 1000000) * 1000;
+	}
+	else if (fflags & NOTE_NSECONDS)
+	{
+		dbg_printf("...timer is in nseconds: %llu\n", src);
+		if (fflags & NOTE_ABSOLUTE)
+			src -= (now.tv_sec * 1000000000ull) + now.tv_usec*1000;
+
+		sec = src / 1000000000;
+		nsec = src % 1000000000;
+	}
+	else
+	{
+		dbg_printf("...timer is in mseconds: %llu\n", src);
+		if (fflags & NOTE_ABSOLUTE)
+			src -= (now.tv_sec * 1000) + (now.tv_usec / 1000);
+
+		sec = src / 1000;
+		nsec = (src % 1000) * 1000000;
+	}
 
     /* Set the interval */
     if (oneshot) {
@@ -145,7 +186,7 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
     }
     dbg_printf("created timerfd %d", tfd);
 
-    convert_msec_to_itimerspec(&ts, kn->kev.data, kn->kev.flags & EV_ONESHOT);
+    convert_to_itimerspec(&ts, kn->kev.data, kn->kev.flags & EV_ONESHOT, kn->kev.fflags);
     if (timerfd_settime(tfd, 0, &ts, NULL) < 0) {
         dbg_printf("timerfd_settime(2): %s", strerror(errno));
         close(tfd);
