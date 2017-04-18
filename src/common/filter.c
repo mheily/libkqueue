@@ -30,6 +30,7 @@ extern const struct filter evfilt_vnode;
 extern const struct filter evfilt_proc;
 extern const struct filter evfilt_timer;
 extern const struct filter evfilt_user;
+extern const struct filter evfilt_machport;
 
 static int
 filter_register(struct kqueue *kq, short filter, const struct filter *src)
@@ -102,6 +103,7 @@ filter_register_all(struct kqueue *kq)
     rv += filter_register(kq, EVFILT_PROC, &evfilt_proc);
     rv += filter_register(kq, EVFILT_TIMER, &evfilt_timer);
     rv += filter_register(kq, EVFILT_USER, &evfilt_user);
+    rv += filter_register(kq, EVFILT_MACHPORT, &evfilt_machport);
     kq->kq_nfds++;
     if (rv != 0) {
         filter_unregister_all(kq);
@@ -165,10 +167,12 @@ filter_name(short filt)
         "EVFILT_PROC",
         "EVFILT_SIGNAL", 
         "EVFILT_TIMER", 
-        "EVFILT_NETDEV", 
+        "EVFILT_MACHPORT",
         "EVFILT_FS",    
         // "EVFILT_LIO",  
-        "EVFILT_USER"
+        "EVFILT_USER",
+        // EVFILT_VM!
+        "EVFILT_NETDEV", 
     };
 
     id = ~filt;

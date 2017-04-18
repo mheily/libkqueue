@@ -20,9 +20,12 @@ INCLUDE (CheckIncludeFiles)
 project(kqueue)
 
 if (DARLING)
-	include_directories("${CMAKE_SOURCE_DIR}/src/libc/include")
-	include_directories("${CMAKE_SOURCE_DIR}/src/libc/darwin")
-	include_directories("${CMAKE_SOURCE_DIR}/src/kernel/libsyscall/wrappers")
+	include_directories(
+		"${CMAKE_SOURCE_DIR}/src/libc/include"
+		"${CMAKE_SOURCE_DIR}/src/libc/darwin"
+		"${CMAKE_SOURCE_DIR}/src/kernel/libsyscall/wrappers"
+		"${CMAKE_SOURCE_DIR}/src/lkm"
+	)
 	
 	# For epoll
 	include_directories("${CMAKE_SOURCE_DIR}/src/kernel/emulation/linux/ext")
@@ -71,6 +74,7 @@ else()
 		src/linux/vnode.c
 		src/linux/write.c
 		src/linux/read.c
+		src/linux/machport.c
 		src/common/*.h
 		src/common/filter.c
 		src/common/knote.c
