@@ -67,7 +67,7 @@ get_one_event(struct inotify_event *dst, int inofd)
 
     dbg_puts("reading one inotify event");
     for (;;) {
-        n = read(inofd, dst, sizeof(*dst));
+        n = read(inofd, dst, sizeof(*dst) + 255 + 1);
         if (n < 0) {
             if (errno == EINTR)
                 continue;
@@ -78,11 +78,6 @@ get_one_event(struct inotify_event *dst, int inofd)
         }
     }
     dbg_printf("read(2) from inotify wd: %ld bytes", (long) n);
-
-    /* FIXME-TODO: if len > 0, read(len) */
-    if (dst->len != 0) 
-        abort();
-
 
     return (0);
 }
@@ -170,14 +165,14 @@ delete_watch(struct filter *filt, struct knote *kn)
 int
 evfilt_vnode_copyout(struct kevent64_s *dst, struct knote *src, void *ptr UNUSED)
 {
-    struct inotify_event evt;
+    struct inotify_event* evt = (struct inotify_event*) __builtin_alloca(sizeof(struct inotify_event) + 255 + 1);
     struct stat sb;
 
-    if (get_one_event(&evt, src->kdata.kn_inotifyfd) < 0)
+    if (get_one_event(evt, src->kdata.kn_inotifyfd) < 0)
         return (-1);
 
-    dbg_printf("inotify event: %s", inotify_event_dump(&evt));
-    if (evt.mask & IN_IGNORED) {
+    dbg_printf("inotify event: %s", inotify_event_dump(evt));
+    if (evt->mask & IN_IGNORED) {
         /* TODO: possibly return error when fs is unmounted */
         dst->filter = 0;
         return (0);
@@ -187,7 +182,7 @@ evfilt_vnode_copyout(struct kevent64_s *dst, struct knote *src, void *ptr UNUSED
        XXX-this may not exactly match the kevent() behavior if multiple file de
 scriptors reference the same file.
     */
-    if (evt.mask & IN_CLOSE_WRITE || evt.mask & IN_CLOSE_NOWRITE) {
+    if (evt->mask & IN_CLOSE_WRITE || evt->mask & IN_CLOSE_NOWRITE) {
         src->kn_flags |= EV_ONESHOT; /* KLUDGE: causes the knote to be deleted */
         dst->filter = 0; /* KLUDGE: causes the event to be discarded */
         return (0);
@@ -198,7 +193,7 @@ scriptors reference the same file.
 
     /* No error checking because fstat(2) should rarely fail */
     //FIXME: EINTR
-    if ((evt.mask & IN_ATTRIB || evt.mask & IN_MODIFY) 
+    if ((evt->mask & IN_ATTRIB || evt->mask & IN_MODIFY) 
         && fstat(src->kev.ident, &sb) == 0) {
         if (sb.st_nlink == 0 && src->kev.fflags & NOTE_DELETE) 
             dst->fflags |= NOTE_DELETE;
@@ -214,22 +209,22 @@ scriptors reference the same file.
        src->data.vnode.size = sb.st_size;
     }
 
-    if (evt.mask & IN_MODIFY && src->kev.fflags & NOTE_WRITE) 
+    if (evt->mask & IN_MODIFY && src->kev.fflags & NOTE_WRITE) 
         dst->fflags |= NOTE_WRITE;
-    if (evt.mask & IN_ATTRIB && src->kev.fflags & NOTE_ATTRIB) 
+    if (evt->mask & IN_ATTRIB && src->kev.fflags & NOTE_ATTRIB) 
         dst->fflags |= NOTE_ATTRIB;
-    if (evt.mask & IN_MOVE_SELF && src->kev.fflags & NOTE_RENAME) 
+    if (evt->mask & IN_MOVE_SELF && src->kev.fflags & NOTE_RENAME) 
         dst->fflags |= NOTE_RENAME;
-    if (evt.mask & IN_DELETE_SELF && src->kev.fflags & NOTE_DELETE) 
+    if (evt->mask & IN_DELETE_SELF && src->kev.fflags & NOTE_DELETE) 
         dst->fflags |= NOTE_DELETE;
 
-    if (evt.mask & IN_MODIFY && src->kev.fflags & NOTE_WRITE) 
+    if (evt->mask & IN_MODIFY && src->kev.fflags & NOTE_WRITE) 
         dst->fflags |= NOTE_WRITE;
-    if (evt.mask & IN_ATTRIB && src->kev.fflags & NOTE_ATTRIB) 
+    if (evt->mask & IN_ATTRIB && src->kev.fflags & NOTE_ATTRIB) 
         dst->fflags |= NOTE_ATTRIB;
-    if (evt.mask & IN_MOVE_SELF && src->kev.fflags & NOTE_RENAME) 
+    if (evt->mask & IN_MOVE_SELF && src->kev.fflags & NOTE_RENAME) 
         dst->fflags |= NOTE_RENAME;
-    if (evt.mask & IN_DELETE_SELF && src->kev.fflags & NOTE_DELETE) 
+    if (evt->mask & IN_DELETE_SELF && src->kev.fflags & NOTE_DELETE) 
         dst->fflags |= NOTE_DELETE;
 
     return (0);
