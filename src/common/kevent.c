@@ -115,7 +115,7 @@ kevent_dump(const struct kevent64_s *kev)
     return ((const char *) &buf[0]);
 }
 
-static int
+int
 kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src)
 {
     struct knote  *kn = NULL;

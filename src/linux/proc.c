@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009 Mark Heily <mark@heily.com>
+ * Copyright (c) 2017 Lubos Dolezel
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -15,229 +15,193 @@
  */
 
 #include <errno.h>
-#include <err.h>
 #include <fcntl.h>
-#include <pthread.h>
-#include <signal.h>
+#include <sys/ioctl.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <sys/ioctl.h>
 #include <sys/queue.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <string.h>
 #include <unistd.h>
+#include "api.h"
 
-#include <limits.h>
-#include <sys/inotify.h>
-#include <sys/epoll.h>
-
-#include "sys/event.h"
 #include "private.h"
 
+extern int lkm_call(int call_nr, void* arg);
 
-/* XXX-FIXME Should only have one wait_thread per process.
-   Now, there is one thread per kqueue
- */
-struct evfilt_data {
-    pthread_t       wthr_id;
-    pthread_cond_t   wait_cond;
-    pthread_mutex_t  wait_mtx;
-};
-
-//FIXME: WANT: static void *
-void *
-wait_thread(void *arg)
-{
-    struct filter *filt = (struct filter *) arg;
-    uint64_t counter = 1;
-    const int options = WEXITED | WNOWAIT; 
-    struct knote *kn;
-    siginfo_t si;
-    sigset_t sigmask;
-
-    /* Block all signals */
-    sigfillset (&sigmask);
-    pthread_sigmask(SIG_BLOCK, &sigmask, NULL);
-
-    for (;;) {
-
-        /* Wait for a child process to exit(2) */
-        if (waitid(P_ALL, 0, &si, options) != 0) {
-            if (errno == ECHILD) {
-                dbg_puts("got ECHILD, waiting for wakeup condition");
-                pthread_mutex_lock(&filt->kf_data->wait_mtx);
-                pthread_cond_wait(&filt->kf_data->wait_cond, &filt->kf_data->wait_mtx);
-                pthread_mutex_unlock(&filt->kf_data->wait_mtx);
-                dbg_puts("awoken from ECHILD-induced sleep");
-                continue;
-            }
-
-            dbg_puts("  waitid(2) returned");
-            if (errno == EINTR)
-                continue;
-            dbg_perror("waitid(2)");
-            break; 
-        }
-
-        /* Scan the wait queue to see if anyone is interested */
-        kn = knote_lookup(filt, si.si_pid);
-        if (kn == NULL) 
-            continue;
-
-        /* Create a proc_event */
-        if (si.si_code == CLD_EXITED) {
-            kn->kev.data = si.si_status;
-        } else if (si.si_code == CLD_KILLED) {
-            /* FIXME: probably not true on BSD */
-            /* FIXME: arbitrary non-zero number */
-            kn->kev.data = 254; 
-        } else {
-            /* Should never happen. */
-            /* FIXME: arbitrary non-zero number */
-            kn->kev.data = 1; 
-        }
-
-        knote_enqueue(filt, kn);
-
-        /* Indicate read(2) readiness */
-        if (write(filt->kf_pfd, &counter, sizeof(counter)) < 0) {
-            if (errno != EAGAIN) {
-                dbg_printf("write(2): %s", strerror(errno));
-                /* TODO: set filter error flag */
-                break;
-                }
-        }
-    }
-
-    /* TODO: error handling */
-
-    return (NULL);
-}
+#define NOTE_PASSINGFD 0x100000
 
 int
-evfilt_proc_init(struct filter *filt)
+evfilt_proc_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 {
-#if FIXME
-    struct evfilt_data *ed;
-    int efd = -1;
+    struct epoll_event * const ev = (struct epoll_event *) ptr;
+	struct evproc_event event;
 
-    if ((ed = calloc(1, sizeof(*ed))) == NULL)
-        return (-1);
-    filt->kf_data = ed;
+	epoll_event_dump(ev);
+	kevent_int_to_64(&src->kev, dst);
 
-    pthread_mutex_init(&ed->wait_mtx, NULL);
-    pthread_cond_init(&ed->wait_cond, NULL);
-    if ((efd = eventfd(0, 0)) < 0) 
-        goto errout;
-    if (fcntl(filt->kf_pfd, F_SETFL, O_NONBLOCK) < 0) 
-        goto errout;
-    filt->kf_pfd = efd;
-    if (pthread_create(&ed->wthr_id, NULL, wait_thread, filt) != 0) 
-        goto errout;
+	if (read(src->kdata.kn_dupfd, &event, sizeof(event)) == sizeof(event))
+	{
+		dst->fflags = event.event;
+		dst->data = event.extra;
 
+		if (dst->fflags & NOTE_FORK)
+		{
+			dst->data = 0;
+			if (src->kev.fflags & NOTE_TRACK)
+			{
+				// The kernel module automatically creates
+				// a new fd for the subprocess if NOTE_TRACK is used.
+				// This is because otherwise we would miss NOTE_EXEC
+				// most of the time.
+				
+				unsigned int pid = event.extra & 0xffff;
+				unsigned int new_fd = (event.extra >> 16) & 0xffff;
+				dbg_printf("Received new fd %d for pid %d\n", new_fd, pid);
+
+				// Start following the child process
+				struct kqueue* kq = src->kn_kq;
+				struct kevent64_s change;
+
+				change.ident = pid;
+				change.filter = EVFILT_PROC;
+				change.flags = EV_ADD | EV_ENABLE;
+				change.fflags = src->kev.fflags | NOTE_PASSINGFD;
+				change.data = 0;
+				change.ext[0] = new_fd;
+				
+				if (kevent_copyin_one(kq, &change) == -1)
+					dst->fflags |= NOTE_TRACKERR;
+			}
+
+			// This happens when we were added with NOTE_TRACK,
+			// but not with NOTE_FORK. The kernel notifies us
+			// about the fork anyway so that we can act, but we
+			// don't deliver it to the program.
+
+			if (!(src->kev.fflags & NOTE_FORK))
+				dst->filter = 0; // drop event
+		}
+		else if (dst->fflags & NOTE_EXIT)
+		{
+			// Have this knote removed
+			dst->flags |= EV_EOF | EV_ONESHOT;
+			
+			// NOTE_EXIT is always announced so that we can
+			// remove the knote. Add EV_DELETE to avoid passing
+			// the event to the application if it is not interested
+			// in this event
+			if (!(src->kev.fflags & NOTE_EXIT))
+				dst->flags |= EV_DELETE;
+		}
+	}
+	else
+	{
+		dbg_puts("Didn't read expected data len for evfilt_proc");
+		dst->filter = 0;
+	}
 
     return (0);
-
-errout:
-    if (efd >= 0)
-        close(efd);
-    free(ed);
-    close(filt->kf_pfd);
-    return (-1);
-#endif
-    return (-1); /*STUB*/
 }
 
-void
-evfilt_proc_destroy(struct filter *filt)
-{
-//TODO:    pthread_cancel(filt->kf_data->wthr_id);
-    close(filt->kf_pfd);
-}
-
-int
-evfilt_proc_copyout(struct filter *filt, 
-            struct kevent64_s *dst, 
-            int maxevents)
-{
-    struct knote *kn;
-    int nevents = 0;
-    uint64_t cur;
-
-    /* Reset the counter */
-    if (read(filt->kf_pfd, &cur, sizeof(cur)) < sizeof(cur)) {
-        dbg_printf("read(2): %s", strerror(errno));
-        return (-1);
-    }
-    dbg_printf("  counter=%llu", (unsigned long long) cur);
-
-    for (kn = knote_dequeue(filt); kn != NULL; kn = knote_dequeue(filt)) {
-        kevent_int_to_64(&kn->kev, dst);
-        kevent_dump(dst);
-
-        if (kn->kev.flags & EV_DISPATCH) {
-            KNOTE_DISABLE(kn);
-        }
-        if (kn->kev.flags & EV_ONESHOT) {
-            knote_free(filt, kn);
-        } else {
-            kn->kev.data = 0; //why??
-        }
-
-
-        if (++nevents > maxevents)
-            break;
-        dst++;
-    }
-
-    if (knote_events_pending(filt)) {
-    /* XXX-FIXME: If there are leftover events on the waitq, 
-       re-arm the eventfd. list */
-        abort();
-    }
-
-    return (nevents);
-}
- 
 int
 evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
 {
-    return (0); /* STUB */
+    struct epoll_event ev;
+    struct evproc_create args;
+
+    /* Convert the kevent into an epoll_event */
+    kn->data.events = EPOLLIN;
+    kn->kn_epollfd = filter_epfd(filt);
+
+    memset(&ev, 0, sizeof(ev));
+    ev.events = kn->data.events;
+    ev.data.ptr = kn;
+
+	if (kn->kev.fflags & NOTE_PASSINGFD)
+	{
+		kn->kdata.kn_dupfd = kn->kev.ext[0];
+	}
+	else
+	{
+		args.pid = kn->kev.ident;
+		args.flags = kn->kev.fflags;
+
+		kn->kdata.kn_dupfd = lkm_call(NR_evproc_create, &args);
+		if (kn->kdata.kn_dupfd == -1)
+			dbg_printf("evproc_create() failed: %s\n", strerror(errno));
+	}
+
+	kn->kev.fflags &= ~NOTE_PASSINGFD;
+
+    if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kdata.kn_dupfd, &ev) < 0) {
+        dbg_printf("epoll_ctl(2): %s", strerror(errno));
+        return (-1);
+    }
+    return 0;
 }
 
 int
 evfilt_proc_knote_modify(struct filter *filt, struct knote *kn, 
         const struct kevent64_s *kev)
 {
-    return (0); /* STUB */
+	unsigned int flags = kn->data.events;
+	write(kn->kdata.kn_dupfd, &flags, sizeof(flags));
+    return 0;
 }
 
 int
 evfilt_proc_knote_delete(struct filter *filt, struct knote *kn)
 {
-    return (0); /* STUB */
+    if (kn->kev.flags & EV_DISABLE)
+        return (0);
+    else {
+        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
+            dbg_perror("epoll_ctl(2)");
+            return (-1);
+        }
+        (void) close(kn->kdata.kn_dupfd);
+        kn->kdata.kn_dupfd = -1;
+        return 0;
+    }
 }
 
 int
 evfilt_proc_knote_enable(struct filter *filt, struct knote *kn)
 {
-    return (0); /* STUB */
+    struct epoll_event ev;
+
+    memset(&ev, 0, sizeof(ev));
+    ev.events = kn->data.events;
+    ev.data.ptr = kn;
+
+	if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kdata.kn_dupfd, &ev) < 0) {
+		dbg_perror("epoll_ctl(2)");
+		return (-1);
+	}
+	return (0);
 }
 
 int
 evfilt_proc_knote_disable(struct filter *filt, struct knote *kn)
 {
-    return (0); /* STUB */
+	if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
+		dbg_perror("epoll_ctl(2)");
+		return (-1);
+	}
+	return (0);
 }
 
-const struct filter evfilt_proc_DEADWOOD = {
-    0, //XXX-FIXME broken: EVFILT_PROC,
-    evfilt_proc_init,
-    evfilt_proc_destroy,
+const struct filter evfilt_proc = {
+    EVFILT_PROC,
+    NULL,
+    NULL,
     evfilt_proc_copyout,
     evfilt_proc_knote_create,
     evfilt_proc_knote_modify,
     evfilt_proc_knote_delete,
     evfilt_proc_knote_enable,
-    evfilt_proc_knote_disable,
+    evfilt_proc_knote_disable,         
 };
+

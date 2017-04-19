@@ -74,6 +74,7 @@ else()
 		src/linux/vnode.c
 		src/linux/write.c
 		src/linux/read.c
+		src/linux/proc.c
 		src/linux/machport.c
 		src/common/*.h
 		src/common/filter.c

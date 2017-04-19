@@ -19,9 +19,6 @@
 #include <pthread.h>
 #include "../common/private.h"
 
-//XXX-FIXME TEMP
-const struct filter evfilt_proc = EVFILT_NOTIMPL;
-
 /*
  * Per-thread epoll event buffer used to ferry data between
  * kevent_wait() and kevent_copyout().
@@ -213,7 +210,11 @@ linux_kevent_copyout(struct kqueue *kq, int nready,
 
         /* If an empty kevent structure is returned, the event is discarded. */
         /* TODO: add these semantics to windows + solaris platform.c */
-        if (fastpath(eventlist->filter != 0)) {
+
+		/* EV_DELETE is an internal trick to not have this event passed to the app.
+		 * Typically used along with EV_ONESHOT - see linux/proc.c
+		 */
+        if (fastpath(eventlist->filter != 0) && !(eventlist->flags & EV_DELETE)) {
             eventlist++;
         } else {
             dbg_puts("spurious wakeup, discarding event");

@@ -184,6 +184,8 @@ extern const struct kqueue_vtable kqops;
 #define kqueue_lock(kq)     tracing_mutex_lock(&(kq)->kq_mtx)
 #define kqueue_unlock(kq)   tracing_mutex_unlock(&(kq)->kq_mtx)
 
+int kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src);
+
 /*
  * knote internal API
  */
