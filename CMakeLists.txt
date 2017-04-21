@@ -76,6 +76,7 @@ else()
 		src/linux/read.c
 		src/linux/proc.c
 		src/linux/machport.c
+		src/linux/fs.c
 		src/common/*.h
 		src/common/filter.c
 		src/common/knote.c
