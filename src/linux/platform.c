@@ -25,6 +25,7 @@
  */
 //static __thread struct epoll_event epevt[MAX_KEVENT];
 static pthread_key_t epevt_key;
+static pthread_once_t epevt_once = PTHREAD_ONCE_INIT;
 
 const struct kqueue_vtable kqops = {
     linux_kqueue_init,
@@ -40,6 +41,11 @@ const struct kqueue_vtable kqops = {
     linux_eventfd_descriptor
 };
 
+static void tls_setup(void)
+{
+    pthread_key_create(&epevt_key, free);
+}
+
 int
 linux_kqueue_init(struct kqueue *kq)
 {
@@ -53,9 +59,7 @@ linux_kqueue_init(struct kqueue *kq)
         close(kq->kq_id);
         return (-1);
     }
-
-	pthread_key_create(&epevt_key, free);
-
+    pthread_once(&epevt_once, tls_setup);
 
  #if DEADWOOD
     //might be useful in posix
@@ -85,7 +89,8 @@ linux_kqueue_init(struct kqueue *kq)
 void
 linux_kqueue_free(struct kqueue *kq UNUSED)
 {
-    abort();//FIXME
+    __close_for_kqueue(kq->kq_id);
+    // abort();//FIXME
 }
 
 static int

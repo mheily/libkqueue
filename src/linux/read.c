@@ -186,13 +186,14 @@ evfilt_read_knote_create(struct filter *filt, struct knote *kn)
     }
     else {
         kn->kdata.kn_dupfd = dup(kn->kev.ident);
+        fcntl(kn->kdata.kn_dupfd, F_SETFD, FD_CLOEXEC);
         if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kdata.kn_dupfd, &ev) < 0) {
             dbg_printf("epoll_ctl(2): %s", strerror(errno));
             return (-1);
         }
     }
 
-    return epoll_update(EPOLL_CTL_ADD, filt, kn, &ev);
+    return 0;
 }
 
 int
