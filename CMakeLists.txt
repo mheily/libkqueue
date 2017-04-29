@@ -33,7 +33,7 @@ if (DARLING)
 
 	#add_definitions(-DKERNEL_PRIVATE)
 	#add_definitions(-Dkqueue=kqueue_impl -Dkevent=kevent_impl -Dkevent64=kevent64_impl)
-	add_definitions(-Dclose=__close_for_kqueue)
+	#add_definitions(-Dclose=__close_for_kqueue)
 endif (DARLING)
 
 #files

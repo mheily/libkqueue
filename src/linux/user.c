@@ -140,7 +140,7 @@ linux_evfilt_user_knote_create(struct filter *filt, struct knote *kn)
     return (0);
 
 errout:
-    (void) close(evfd);
+    (void) __close_for_kqueue(evfd);
     kn->kdata.kn_eventfd = -1;
     return (-1);
 }
@@ -193,7 +193,7 @@ linux_evfilt_user_knote_delete(struct filter *filt, struct knote *kn)
         dbg_perror("epoll_ctl(2)");
         return (-1);
     }
-    if (close(kn->kdata.kn_eventfd) < 0) {
+    if (__close_for_kqueue(kn->kdata.kn_eventfd) < 0) {
         dbg_perror("close(2)");
         return (-1);
     }

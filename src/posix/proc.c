@@ -126,7 +126,7 @@ void
 evfilt_proc_destroy(struct filter *filt)
 {
 //TODO:    pthread_cancel(filt->kf_data->wthr_id);
-    close(filt->kf_pfd);
+    __close_for_kqueue(filt->kf_pfd);
 }
 
 int

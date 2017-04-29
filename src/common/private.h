@@ -51,6 +51,7 @@ struct evfilt_data;
 
 #ifdef DARLING
 typedef int timer_t;
+int __close_for_kqueue(int fd);
 #endif
 
 #include "debug.h"

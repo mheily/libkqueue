@@ -141,7 +141,7 @@ add_watch(struct filter *filt, struct knote *kn)
 
 errout:
     kn->kdata.kn_inotifyfd = -1;
-    (void) close(ifd);
+    (void) __close_for_kqueue(ifd);
     return (-1);
 }
 
@@ -156,7 +156,7 @@ delete_watch(struct filter *filt, struct knote *kn)
         dbg_perror("epoll_ctl(2)");
         return (-1);
     }
-    (void) close(ifd);
+    (void) __close_for_kqueue(ifd);
     kn->kdata.kn_inotifyfd = -1;
 
     return (0);

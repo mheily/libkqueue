@@ -89,7 +89,7 @@ evfilt_fs_knote_delete(struct filter *filt, struct knote *kn)
             dbg_perror("epoll_ctl(2)");
             return (-1);
         }
-        (void) close(kn->kdata.kn_dupfd);
+        (void) __close_for_kqueue(kn->kdata.kn_dupfd);
         kn->kdata.kn_dupfd = -1;
         return 0;
     }

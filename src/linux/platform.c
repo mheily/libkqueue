@@ -56,7 +56,7 @@ linux_kqueue_init(struct kqueue *kq)
     }
 
     if (filter_register_all(kq) < 0) {
-        close(kq->kq_id);
+        __close_for_kqueue(kq->kq_id);
         return (-1);
     }
     pthread_once(&epevt_once, tls_setup);
@@ -77,7 +77,7 @@ linux_kqueue_init(struct kqueue *kq)
 
         if (epoll_ctl(kq->kq_id, EPOLL_CTL_ADD, filt->kf_pfd, &ev) < 0) {
             dbg_perror("epoll_ctl(2)");
-            close(kq->kq_id);
+            __close_for_kqueue(kq->kq_id);
             return (-1);
         }
     }
@@ -242,7 +242,7 @@ linux_eventfd_init(struct eventfd *e)
     }
     if (fcntl(evfd, F_SETFL, O_NONBLOCK) < 0) {
         dbg_perror("fcntl");
-        close(evfd);
+        __close_for_kqueue(evfd);
         return (-1);
     }
     e->ef_id = evfd;
@@ -253,7 +253,7 @@ linux_eventfd_init(struct eventfd *e)
 void
 linux_eventfd_close(struct eventfd *e)
 {
-    close(e->ef_id);
+    __close_for_kqueue(e->ef_id);
     e->ef_id = -1;
 }
 

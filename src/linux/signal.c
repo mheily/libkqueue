@@ -117,7 +117,7 @@ signalfd_create(int epfd, void *ptr, int signum)
     return (sigfd);
 
 errout:
-    (void) close(sigfd);
+    (void) __close_for_kqueue(sigfd);
     return (-1);
 }
 
@@ -179,7 +179,7 @@ evfilt_signal_knote_delete(struct filter *filt, struct knote *kn)
         return (-1);
     }
 
-    if (close(sigfd) < 0) {
+    if (__close_for_kqueue(sigfd) < 0) {
         dbg_perror("close(2)");
         return (-1);
     }

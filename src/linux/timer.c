@@ -189,7 +189,7 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
     convert_to_itimerspec(&ts, kn->kev.data, kn->kev.flags & EV_ONESHOT, kn->kev.fflags);
     if (timerfd_settime(tfd, 0, &ts, NULL) < 0) {
         dbg_printf("timerfd_settime(2): %s", strerror(errno));
-        close(tfd);
+        __close_for_kqueue(tfd);
         return (-1);
     }
 
@@ -198,7 +198,7 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
     ev.data.ptr = kn;
     if (epoll_ctl(filter_epfd(filt), EPOLL_CTL_ADD, tfd, &ev) < 0) {
         dbg_printf("epoll_ctl(2): %d", errno);
-        close(tfd);
+        __close_for_kqueue(tfd);
         return (-1);
     }
 
@@ -228,7 +228,7 @@ evfilt_timer_knote_delete(struct filter *filt, struct knote *kn)
         dbg_printf("epoll_ctl(2): %s", strerror(errno));
         rv = -1;
     }
-    if (close(kn->data.pfd) < 0) {
+    if (__close_for_kqueue(kn->data.pfd) < 0) {
         dbg_printf("close(2): %s", strerror(errno));
         rv = -1;
     }

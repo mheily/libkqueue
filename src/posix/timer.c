@@ -198,8 +198,8 @@ evfilt_timer_init(struct filter *filt)
     if (fcntl(fd[0], F_SETFL, O_NONBLOCK) < 0
         || fcntl(fd[1], F_SETFL, O_NONBLOCK) < 0) {
         dbg_perror("fcntl(2)");
-        close(fd[0]);
-        close(fd[1]);
+        __close_for_kqueue(fd[0]);
+        __close_for_kqueue(fd[1]);
         return (-1);
     }
 
@@ -212,8 +212,8 @@ evfilt_timer_init(struct filter *filt)
 void
 evfilt_timer_destroy(struct filter *filt)
 {
-    (void) close(filt->kf_wfd);
-    (void) close(filt->kf_pfd);
+    (void) __close_for_kqueue(filt->kf_wfd);
+    (void) __close_for_kqueue(filt->kf_pfd);
 }
 
 int

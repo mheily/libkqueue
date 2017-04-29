@@ -37,8 +37,8 @@ posix_eventfd_init(struct eventfd *e)
     }
     if ((fcntl(sd[0], F_SETFL, O_NONBLOCK) < 0) ||
             (fcntl(sd[1], F_SETFL, O_NONBLOCK) < 0)) {
-        close(sd[0]);
-        close(sd[1]);
+        __close_for_kqueue(sd[0]);
+        __close_for_kqueue(sd[1]);
         return (-1);
     }
     e->ef_wfd = sd[0];
@@ -50,8 +50,8 @@ posix_eventfd_init(struct eventfd *e)
 void
 posix_eventfd_close(struct eventfd *e)
 {
-    close(e->ef_id);
-    close(e->ef_wfd);
+    __close_for_kqueue(e->ef_id);
+    __close_for_kqueue(e->ef_wfd);
     e->ef_id = -1;
 }
 

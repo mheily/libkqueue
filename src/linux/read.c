@@ -82,7 +82,7 @@ evfilt_read_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
             inofd = inotify_init();
             if (inofd < 0) {
                 dbg_perror("inotify_init(2)");
-                (void) close(inofd);
+                (void) __close_for_kqueue(inofd);
                 return (-1);
             } 
             src->kdata.kn_inotifyfd = inofd;
@@ -172,7 +172,7 @@ evfilt_read_knote_create(struct filter *filt, struct knote *kn)
         }
         if (eventfd_write(evfd, 1) < 0) {
             dbg_perror("eventfd_write(3)");
-            (void) close(evfd);
+            (void) __close_for_kqueue(evfd);
             return (-1);
         }
 
@@ -235,14 +235,14 @@ evfilt_read_knote_delete(struct filter *filt, struct knote *kn)
             dbg_perror("epoll_ctl(2)");
             return (-1);
         }
-        (void) close(kn->kdata.kn_eventfd);
+        (void) __close_for_kqueue(kn->kdata.kn_eventfd);
         kn->kdata.kn_eventfd = -1;
     } else {
         if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
             dbg_perror("epoll_ctl(2)");
             return (-1);
         }
-        (void) close(kn->kdata.kn_dupfd);
+        (void) __close_for_kqueue(kn->kdata.kn_dupfd);
         kn->kdata.kn_dupfd = -1;
     }
 
