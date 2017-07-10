@@ -377,14 +377,20 @@ kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
     if (nevents > MAX_KEVENT)
         nevents = MAX_KEVENT;
     if (nevents > 0) {
-        rv = kqops.kevent_wait(kq, nevents, (flags & KEVENT_FLAG_IMMEDIATE) ? (&timeout_zero) : timeout);
+        const struct timespec* ts = (flags & KEVENT_FLAG_IMMEDIATE) ? (&timeout_zero) : timeout;
+again:
+        rv = kqops.kevent_wait(kq, nevents, ts);
         dbg_printf("kqops.kevent_wait returned %d", rv);
         if (fastpath(rv > 0)) {
             kqueue_lock(kq);
             rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
             kqueue_unlock(kq);
-        } else if (rv == 0) {
+        }
+        if (rv == 0) {
             /* Timeout reached */
+            /* Avoid returning 0 when waiting indefinitely in case of spurious wakeups */
+            if (ts == NULL)
+                goto again;
         } else {
             dbg_printf("(%u) kevent_wait failed", myid);
             goto out;

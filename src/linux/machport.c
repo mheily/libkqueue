@@ -27,6 +27,7 @@
 #include <sys/types.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdint.h>
 #include "api.h"
 
 #include "private.h"
@@ -37,10 +38,13 @@ int
 evfilt_machport_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 {
     struct epoll_event * const ev = (struct epoll_event *) ptr;
+    uint64_t val;
 
     epoll_event_dump(ev);
     kevent_int_to_64(&src->kev, dst);
     dst->data = 1024; // TODO: dummy value (message size)
+
+    read(src->kn_epollfd, &val, sizeof(val));
 
     return (0);
 }
