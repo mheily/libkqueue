@@ -131,6 +131,8 @@ evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
 		kn->kdata.kn_dupfd = lkm_call(NR_evproc_create, &args);
 		if (kn->kdata.kn_dupfd == -1)
 			dbg_printf("evproc_create() failed: %s\n", strerror(errno));
+
+		fcntl(kn->kdata.kn_dupfd, F_SETFD, FD_CLOEXEC);
 	}
 
 	kn->kev.fflags &= ~NOTE_PASSINGFD;

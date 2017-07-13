@@ -87,6 +87,8 @@ evfilt_machport_knote_create(struct filter *filt, struct knote *kn)
         return (-1);
     }
 
+    fcntl(kn->kdata.kn_dupfd, F_SETFD, FD_CLOEXEC);
+
     if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kdata.kn_dupfd, &ev) < 0) {
         dbg_printf("epoll_ctl(2): %s", strerror(errno));
         return (-1);

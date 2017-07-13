@@ -100,6 +100,7 @@ signalfd_create(int epfd, void *ptr, int signum)
         dbg_perror("signalfd(2)");
         goto errout;
     }
+    fcntl(sigfd, F_SETFD, FD_CLOEXEC);
 
     /* Block the signal handler from being invoked */
     if (sigprocmask(SIG_BLOCK, &sigmask, NULL) < 0) {
