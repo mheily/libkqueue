@@ -38,13 +38,23 @@ int
 evfilt_machport_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 {
     struct epoll_event * const ev = (struct epoll_event *) ptr;
-    uint64_t val;
+	struct evpset_event kernel_event;
+	int rv;
 
     epoll_event_dump(ev);
     kevent_int_to_64(&src->kev, dst);
-    dst->data = 1024; // TODO: dummy value (message size)
 
-    read(src->kn_epollfd, &val, sizeof(val));
+	rv = read(src->kdata.kn_dupfd, &kernel_event, sizeof(kernel_event));
+	if (rv < 0) {
+		dbg_printf("evfilt_machport_copyout() failed: %s", strerror(-rv));
+		return -1;	
+	}
+
+	if (kernel_event.flags != 0)
+		dst->flags = kernel_event.flags;
+	dst->data = kernel_event.port;
+	dst->ext[1] = kernel_event.msg_size;
+	dst->fflags = kernel_event.receive_status;
 
     return (0);
 }
@@ -54,8 +64,7 @@ evfilt_machport_knote_create(struct filter *filt, struct knote *kn)
 {
     struct epoll_event ev;
     int port = kn->kev.ident;
-    struct eventfd_machport_attach args;
-    int rv;
+	struct evfilt_machport_open_args args;
 
     /* Convert the kevent into an epoll_event */
     kn->data.events = EPOLLIN;
@@ -68,11 +77,13 @@ evfilt_machport_knote_create(struct filter *filt, struct knote *kn)
     kn->kdata.kn_dupfd = eventfd(0, EFD_CLOEXEC);
 
     args.port_name = port;
-    args.evfd = kn->kdata.kn_dupfd;
+	args.opts.rcvbuf = (void*) kn->kev.ext[0];
+	args.opts.rcvbuf_size = kn->kev.ext[1];
+	args.opts.sfflags = kn->kev.fflags;
 
-    rv = lkm_call(NR_eventfd_machport_attach, &args);
-    if (rv != 0) {
-        dbg_printf("eventfd_machport_attach: %s", strerror(-rv));
+    kn->kdata.kn_dupfd = lkm_call(NR_evfilt_machport_open, &args);
+    if (kn->kdata.kn_dupfd < 0) {
+        dbg_printf("evfilt_machport_open: %s", strerror(-kn->kdata.kn_dupfd));
         return (-1);
     }
 
@@ -87,6 +98,19 @@ int
 evfilt_machport_knote_modify(struct filter *filt, struct knote *kn, 
         const struct kevent64_s *kev)
 {
+	struct evpset_options opts;
+	int rv;
+
+	opts.rcvbuf = (void*) kev->ext[0];
+	opts.rcvbuf_size = kev->ext[1];
+	opts.sfflags = kev->fflags;
+
+	rv = write(kn->kdata.kn_dupfd, &opts, sizeof(opts));
+	if (rv < 0) {
+		dbg_printf("evfilt_machport_knote_modify failed: %s", strerror(-rv));
+		return -1;
+	}
+
     return 0;
 }
 
@@ -96,16 +120,7 @@ evfilt_machport_knote_delete(struct filter *filt, struct knote *kn)
     if (kn->kev.flags & EV_DISABLE)
         return (0);
     else {
-        int rv;
-        struct eventfd_machport_detach args = {
-            .port_name = kn->kev.ident,
-            .evfd = kn->kdata.kn_dupfd
-        };
-        rv = lkm_call(NR_eventfd_machport_detach, &args);
         
-        if (rv != 0) {
-            dbg_printf("eventfd_machport_detach: %s", strerror(-rv));
-        }
         if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
             dbg_perror("epoll_ctl(2)");
             return (-1);
