@@ -1,5 +1,6 @@
-
 # cmake output
+.vagrant
+build
 CMakeCache.txt
 CMakeFiles/
 CPackConfig.cmake
@@ -14,6 +15,4 @@ libkqueue.so
 test/CMakeCache.txt
 test/CMakeFiles/
 test/cmake_install.cmake
-
 *.o
-
