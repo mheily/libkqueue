@@ -54,8 +54,8 @@ extern long int syscall (long int __sysno, ...);
 #endif
  
 /* Convenience macros to access the epoll descriptor for the kqueue */
-#define kqueue_epfd(kq)     ((kq)->kq_id)
-#define filter_epfd(filt)   ((filt)->kf_kqueue->kq_id)
+#define kqueue_epfd(kq)     ((kq)->epollfd)
+#define filter_epfd(filt)   ((filt)->kf_kqueue->epollfd)
 
 /*
  * Additional members of struct filter
@@ -66,7 +66,7 @@ extern long int syscall (long int __sysno, ...);
  * Additional members of struct knote
  */
 #define KNOTE_PLATFORM_SPECIFIC \
-    int kn_epollfd; /* A copy of filter->epfd */      \
+    int kn_epollfd;    /* A copy of filter->epfd */ \
     int kn_registered; /* Is FD registered with epoll */ \
     union { \
         int kn_timerfd; \
@@ -79,6 +79,8 @@ extern long int syscall (long int __sysno, ...);
  * Additional members of struct kqueue
  */
 #define KQUEUE_PLATFORM_SPECIFIC \
+    int epollfd;       /* Main epoll FD */ \
+    int pipefd[2];     /* FD for pipe that catches close */ \
     struct epoll_event kq_plist[MAX_KEVENT]; \
     size_t kq_nplist
 

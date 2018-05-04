@@ -35,7 +35,7 @@ pthread_mutex_t kq_mtx = PTHREAD_MUTEX_INITIALIZER;
 pthread_once_t kq_is_initialized = PTHREAD_ONCE_INIT;
 #endif
 
-static unsigned int
+unsigned int
 get_fd_limit(void)
 {
 #ifdef _WIN32
@@ -126,7 +126,7 @@ kqueue_lookup(int kq)
 int VISIBLE
 kqueue(void)
 {
-	struct kqueue *kq;
+    struct kqueue *kq;
     struct kqueue *tmp;
 
 #ifdef _WIN32
@@ -147,7 +147,7 @@ kqueue(void)
     if (kq == NULL)
         return (-1);
 
-	tracing_mutex_init(&kq->kq_mtx, NULL);
+    tracing_mutex_init(&kq->kq_mtx, NULL);
 
     if (kqops.kqueue_init(kq) < 0) {
         free(kq);
@@ -156,16 +156,21 @@ kqueue(void)
 
     dbg_printf("created kqueue, fd=%d", kq->kq_id);
 
+    /* Delete and insert should be atomic */
+    (void) pthread_mutex_lock(&kq_mtx);
+
     tmp = map_delete(kqmap, kq->kq_id);
     if (tmp != NULL) {
-        dbg_puts("FIXME -- memory leak here");
-        // TODO: kqops.kqueue_free(tmp), or (better yet) decrease it's refcount
+        kqops.kqueue_free(tmp);
     }
+
     if (map_insert(kqmap, kq->kq_id, kq) < 0) {
         dbg_puts("map insertion failed");
         kqops.kqueue_free(kq);
         return (-1);
     }
+
+    pthread_mutex_unlock(&kq_mtx);
 
     return (kq->kq_id);
 }
