@@ -317,7 +317,6 @@ kevent_impl(int kqfd, const struct kevent *changelist, int nchanges,
     return rv;
 }
 
-
 int VISIBLE
 kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
         struct kevent64_s *eventlist, int nevents,
@@ -386,6 +385,11 @@ again:
             rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
             kqueue_unlock(kq);
         }
+
+        kqueue_lock(kq);
+        kqueue_cleanup(kq);
+        kqueue_unlock(kq);
+
         if (rv == 0) {
             /* Timeout reached */
             /* Avoid returning 0 when waiting indefinitely in case of spurious wakeups */

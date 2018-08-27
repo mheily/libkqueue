@@ -106,10 +106,22 @@ kqueue_cmp(struct kqueue *a, struct kqueue *b)
 }
 #endif
 
+void kqueue_cleanup(struct kqueue* kq)
+{
+    struct knote *next, *tmp;
+    for (next = kq->kq_tofree.lh_first; next != NULL; next = tmp)
+    {
+        tmp = next->kn_entries2free.le_next;
+        free(next);
+    }
+    LIST_INIT(&kq->kq_tofree);
+}
+
 /* Must hold the kqtree_mtx when calling this */
 void
 kqueue_free(struct kqueue *kq)
 {
+	kqueue_cleanup(kq);
     map_delete(kqmap, kq->kq_id);
     filter_unregister_all(kq);
     kqops.kqueue_free(kq);
@@ -150,7 +162,7 @@ kqueue_close(int kqfd)
         // It is not a kqueue fd, but it could be a fd inside a kqueue
         // Since we're creating duplicates of all fd's, we now have to walk
         // through all known kqueues and remove the fd from them.
-		map_foreach(kqmap, _kqueue_close_cb, (void*) kqfd);
+		map_foreach(kqmap, _kqueue_close_cb, (void*)(long) kqfd);
     }
 	else {
 		kqueue_delref(kq);
@@ -194,6 +206,7 @@ kqueue_impl(void)
 
     kq->kq_ref = 1;
 	tracing_mutex_init(&kq->kq_mtx, NULL);
+    LIST_INIT(&kq->kq_tofree);
 
     if (kqops.kqueue_init(kq) < 0) {
         free(kq);

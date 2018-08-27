@@ -22,6 +22,7 @@
 #include <string.h>
 // #include "config.h"
 #include "tree.h"
+#include <sys/queue.h>
 
 /* Maximum events returnable in a single kevent() call */
 #define MAX_KEVENT  512
@@ -96,6 +97,7 @@ struct knote {
     KNOTE_PLATFORM_SPECIFIC;
 #endif
     RB_ENTRY(knote)   kn_entries;
+    LIST_ENTRY(knote) kn_entries2free;
 };
 
 #define KNOTE_ENABLE(ent)           do {                            \
@@ -154,6 +156,7 @@ struct kqueue {
     KQUEUE_PLATFORM_SPECIFIC;
 #endif
     RB_ENTRY(kqueue) entries;
+    LIST_HEAD(knt2free, knote) kq_tofree;
 };
 
 struct kqueue_vtable {
@@ -214,6 +217,8 @@ struct kqueue * kqueue_lookup(int);
 int         kqueue_validate(struct kqueue *);
 void        kqueue_addref(struct kqueue *);
 void        kqueue_delref(struct kqueue *);
+// execute pending free() operations
+void kqueue_cleanup(struct kqueue* kq);
 
 struct map *map_new(size_t);
 int         map_insert(struct map *, int, void *);
