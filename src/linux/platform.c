@@ -173,8 +173,11 @@ linux_kevent_wait(
 
 	epevt = epevt_get();
     dbg_puts("waiting for events");
+restart:
     nret = epoll_wait(kqueue_epfd(kq), &epevt[0], nevents, timeout);
     if (nret < 0) {
+        if (errno == EINTR) // only happens when ptrace() is called
+           goto restart;
         dbg_perror("epoll_wait");
         return (-1);
     }
@@ -195,6 +198,10 @@ linux_kevent_copyout(struct kqueue *kq, int nready,
     for (i = 0; i < nready; i++) {
         ev = &epevt_get()[i];
         kn = (struct knote *) ev->data.ptr;
+        if (kn->kev.filter == 0) {
+            dbg_puts("kevent copyout for zero filter, discarding!");
+            nret--;
+        }
         filt = &kq->kq_filt[~(kn->kev.filter)];
         rv = filt->kf_copyout(eventlist, kn, ev);
         if (slowpath(rv < 0)) {
