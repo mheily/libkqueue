@@ -155,9 +155,11 @@ configure_file("${CMAKE_SOURCE_DIR}/libkqueue.pc.in"
                @ONLY)
 
 #
-#  Avoid conflicts by not trying to create /usr/share/man directory
+#  Avoid conflicts by not trying to create existing directories
 #
-set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION ${CMAKE_INSTALL_FULL_MANDIR})
+set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION ${CMAKE_INSTALL_FULL_MANDIR}
+                                                  ${CMAKE_INSTALL_FULL_MANDIR}/man2
+                                                  ${CMAKE_INSTALL_FULL_INCLUDEDIR}/sys)
 
 install(FILES
           "include/sys/event.h"
@@ -172,7 +174,7 @@ install(TARGETS
 install(FILES
           kqueue.2
         DESTINATION
-          "${CMAKE_INSTALL_FULL_MANDIR}"
+          "${CMAKE_INSTALL_FULL_MANDIR}/man2"
         COMPONENT man)
 install(FILES
           "${CMAKE_BINARY_DIR}/libkqueue.pc"
@@ -191,22 +193,20 @@ set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Mark Heily <mark@heily.com>")
 set(CPACK_BUILD_SOURCE_DIRS ${CMAKE_SOURCE_DIR}/src)
 
 # Group the components into packages
-# - devel contains header files and becomes libkqueue-devel
+# - devel contains header files and man pages and becomes libkqueue-devel
 # - main contains everything else and becomes libkqueue
 set(CPACK_COMPONENT_HEADERS_GROUP "devel")
 set(CPACK_COMPONENT_LIBRARIES_GROUP "main")
-set(CPACK_COMPONENT_MAN_GROUP "main")
+set(CPACK_COMPONENT_MAN_GROUP "devel")
 set(CPACK_COMPONENT_PKGCONFIG_GROUP "main")
-set(CPACK_COMPONENT_HEADERS_DEPENDS "main")
+set(CPACK_COMPONENT_HEADERS_DEPENDS "libraries")
 
 #
 #  Metadata common to all packaging systems
 #
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Userspace implementation of the kqueue event notification mechanism")
 
-set(CPACK_COMPONENT_MAIN_DESCRIPTION "A user space implementation of the kqueue(2) kernel event notification
-mechanism. libkqueue acts as a translator between the kevent structure and the
-native kernel facilities.")
+set(CPACK_COMPONENT_MAIN_DESCRIPTION "A user space implementation of the kqueue(2) kernel event notification mechanism. libkqueue acts as a translator between the kevent structure and the native kernel facilities.")
 set(CPACK_COMPONENT_DEVEL_DESCRIPTION "Development files for ${PROJECT_NAME}-${PROJECT_VERSION}")
 
 #
@@ -232,5 +232,18 @@ set(CPACK_RPM_FILE_NAME RPM-DEFAULT)            # Use rpmbuild's package naming 
 set(CPACK_RPM_MAIN_DEBUGINFO_PACKAGE ON)
 set(CPACK_RPM_DEBUGINFO_SINGLE_PACKAGE ON)
 set(CPACK_RPM_MAIN_BUILD_SOURCE_DIRS_PREFIX /usr/src/debug/${PROJECT_NAME}-${PROJECT_VERSION})
-include(CPack)
 
+#
+#  DEB Specific configuration
+#
+set(CPACK_DEBIAN_MAIN_PACKAGE_NAME "${CPACK_PACKAGE_NAME}")
+set(CPACK_DEBIAN_MAIN_PACKAGE_SECTION "libs")
+
+set(CPACK_DEBIAN_DEVEL_PACKAGE_NAME "${CPACK_PACKAGE_NAME}-dev")
+set(CPACK_DEBIAN_DEVEL_PACKAGE_SECTION "libdevel")
+set(CPACK_DEBIAN_DEVEL_PACKAGE_DEPENDS "${CPACK_PACKAGE_NAME} (= ${PROJECT_VERSION})")
+
+set(CPACK_DEB_COMPONENT_INSTALL ON)             # Enable component based packaging (generate multiple packages)
+set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)         # Use default Debian package naming scheme
+
+include(CPack)
