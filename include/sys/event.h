@@ -233,8 +233,8 @@ extern "C" {
 #endif
 
 #ifdef _WIN32
+
 #include <time.h>
-#endif
 
 __declspec(dllexport) int
 kqueue(void);
