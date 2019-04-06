@@ -54,7 +54,7 @@ target_link_libraries(libkqueue-test
 if(WIN32)
   target_link_libraries(libkqueue-test
                         PRIVATE
-                          Ws2_32)
+                          ws2_32)
 endif()
 set_target_properties(libkqueue-test
                       PROPERTIES
