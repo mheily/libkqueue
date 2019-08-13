@@ -111,7 +111,7 @@ if (DARLING)
 endif (DARLING)
 
 if(STATIC_KQUEUE)
-	add_library(kqueue OBJECT ${SRC} ${INCL})
+	add_darling_object_library(kqueue ${SRC} ${INCL})
 	make_fat(kqueue)
 else()
     add_library(kqueue SHARED ${SRC} ${INCL})
