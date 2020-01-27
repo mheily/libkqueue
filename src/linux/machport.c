@@ -54,6 +54,11 @@ evfilt_machport_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 		dst->flags = kernel_event.flags;
 	dst->data = kernel_event.port;
 	dst->ext[1] = kernel_event.msg_size;
+    
+#if DARLING_MACH_API_VERSION > 15
+    if (kernel_event.msg_size <= sizeof(kernel_event.process_data) && kernel_event.receive_status == MACH_MSG_SUCCESS)
+        dst->ext[0] = kernel_event.process_data;
+#endif
 	dst->fflags = kernel_event.receive_status;
 
     return (0);
