@@ -28,6 +28,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <mach/message.h>
 #include "api.h"
 
 #include "private.h"
