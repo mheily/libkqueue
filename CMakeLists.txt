@@ -24,7 +24,7 @@ if (DARLING)
 		"${CMAKE_SOURCE_DIR}/src/libc/include"
 		"${CMAKE_SOURCE_DIR}/src/libc/darwin"
 		"${CMAKE_SOURCE_DIR}/src/kernel/libsyscall/wrappers"
-		"${CMAKE_SOURCE_DIR}/src/lkm"
+		"${CMAKE_SOURCE_DIR}/src/external/lkm"
 	)
 	
 	# For epoll
