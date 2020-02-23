@@ -213,6 +213,10 @@ evfilt_timer_knote_modify(struct filter *filt, struct knote *kn,
     struct itimerspec ts;
     int tfd = kn->data.pfd;
 
+    kn->kev.data = kev->data;
+    kn->kev.flags = kev->flags;
+    kn->kev.fflags = kev->fflags;
+
     convert_to_itimerspec(&ts, kn->kev.data, kn->kev.flags & EV_ONESHOT, kn->kev.fflags);
     if (timerfd_settime(tfd, 0, &ts, NULL) < 0) {
         dbg_printf("timerfd_settime(2): %s", strerror(errno));
