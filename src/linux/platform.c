@@ -201,6 +201,7 @@ linux_kevent_copyout(struct kqueue *kq, int nready,
         if (kn->kev.filter == 0) {
             dbg_puts("kevent copyout for zero filter, discarding!");
             nret--;
+            continue;
         }
         filt = &kq->kq_filt[~(kn->kev.filter)];
         rv = filt->kf_copyout(eventlist, kn, ev);
