@@ -380,13 +380,12 @@ kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
 again:
         rv = kqops.kevent_wait(kq, nevents, ts);
         dbg_printf("kqops.kevent_wait returned %d", rv);
-        if (fastpath(rv > 0)) {
-            kqueue_lock(kq);
-            rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
-            kqueue_unlock(kq);
-        }
 
         kqueue_lock(kq);
+        if (fastpath(rv > 0)) {
+            rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
+        }
+
         kqueue_cleanup(kq);
         kqueue_unlock(kq);
 

@@ -157,6 +157,8 @@ kqueue_close(int kqfd)
     if (kqmap == NULL)
         return;
 
+    pthread_mutex_lock(&kq_mtx);
+
     struct kqueue* kq = kqueue_lookup(kqfd);
     if (kq == NULL) {
         // It is not a kqueue fd, but it could be a fd inside a kqueue
@@ -166,6 +168,28 @@ kqueue_close(int kqfd)
     }
 	else {
 		kqueue_delref(kq);
+    }
+    pthread_mutex_unlock(&kq_mtx);
+}
+
+static void _kqueue_close_atfork_cb(int kqfd, void* kqptr, void* private)
+{
+	struct kqueue* kq = (struct kqueue*) kqptr;
+
+    // Mutexes are not valid after a fork, reset it to unlocked state
+    pthread_mutex_init(&kq->kq_mtx, NULL);
+
+    kqueue_free(kq);
+    __close_for_kqueue(kqfd);
+}
+
+void VISIBLE kqueue_atfork(void)
+{
+    if (kqmap != NULL)
+    {
+        // Mutexes are not valid after a fork, reset it to unlocked state
+        pthread_mutex_init(&kq_mtx, NULL);
+        map_foreach(kqmap, _kqueue_close_atfork_cb, NULL);
     }
 }
 
