@@ -172,6 +172,24 @@ kqueue_close(int kqfd)
     pthread_mutex_unlock(&kq_mtx);
 }
 
+void VISIBLE
+kqueue_dup(int oldfd, int newfd)
+{
+    if (kqmap == NULL)
+        return;
+
+    pthread_mutex_lock(&kq_mtx);
+
+    struct kqueue* kq = kqueue_lookup(oldfd);
+    if (kq != NULL)
+    {
+        kqueue_addref(kq);
+        map_insert(kqmap, newfd, kq);
+    }
+
+    pthread_mutex_unlock(&kq_mtx);
+}
+
 static void _kqueue_close_atfork_cb(int kqfd, void* kqptr, void* private)
 {
 	struct kqueue* kq = (struct kqueue*) kqptr;
@@ -179,7 +197,7 @@ static void _kqueue_close_atfork_cb(int kqfd, void* kqptr, void* private)
     // Mutexes are not valid after a fork, reset it to unlocked state
     pthread_mutex_init(&kq->kq_mtx, NULL);
 
-    kqueue_free(kq);
+    kqueue_delref(kq);
     __close_for_kqueue(kqfd);
 }
 
