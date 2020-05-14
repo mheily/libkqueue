@@ -21,9 +21,6 @@ project(kqueue)
 
 if (DARLING)
 	include_directories(
-		"${CMAKE_SOURCE_DIR}/src/libc/include"
-		"${CMAKE_SOURCE_DIR}/src/libc/darwin"
-		"${CMAKE_SOURCE_DIR}/src/kernel/libsyscall/wrappers"
 		"${CMAKE_SOURCE_DIR}/src/external/lkm"
 	)
 	
