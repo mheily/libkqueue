@@ -70,7 +70,8 @@ Running Unit Tests
 Debugging
 ---------
 
-For best results add `-DCMAKE_BUILD_TYPE=Debug` to your cmake invocation.
+For best results add `-DCMAKE_BUILD_TYPE=Debug` to your cmake invocation. Also it is possible to enable the sanitizer build with `-DENABLE_ASAN=YES`, `-DENABLE_LSAN=YES` and `-DENABLE_UBSAN=YES` helping to detects memory leaks, or issues where memory is allocated and never deallocated, causing programs to slowly consume more and more memory, eventually leading to a crash.
+
 At a minimum ensure -DNDEBUG is *NOT* passed during compilation, otherwise all debug output will be disabled.
 
 The environmental variable `KQUEUE_DEBUG` can then be set to enable debug output from libkqueue.
