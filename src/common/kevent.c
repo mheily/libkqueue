@@ -147,6 +147,12 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src)
 			kn->kn_kq = kq;
             assert(filt->kn_create);
 
+            // TODO: actually handle EV_VANISHED
+            // this is necessary for now because if we pass back EV_VANISHED, it indicates
+            // the source has vanished. we want to do that once we start properly handling it and checking for it,
+            // but at the moment it just confuses clients
+            kn->kev.flags &= ~EV_VANISHED;
+
             if (filt->kn_create(filt, kn) < 0) {
                 knote_release(kn);
                 errno = EBADF;

@@ -107,6 +107,9 @@ struct kevent {
 #define EV_RECEIPT	0x0040		/* force EV_ERROR on success, data=0 */
 #define EV_DISPATCH	0x0080		/* disable event after reporting */
 
+#define EV_UDATA_SPECIFIC	0x0100		/* unique kevent per udata value */
+#define EV_VANISHED	0x0200		/* report that source has vanished */
+
 #define EV_SYSFLAGS	0xF000		/* reserved by system */
 #define EV_FLAG1	0x2000		/* filter-specific flag */
 
