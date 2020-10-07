@@ -389,7 +389,16 @@ again:
 
         kqueue_lock(kq);
         if (fastpath(rv > 0)) {
-            rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
+            // we might have raced for an event...
+            // since we had to acquire the lock, we might have lost the race,
+            // so check again (non-blockingly) to see if we still have any events
+            rv = kqops.kevent_wait(kq, nevents, &timeout_zero);
+
+            if (fastpath(rv > 0)) {
+                rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
+            } else {
+                dbg_puts("lost the race!");
+            }
         }
 
         kqueue_cleanup(kq);
