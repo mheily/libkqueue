@@ -19,6 +19,7 @@
 struct map {
     size_t len;
     void **data;
+    pthread_rwlock_t mtx;
 };
 
 struct map *
@@ -29,6 +30,9 @@ map_new(size_t len)
     dst = calloc(1, sizeof(struct map));
     if (dst == NULL)
         return (NULL);
+
+    pthread_rwlock_init(&dst->mtx, NULL);
+
 #ifdef _WIN32
     dst->data = calloc(len, sizeof(void*));
     if(dst->data == NULL) {
@@ -57,48 +61,20 @@ map_insert(struct map *m, int idx, void *ptr)
     if (unlikely(idx < 0 || idx > (int)m->len))
            return (-1);
 
-    if (atomic_ptr_cas(&(m->data[idx]), 0, ptr) == NULL) {
+    int rv;
+    pthread_rwlock_wrlock(&m->mtx);
+    if (m->data[idx] == NULL) {
+        m->data[idx] = ptr;
         dbg_printf("idx=%i - inserted ptr=%p into map", idx, ptr);
-        return (0);
+        rv = 0;
     } else {
         dbg_printf("idx=%i - tried to insert ptr=%p into a non-empty location (cur_ptr=%p)",
                    idx, ptr, m->data[idx]);
-        return (-1);
+        rv = -1;
     }
-}
+    pthread_rwlock_unlock(&m->mtx);
 
-int
-map_remove(struct map *m, int idx, void *ptr)
-{
-    if (unlikely(idx < 0 || idx > (int)m->len))
-           return (-1);
-
-    if (atomic_ptr_cas(&(m->data[idx]), ptr, 0) == NULL) {
-        dbg_printf("idx=%i - removed ptr=%p from map", idx, ptr);
-        return (0);
-    } else {
-        dbg_printf("idx=%i - removal failed, ptr=%p != cur_ptr=%p", idx, ptr, m->data[idx]);
-        return (-1);
-    }
-}
-
-int
-map_replace(struct map *m, int idx, void *oldp, void *newp)
-{
-    void *tmp;
-
-    if (unlikely(idx < 0 || idx > (int)m->len))
-           return (-1);
-
-    tmp = atomic_ptr_cas(&(m->data[idx]), oldp, newp);
-    if (tmp == oldp) {
-        dbg_printf("idx=%i - replaced item in map with ptr=%p", idx, newp);
-
-        return (0);
-    } else {
-        dbg_printf("idx=%i - replace failed, ptr=%p != cur_ptr=%p", idx, newp, m->data[idx]);
-        return (-1);
-    }
+    return (rv);
 }
 
 void *
@@ -107,25 +83,24 @@ map_lookup(struct map *m, int idx)
     if (unlikely(idx < 0 || idx > (int)m->len))
         return (NULL);
 
-    return m->data[idx];
+    void *rv;
+    pthread_rwlock_rdlock(&m->mtx);
+    rv = m->data[idx];
+    pthread_rwlock_unlock(&m->mtx);
+
+    return (rv);
 }
 
 void *
 map_delete(struct map *m, int idx)
 {
-    void *oval;
-    void *nval;
-
     if (unlikely(idx < 0 || idx > (int)m->len))
            return ((void *)-1);
 
-    /* Hopefully we aren't racing with another thread, but you never know.. */
-    do {
-        oval = m->data[idx];
-        nval = atomic_ptr_cas(&(m->data[idx]), oval, NULL);
-    } while (nval != oval);
-
+    pthread_rwlock_wrlock(&m->mtx);
+    void *old_value = m->data[idx];
     m->data[idx] = NULL;
+    pthread_rwlock_unlock(&m->mtx);
 
-    return ((void *) oval);
+    return (old_value);
 }
