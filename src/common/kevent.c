@@ -255,6 +255,7 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
 {
     struct kqueue *kq;
     int rv = 0;
+    int changelist_fails = 0;
 #ifndef NDEBUG
     static atomic_uint _kevent_counter = 0;
     unsigned int myid = 0;
@@ -289,6 +290,7 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
         if (rv > 0) {
             eventlist += rv;
             nevents -= rv;
+            changelist_fails = rv;
         }
     }
 
@@ -306,6 +308,9 @@ kevent(int kqfd, const struct kevent *changelist, int nchanges,
             kqueue_lock(kq);
             rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
             kqueue_unlock(kq);
+
+            /* kevent succeeded, so add the count of any change fails to it */
+            rv += changelist_fails;
         } else if (rv == 0) {
             /* Timeout reached */
         } else {
