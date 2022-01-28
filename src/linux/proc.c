@@ -35,6 +35,7 @@ extern int lkm_call(int call_nr, void* arg);
 int
 evfilt_proc_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 {
+#if 0
     struct epoll_event * const ev = (struct epoll_event *) ptr;
 	struct evproc_event event;
 
@@ -103,11 +104,16 @@ evfilt_proc_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 	}
 
     return (0);
+#else
+	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
+	abort();
+#endif
 }
 
 int
 evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
 {
+#if 0
     struct epoll_event ev;
     struct evproc_create args;
 
@@ -142,20 +148,30 @@ evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
         return (-1);
     }
     return 0;
+#else
+	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
+	abort();
+#endif
 }
 
 int
 evfilt_proc_knote_modify(struct filter *filt, struct knote *kn, 
         const struct kevent64_s *kev)
 {
+#if 0
 	unsigned int flags = kn->data.events;
 	write(kn->kdata.kn_dupfd, &flags, sizeof(flags));
     return 0;
+#else
+	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
+	abort();
+#endif
 }
 
 int
 evfilt_proc_knote_delete(struct filter *filt, struct knote *kn)
 {
+#if 0
     if (kn->kev.flags & EV_DISABLE)
         return (0);
     else {
@@ -167,11 +183,16 @@ evfilt_proc_knote_delete(struct filter *filt, struct knote *kn)
         kn->kdata.kn_dupfd = -1;
         return 0;
     }
+#else
+	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
+	abort();
+#endif
 }
 
 int
 evfilt_proc_knote_enable(struct filter *filt, struct knote *kn)
 {
+#if 0
     struct epoll_event ev;
 
     memset(&ev, 0, sizeof(ev));
@@ -183,16 +204,25 @@ evfilt_proc_knote_enable(struct filter *filt, struct knote *kn)
 		return (-1);
 	}
 	return (0);
+#else
+	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
+	abort();
+#endif
 }
 
 int
 evfilt_proc_knote_disable(struct filter *filt, struct knote *kn)
 {
+#if 0
 	if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
 		dbg_perror("epoll_ctl(2)");
 		return (-1);
 	}
 	return (0);
+#else
+	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
+	abort();
+#endif
 }
 
 const struct filter evfilt_proc = {

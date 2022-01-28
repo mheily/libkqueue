@@ -38,6 +38,7 @@ extern int lkm_call(int call_nr, void* arg);
 int
 evfilt_machport_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 {
+#if 0
     struct epoll_event * const ev = (struct epoll_event *) ptr;
 	struct evpset_event kernel_event;
 	int rv;
@@ -63,11 +64,16 @@ evfilt_machport_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 	dst->fflags = kernel_event.receive_status;
 
     return (0);
+#else
+	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
+	abort();
+#endif
 }
 
 int
 evfilt_machport_knote_create(struct filter *filt, struct knote *kn)
 {
+#if 0
     struct epoll_event ev;
     int port = kn->kev.ident;
 	struct evfilt_machport_open_args args;
@@ -100,12 +106,17 @@ evfilt_machport_knote_create(struct filter *filt, struct knote *kn)
         return (-1);
     }
     return 0;
+#else
+	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
+	abort();
+#endif
 }
 
 int
 evfilt_machport_knote_modify(struct filter *filt, struct knote *kn, 
         const struct kevent64_s *kev)
 {
+#if 0
 	struct evpset_options opts;
 	int rv;
 
@@ -120,11 +131,16 @@ evfilt_machport_knote_modify(struct filter *filt, struct knote *kn,
 	}
 
     return 0;
+#else
+	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
+	abort();
+#endif
 }
 
 int
 evfilt_machport_knote_delete(struct filter *filt, struct knote *kn)
 {
+#if 0
     if (kn->kev.flags & EV_DISABLE)
         return (0);
     else {
@@ -137,11 +153,16 @@ evfilt_machport_knote_delete(struct filter *filt, struct knote *kn)
         kn->kdata.kn_dupfd = -1;
         return 0;
     }
+#else
+	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
+	abort();
+#endif
 }
 
 int
 evfilt_machport_knote_enable(struct filter *filt, struct knote *kn)
 {
+#if 0
     struct epoll_event ev;
 
     memset(&ev, 0, sizeof(ev));
@@ -153,16 +174,25 @@ evfilt_machport_knote_enable(struct filter *filt, struct knote *kn)
 		return (-1);
 	}
 	return (0);
+#else
+	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
+	abort();
+#endif
 }
 
 int
 evfilt_machport_knote_disable(struct filter *filt, struct knote *kn)
 {
+#if 0
 	if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
 		dbg_perror("epoll_ctl(2)");
 		return (-1);
 	}
 	return (0);
+#else
+	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
+	abort();
+#endif
 }
 
 const struct filter evfilt_machport = {
