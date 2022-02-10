@@ -30,53 +30,83 @@
 #include <stdint.h>
 #include <mach/message.h>
 #include "api.h"
+#include <darling/emulation/ext/for-libkqueue.h>
+#include <darlingserver/rpc-supplement.h>
 
 #include "private.h"
-
-extern int lkm_call(int call_nr, void* arg);
 
 int
 evfilt_machport_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 {
-#if 0
     struct epoll_event * const ev = (struct epoll_event *) ptr;
-	struct evpset_event kernel_event;
+	dserver_kqchan_call_notification_t notification;
+	dserver_kqchan_call_mach_port_read_t call;
+	dserver_kqchan_reply_mach_port_read_t reply = {0};
 	int rv;
 
     epoll_event_dump(ev);
     kevent_int_to_64(&src->kev, dst);
 
-	rv = read(src->kdata.kn_dupfd, &kernel_event, sizeof(kernel_event));
+	// first, read the notification
+	rv = recv(src->kdata.kn_dupfd, &notification, sizeof(notification), 0);
 	if (rv < 0) {
-		dbg_printf("evfilt_machport_copyout() failed: %s", strerror(-rv));
-		return -1;	
+		dbg_printf("evfilt_machport_copyout() reading notification failed: %d (%s)", errno, strerror(errno));
+		return -1;
 	}
 
-	if (kernel_event.flags != 0)
-		dst->flags = kernel_event.flags;
-	dst->data = kernel_event.port;
-	dst->ext[1] = kernel_event.msg_size;
-    
-#if DARLING_MACH_API_VERSION > 15
-    if (kernel_event.msg_size <= sizeof(kernel_event.process_data) && kernel_event.receive_status == MACH_MSG_SUCCESS)
-        dst->ext[0] = kernel_event.process_data;
-#endif
-	dst->fflags = kernel_event.receive_status;
+	if (notification.header.number != dserver_kqchan_msgnum_notification) {
+		dbg_puts("evfilt_machport_copyout() read invalid notification");
+		return -1;
+	}
+
+	// next, request the data
+	call.header.number = dserver_kqchan_msgnum_mach_port_read;
+	call.header.pid = getpid();
+	call.header.tid = THREAD_ID;
+	call.default_buffer = (uint64_t)&src->kn_extra_buffer[0];
+	call.default_buffer_size = sizeof(src->kn_extra_buffer);
+	rv = send(src->kdata.kn_dupfd, &call, sizeof(call), 0);
+	if (rv < 0) {
+		dbg_printf("evfilt_machport_copyout() sending request failed: %d (%s)", errno, strerror(errno));
+		return -1;
+	}
+
+	// now, read the reply
+	rv = recv(src->kdata.kn_dupfd, &reply, sizeof(reply), 0);
+	if (rv < 0) {
+		dbg_printf("evfilt_machport_copyout() reading reply failed: %d (%s)", errno, strerror(errno));
+		return -1;
+	}
+
+	if (reply.header.number != dserver_kqchan_msgnum_mach_port_read) {
+		dbg_puts("evfilt_machport_copyout() read invalid reply");
+		return -1;
+	}
+
+	if (reply.header.code != 0) {
+		// FIXME: the returned code is actually a Linux code (but strerror is provided by Darwin libc here)
+		dbg_printf("evfilt_machport_copyout() server indicated failure: %d (%s)", -reply.header.code, strerror(-reply.header.code));
+		return -1;
+	}
+
+	if (reply.kev.flags != 0)
+		dst->flags = reply.kev.flags;
+	dst->data = reply.kev.data;
+	dst->ext[0] = reply.kev.ext[0];
+	dst->ext[1] = reply.kev.ext[1];
+	dst->fflags = reply.kev.fflags;
+
+	// TODO: we need to properly support kevent_qos with regards to the data_out argument;
+	//       this is what's supposed to be passed in as the default buffer, not a buffer of our own.
 
     return (0);
-#else
-	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
-	abort();
-#endif
 }
 
 int
 evfilt_machport_knote_create(struct filter *filt, struct knote *kn)
 {
-#if 0
     struct epoll_event ev;
     int port = kn->kev.ident;
-	struct evfilt_machport_open_args args;
 
     /* Convert the kevent into an epoll_event */
     kn->data.events = EPOLLIN;
@@ -88,16 +118,13 @@ evfilt_machport_knote_create(struct filter *filt, struct knote *kn)
 
     kn->kdata.kn_dupfd = eventfd(0, EFD_CLOEXEC);
 
-    args.port_name = port;
-	args.opts.rcvbuf = (void*) kn->kev.ext[0];
-	args.opts.rcvbuf_size = kn->kev.ext[1];
-	args.opts.sfflags = kn->kev.fflags;
+	int status = _dserver_rpc_kqchan_mach_port_open_4libkqueue(port, (void*)kn->kev.ext[0], kn->kev.ext[1], kn->kev.fflags, &kn->kdata.kn_dupfd);
+	if (status < 0) {
+		dbg_printf("evfilt_machport_open: %s", strerror(-status));
+		return (-1);
+	}
 
-    kn->kdata.kn_dupfd = lkm_call(NR_evfilt_machport_open, &args);
-    if (kn->kdata.kn_dupfd < 0) {
-        dbg_printf("evfilt_machport_open: %s", strerror(-kn->kdata.kn_dupfd));
-        return (-1);
-    }
+	dbg_printf("evfilt_machport_open: listening to FD %d", kn->kdata.kn_dupfd);
 
     fcntl(kn->kdata.kn_dupfd, F_SETFD, FD_CLOEXEC);
 
@@ -106,41 +133,52 @@ evfilt_machport_knote_create(struct filter *filt, struct knote *kn)
         return (-1);
     }
     return 0;
-#else
-	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
-	abort();
-#endif
 }
 
 int
 evfilt_machport_knote_modify(struct filter *filt, struct knote *kn, 
         const struct kevent64_s *kev)
 {
-#if 0
-	struct evpset_options opts;
+	dserver_kqchan_call_mach_port_modify_t call;
+	dserver_kqchan_reply_mach_port_modify_t reply = {0};
 	int rv;
 
-	opts.rcvbuf = (void*) kev->ext[0];
-	opts.rcvbuf_size = kev->ext[1];
-	opts.sfflags = kev->fflags;
+	call.header.number = dserver_kqchan_msgnum_mach_port_modify;
+	call.header.pid = getpid();
+	call.header.tid = THREAD_ID;
+	call.receive_buffer = kev->ext[0];
+	call.receive_buffer_size = kev->ext[1];
+	call.saved_filter_flags = kev->fflags;
 
-	rv = write(kn->kdata.kn_dupfd, &opts, sizeof(opts));
+	rv = send(kn->kdata.kn_dupfd, &call, sizeof(call), 0);
 	if (rv < 0) {
-		dbg_printf("evfilt_machport_knote_modify failed: %s", strerror(-rv));
+		dbg_printf("evfilt_machport_knote_modify send failed: %d (%s)", errno, strerror(errno));
+		return -1;
+	}
+
+	rv = recv(kn->kdata.kn_dupfd, &reply, sizeof(reply), 0);
+	if (rv < 0) {
+		dbg_printf("evfilt_machport_knote_modify recv failed: %d (%s)", errno, strerror(errno));
+		return -1;
+	}
+
+	if (reply.header.number != dserver_kqchan_msgnum_mach_port_modify) {
+		dbg_puts("evfilt_machport_knote_modify invalid reply");
+		return -1;
+	}
+
+	if (reply.header.code != 0) {
+		// FIXME: same as in copyout: Linux code but Darwin strerror
+		dbg_printf("evfilt_machport_knote_modify call failed: %d (%s)", -reply.header.code, strerror(-reply.header.code));
 		return -1;
 	}
 
     return 0;
-#else
-	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
-	abort();
-#endif
 }
 
 int
 evfilt_machport_knote_delete(struct filter *filt, struct knote *kn)
 {
-#if 0
     if (kn->kev.flags & EV_DISABLE)
         return (0);
     else {
@@ -153,16 +191,11 @@ evfilt_machport_knote_delete(struct filter *filt, struct knote *kn)
         kn->kdata.kn_dupfd = -1;
         return 0;
     }
-#else
-	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
-	abort();
-#endif
 }
 
 int
 evfilt_machport_knote_enable(struct filter *filt, struct knote *kn)
 {
-#if 0
     struct epoll_event ev;
 
     memset(&ev, 0, sizeof(ev));
@@ -174,25 +207,16 @@ evfilt_machport_knote_enable(struct filter *filt, struct knote *kn)
 		return (-1);
 	}
 	return (0);
-#else
-	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
-	abort();
-#endif
 }
 
 int
 evfilt_machport_knote_disable(struct filter *filt, struct knote *kn)
 {
-#if 0
 	if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
 		dbg_perror("epoll_ctl(2)");
 		return (-1);
 	}
 	return (0);
-#else
-	fprintf(stderr, "TODO: %s\n", __FUNCTION__);
-	abort();
-#endif
 }
 
 const struct filter evfilt_machport = {

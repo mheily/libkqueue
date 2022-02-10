@@ -43,8 +43,8 @@ struct filter;
  * Get the current thread ID
  */
 #ifdef DARLING
+#include <darling/emulation/base.h>
 # define syscall __linux_syscall
-extern long int syscall (long int __sysno, ...);
 #else
 # define _GNU_SOURCE
 # include <linux/unistd.h>
@@ -69,6 +69,7 @@ extern long int syscall (long int __sysno, ...);
  */
 #define KNOTE_PLATFORM_SPECIFIC \
     int kn_epollfd; /* A copy of filter->epfd */      \
+    char kn_extra_buffer[64]; /* Extra data buffer used by some filters (EVFILT_MACHPORT) */ \
     union { \
         int kn_timerfd; \
         int kn_signalfd; \

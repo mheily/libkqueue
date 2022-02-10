@@ -22,6 +22,8 @@ project(kqueue)
 if (DARLING)
 	include_directories(
 		"${CMAKE_SOURCE_DIR}/src/external/lkm"
+		"${CMAKE_BINARY_DIR}/src/external/darlingserver/include"
+		"${CMAKE_SOURCE_DIR}/src/external/darlingserver/include"
 	)
 	
 	# For epoll

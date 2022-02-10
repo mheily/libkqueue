@@ -273,12 +273,19 @@ kqueue_impl(void)
     return (kq->kq_id);
 }
 
+static FILE* debug_file_actual_file = NULL;
+static pthread_once_t debug_file_once_token = PTHREAD_ONCE_INIT;
+
+static void init_debug_file(void) {
+	if (getenv("KQUEUE_DEBUG_STDERR")) {
+		debug_file_actual_file = stderr;
+	} else {
+		debug_file_actual_file = fopen("/tmp/kqueue-debug.log", "w");
+	}
+};
+
 FILE* debug_file()
 {
-	static FILE* file = NULL;
-	if (!file)
-	{
-		file = fopen("/tmp/kqueue-debug.log", "w");
-	}
-	return file;
+	pthread_once(&debug_file_once_token, init_debug_file);
+	return debug_file_actual_file;
 }

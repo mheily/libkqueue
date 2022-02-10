@@ -47,7 +47,7 @@ FILE* debug_file();
 #ifndef NDEBUG
 #define dbg_puts(str)           do {                                \
     if (DEBUG_KQUEUE)                                                      \
-      fprintf(stderr, "%s [%d]: %s(): %s\n",                        \
+      fprintf(debug_file(), "%s [%d]: %s(): %s\n",                        \
               KQUEUE_DEBUG_IDENT, THREAD_ID, __func__, str);               \
 } while (0)
 
@@ -59,7 +59,7 @@ FILE* debug_file();
 
 #define dbg_perror(str)         do {                                \
     if (DEBUG_KQUEUE)                                                      \
-      fprintf(stderr, "%s [%d]: %s(): %s: %s (errno=%d)\n",         \
+      fprintf(debug_file(), "%s [%d]: %s(): %s: %s (errno=%d)\n",         \
               KQUEUE_DEBUG_IDENT, THREAD_ID, __func__, str,                \
               strerror(errno), errno);                              \
 } while (0)
