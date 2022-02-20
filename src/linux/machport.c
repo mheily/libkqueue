@@ -83,6 +83,13 @@ evfilt_machport_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 		return -1;
 	}
 
+	if (reply.header.code == 0xdead) {
+		// server indicated there was actually no event available to read right now;
+		// drop the event
+		dst->filter = 0;
+		return 0;
+	}
+
 	if (reply.header.code != 0) {
 		// FIXME: the returned code is actually a Linux code (but strerror is provided by Darwin libc here)
 		dbg_printf("evfilt_machport_copyout() server indicated failure: %d (%s)", -reply.header.code, strerror(-reply.header.code));
