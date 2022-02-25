@@ -94,7 +94,7 @@ evfilt_proc_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 	if (reply.header.code == 0xdead) {
 		// server indicated there was actually no event available to read right now;
 		// drop the event
-		dst->filter = 0;
+		dst->filter = EVFILT_DROP;
 		return 0;
 	}
 
@@ -155,7 +155,7 @@ evfilt_proc_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 		// don't deliver it to the program.
 
 		if (!(src->kev.fflags & NOTE_FORK))
-			dst->filter = 0; // drop event
+			dst->filter = EVFILT_DROP; // drop event
 	}
 	else if (dst->fflags & NOTE_EXIT)
 	{
@@ -163,11 +163,12 @@ evfilt_proc_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 		dst->flags |= EV_EOF | EV_ONESHOT;
 		
 		// NOTE_EXIT is always announced so that we can
-		// remove the knote. Add EV_DELETE to avoid passing
-		// the event to the application if it is not interested
-		// in this event
+		// remove the knote. Avoid passing the event to
+		// the application if it is not interested in
+		// this event.
+		// We use EVFILT_DROP_POSTPROCESS to force the EV_ONESHOT to be processed.
 		if (!(src->kev.fflags & NOTE_EXIT))
-			dst->flags |= EV_DELETE;
+			dst->filter = EVFILT_DROP_POSTPROCESS; // drop event
 	}
 
     return (0);

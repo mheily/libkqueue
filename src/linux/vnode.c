@@ -174,7 +174,7 @@ evfilt_vnode_copyout(struct kevent64_s *dst, struct knote *src, void *ptr UNUSED
     dbg_printf("inotify event: %s", inotify_event_dump(evt));
     if (evt->mask & IN_IGNORED) {
         /* TODO: possibly return error when fs is unmounted */
-        dst->filter = 0;
+        dst->filter = EVFILT_DROP;
         return (0);
     }
 
@@ -184,7 +184,7 @@ scriptors reference the same file.
     */
     if (evt->mask & IN_CLOSE_WRITE || evt->mask & IN_CLOSE_NOWRITE) {
         src->kn_flags |= EV_ONESHOT; /* KLUDGE: causes the knote to be deleted */
-        dst->filter = 0; /* KLUDGE: causes the event to be discarded */
+        dst->filter = EVFILT_DROP_POSTPROCESS; /* KLUDGE: causes the event to be discarded */
         return (0);
     }
 

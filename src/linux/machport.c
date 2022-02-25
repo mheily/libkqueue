@@ -86,7 +86,7 @@ evfilt_machport_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
 	if (reply.header.code == 0xdead) {
 		// server indicated there was actually no event available to read right now;
 		// drop the event
-		dst->filter = 0;
+		dst->filter = EVFILT_DROP;
 		return 0;
 	}
 
@@ -123,15 +123,13 @@ evfilt_machport_knote_create(struct filter *filt, struct knote *kn)
     ev.events = kn->data.events;
     ev.data.ptr = kn;
 
-    kn->kdata.kn_dupfd = eventfd(0, EFD_CLOEXEC);
-
 	int status = _dserver_rpc_kqchan_mach_port_open_4libkqueue(port, (void*)kn->kev.ext[0], kn->kev.ext[1], kn->kev.fflags, &kn->kdata.kn_dupfd);
 	if (status < 0) {
 		dbg_printf("evfilt_machport_open: %s", strerror(-status));
 		return (-1);
 	}
 
-	dbg_printf("evfilt_machport_open: listening to FD %d", kn->kdata.kn_dupfd);
+	dbg_printf("evfilt_machport_open: listening to FD %d for events %d", kn->kdata.kn_dupfd, ev.events);
 
     fcntl(kn->kdata.kn_dupfd, F_SETFD, FD_CLOEXEC);
 
@@ -209,6 +207,8 @@ evfilt_machport_knote_enable(struct filter *filt, struct knote *kn)
     ev.events = kn->data.events;
     ev.data.ptr = kn;
 
+	dbg_printf("enabling machport knote with ID=%llu for events %d", kn->kev.ident, ev.events);
+
 	if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kdata.kn_dupfd, &ev) < 0) {
 		dbg_perror("epoll_ctl(2)");
 		return (-1);
@@ -219,6 +219,7 @@ evfilt_machport_knote_enable(struct filter *filt, struct knote *kn)
 int
 evfilt_machport_knote_disable(struct filter *filt, struct knote *kn)
 {
+	dbg_printf("disable machport knote with ID=%llu", kn->kev.ident);
 	if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kdata.kn_dupfd, NULL) < 0) {
 		dbg_perror("epoll_ctl(2)");
 		return (-1);

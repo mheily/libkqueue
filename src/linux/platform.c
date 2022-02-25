@@ -193,45 +193,47 @@ linux_kevent_copyout(struct kqueue *kq, int nready,
     struct filter *filt;
     struct knote *kn;
     int i, nret, rv;
+    struct kevent64_s* event;
 
     nret = nready;
     for (i = 0; i < nready; i++) {
         ev = &epevt_get()[i];
         kn = (struct knote *) ev->data.ptr;
+        event = eventlist;
         if (kn->kev.filter == 0) {
             dbg_puts("kevent copyout for zero filter, discarding!");
             nret--;
             continue;
         }
         filt = &kq->kq_filt[~(kn->kev.filter)];
-        rv = filt->kf_copyout(eventlist, kn, ev);
+        rv = filt->kf_copyout(event, kn, ev);
         if (slowpath(rv < 0)) {
             dbg_puts("knote_copyout failed");
             /* XXX-FIXME: hard to handle this without losing events */
             abort();
         }
 
-        /*
-         * Certain flags cause the associated knote to be deleted
-         * or disabled.
-         */
-        if (eventlist->flags & EV_DISPATCH) 
-            knote_disable(filt, kn); //FIXME: Error checking
-        if (eventlist->flags & EV_ONESHOT) {
-            knote_delete(filt, kn); //FIXME: Error checking
-        }
-
         /* If an empty kevent structure is returned, the event is discarded. */
         /* TODO: add these semantics to windows + solaris platform.c */
 
-		/* EV_DELETE is an internal trick to not have this event passed to the app.
-		 * Typically used along with EV_ONESHOT - see linux/proc.c
-		 */
-        if (fastpath(eventlist->filter != 0) && !(eventlist->flags & EV_DELETE)) {
+        if (fastpath(event->filter != EVFILT_DROP && event->filter != EVFILT_DROP_POSTPROCESS)) {
             eventlist++;
         } else {
             dbg_puts("spurious wakeup, discarding event");
             nret--;
+            if (event->filter != EVFILT_DROP_POSTPROCESS) {
+                continue;
+            }
+        }
+
+        /*
+         * Certain flags cause the associated knote to be deleted
+         * or disabled.
+         */
+        if (event->flags & EV_DISPATCH) 
+            knote_disable(filt, kn); //FIXME: Error checking
+        if (event->flags & EV_ONESHOT) {
+            knote_delete(filt, kn); //FIXME: Error checking
         }
     }
 

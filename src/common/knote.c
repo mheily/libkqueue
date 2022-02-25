@@ -62,7 +62,7 @@ knote_release(struct knote *kn)
         if (/*kn->kn_flags & KNFL_KNOTE_DELETED*/ 1) {
             dbg_printf("freeing knote at %p (delayed)", kn);
             LIST_INSERT_HEAD(&kn->kn_kq->kq_tofree, kn, kn_entries2free);
-            kn->kev.filter = 0;
+            kn->kev.filter = EVFILT_DROP;
         } else {
             dbg_puts("this should never happen");
         }

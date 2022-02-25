@@ -64,7 +64,7 @@ evfilt_read_copyout(struct kevent64_s *dst, struct knote *src, void *ptr)
         dst->data = get_eof_offset(src->kev.ident);
 
         if (dst->data == 0) {
-            dst->filter = 0;    /* Will cause the kevent to be discarded */
+            dst->filter = EVFILT_DROP;    /* Will cause the kevent to be discarded */
             if (epoll_ctl(src->kn_epollfd, EPOLL_CTL_DEL, src->kdata.kn_eventfd, NULL) < 0) {
                 dbg_perror("epoll_ctl(2)");
                 return (-1);
