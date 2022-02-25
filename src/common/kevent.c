@@ -381,7 +381,7 @@ kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
      */
     if (nevents > MAX_KEVENT)
         nevents = MAX_KEVENT;
-    if (nevents > 0) {
+    if ((flags & KEVENT_FLAG_ERROR_EVENTS) == 0 && nevents > 0) {
         const struct timespec* ts = (flags & KEVENT_FLAG_IMMEDIATE) ? (&timeout_zero) : timeout;
 again:
         rv = kqops.kevent_wait(kq, nevents, ts);
