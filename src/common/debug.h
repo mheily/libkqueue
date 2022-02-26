@@ -42,24 +42,28 @@ extern int __thread_selfid();
 # error Unsupported platform
 #endif
 
+#ifdef DARLING
+#include <darling/emulation/simple.h>
+#endif
+
 FILE* debug_file();
 
 #ifndef NDEBUG
 #define dbg_puts(str)           do {                                \
     if (DEBUG_KQUEUE)                                                      \
-      fprintf(debug_file(), "%s [%d]: %s(): %s\n",                        \
+      __simple_kprintf("%s [%d]: %s(): %s\n",                        \
               KQUEUE_DEBUG_IDENT, THREAD_ID, __func__, str);               \
 } while (0)
 
 #define dbg_printf(fmt,...)     do {                                \
     if (DEBUG_KQUEUE)                                                      \
-      fprintf(debug_file(), "%s [%d]: %s(): "fmt"\n",                     \
+      __simple_kprintf("%s [%d]: %s(): "fmt"\n",                     \
               KQUEUE_DEBUG_IDENT, THREAD_ID, __func__, __VA_ARGS__);       \
 } while (0)
 
 #define dbg_perror(str)         do {                                \
     if (DEBUG_KQUEUE)                                                      \
-      fprintf(debug_file(), "%s [%d]: %s(): %s: %s (errno=%d)\n",         \
+      __simple_kprintf("%s [%d]: %s(): %s: %s (errno=%d)\n",         \
               KQUEUE_DEBUG_IDENT, THREAD_ID, __func__, str,                \
               strerror(errno), errno);                              \
 } while (0)
