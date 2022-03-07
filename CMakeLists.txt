@@ -285,6 +285,15 @@ install(FILES
         DESTINATION
           "${CMAKE_INSTALL_FULL_INCLUDEDIR}/kqueue/sys"
         COMPONENT headers)
+if(NOT WIN32)
+install(FILES
+          "${CMAKE_BINARY_DIR}/version.h"
+        RENAME
+          "libkqueue_version.h"
+        DESTINATION
+          "${CMAKE_INSTALL_FULL_INCLUDEDIR}/kqueue/sys"
+        COMPONENT headers)
+endif()
 install(TARGETS
           kqueue
         DESTINATION
