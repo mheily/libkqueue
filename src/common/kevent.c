@@ -332,6 +332,7 @@ kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
     struct kqueue *kq;
     struct timespec timeout_zero = { 0, 0 };
     int rv = 0;
+    int ret = 0;
 #ifndef NDEBUG
     static unsigned int _kevent_counter = 0;
     unsigned int myid = 0;
@@ -368,9 +369,9 @@ kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
         if (rv > 0) {
             eventlist += rv;
             nevents -= rv;
-            
-            /* There are events to return, so let's return now */
-            goto out;
+            ret += rv;
+
+            // keep going to process more events (if we have room)
         }
     }
 
@@ -389,16 +390,8 @@ again:
 
         kqueue_lock(kq);
         if (fastpath(rv > 0)) {
-            // we might have raced for an event...
-            // since we had to acquire the lock, we might have lost the race,
-            // so check again (non-blockingly) to see if we still have any events
-            rv = kqops.kevent_wait(kq, nevents, &timeout_zero);
-
-            if (fastpath(rv > 0)) {
-                rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
-            } else {
-                dbg_puts("lost the race!");
-            }
+            rv = kqops.kevent_copyout(kq, rv, eventlist, nevents);
+            ret += rv;
         }
 
         kqueue_cleanup(kq);
@@ -427,7 +420,7 @@ again:
 #endif
 
 out:
-    dbg_printf("--- END kevent %u ret %d ---", myid, rv);
+    dbg_printf("--- END kevent %u ret %d ---", myid, (rv < 0) ? rv : ret);
     kqueue_delref(kq);
-    return (rv);
+    return (rv < 0) ? rv : ret;
 }
