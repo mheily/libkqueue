@@ -139,16 +139,17 @@ static void _kqueue_close_cb(int kqfd, void* kqptr, void* private)
 	struct kqueue* kq = (struct kqueue*) kqptr;
 	int closing_fd = (int) private;
 	struct kevent64_s ev[2];
+    struct kevent64_s results[2];
 
 	ev[0].ident = closing_fd;
-	ev[0].flags = EV_DELETE;
+	ev[0].flags = EV_DELETE | EV_RECEIPT;
 	ev[0].filter = EVFILT_READ;
 	ev[1].ident = closing_fd;
-	ev[1].flags = EV_DELETE;
+	ev[1].flags = EV_DELETE | EV_RECEIPT;
 	ev[1].filter = EVFILT_WRITE;
 
 	// We don't care if it fails or not...
-	kevent64(kqfd, ev, 2, NULL, 0, 0, NULL);
+	kevent64(kqfd, ev, 2, results, 2, KEVENT_FLAG_ERROR_EVENTS, NULL);
 }
 
 void VISIBLE
