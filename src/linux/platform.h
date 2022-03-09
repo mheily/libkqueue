@@ -69,7 +69,9 @@ extern long int syscall (long int __sysno, ...);
  */
 #define KNOTE_PLATFORM_SPECIFIC \
     int kn_epollfd; /* A copy of filter->epfd */      \
-    char kn_extra_buffer[64]; /* Extra data buffer used by some filters (EVFILT_MACHPORT) */ \
+    union { \
+        char kn_extra_buffer[64]; /* Extra data buffer used by some filters (EVFILT_MACHPORT) */ \
+    }; \
     union { \
         int kn_timerfd; \
         int kn_signalfd; \
