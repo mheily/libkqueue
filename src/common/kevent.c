@@ -323,6 +323,8 @@ kevent_impl(int kqfd, const struct kevent *changelist, int nchanges,
     return rv;
 }
 
+extern pthread_mutex_t kq_mtx;
+
 int VISIBLE
 kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
         struct kevent64_s *eventlist, int nevents,
@@ -340,14 +342,19 @@ kevent64_impl(int kqfd, const struct kevent64_s *changelist, int nchanges,
     (void) myid;
 #endif
 
+    pthread_mutex_lock(&kq_mtx);
+
     /* Convert the descriptor into an object pointer */
     kq = kqueue_lookup(kqfd);
     if (kq == NULL) {
+        pthread_mutex_unlock(&kq_mtx);
         errno = ENOENT;
         return (-1);
     }
 
     kqueue_addref(kq);
+
+    pthread_mutex_unlock(&kq_mtx);
 
 #ifndef NDEBUG
     if (DEBUG_KQUEUE) {
@@ -421,6 +428,13 @@ again:
 
 out:
     dbg_printf("--- END kevent %u ret %d ---", myid, (rv < 0) ? rv : ret);
+
+	// FIXME: optimize this; we shouldn't be grabbing the kq_mtx every time we delref a kqueue.
+	//        this is just a quick-and-dirty fix because kqueue_delref can call kqueue_free,
+    //        which needs the kq_mtx to be held.
+    pthread_mutex_lock(&kq_mtx);
     kqueue_delref(kq);
+    pthread_mutex_unlock(&kq_mtx);
+
     return (rv < 0) ? rv : ret;
 }

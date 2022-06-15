@@ -139,5 +139,7 @@ map_delete(struct map *m, int idx)
 
     m->data[idx] = NULL;
 
+    dbg_printf("deleted %p from location %d", oval, idx);
+
     return ((void *) oval);
 }

@@ -117,12 +117,19 @@ void kqueue_cleanup(struct kqueue* kq)
     LIST_INIT(&kq->kq_tofree);
 }
 
+static void kqueue_free_cb(int kqfd, void* kqptr, void* private) {
+	if (kqptr == private) {
+		map_delete(kqmap, kqfd);
+	}
+};
+
 /* Must hold the kqtree_mtx when calling this */
 void
 kqueue_free(struct kqueue *kq)
 {
 	kqueue_cleanup(kq);
-    map_delete(kqmap, kq->kq_id);
+	// XXX: we should be doing this more efficiently (i.e. without walking through all open kqueues)
+	map_foreach(kqmap, kqueue_free_cb, kq);
     filter_unregister_all(kq);
     kqops.kqueue_free(kq);
     free(kq);
@@ -134,45 +141,128 @@ kqueue_lookup(int kq)
     return ((struct kqueue *) map_lookup(kqmap, kq));
 }
 
-static void _kqueue_close_cb(int kqfd, void* kqptr, void* private)
-{
-	struct kqueue* kq = (struct kqueue*) kqptr;
-	int closing_fd = (int) private;
-	struct kevent64_s ev[2];
-    struct kevent64_s results[2];
-
-	ev[0].ident = closing_fd;
-	ev[0].flags = EV_DELETE | EV_RECEIPT;
-	ev[0].filter = EVFILT_READ;
-	ev[1].ident = closing_fd;
-	ev[1].flags = EV_DELETE | EV_RECEIPT;
-	ev[1].filter = EVFILT_WRITE;
-
-	// We don't care if it fails or not...
-	kevent64(kqfd, ev, 2, results, 2, KEVENT_FLAG_ERROR_EVENTS, NULL);
-}
-
-void VISIBLE
+int VISIBLE
 kqueue_close(int kqfd)
 {
+	int result = 0;
+
     if (kqmap == NULL)
-        return;
+        return 0;
 
     pthread_mutex_lock(&kq_mtx);
 
     struct kqueue* kq = kqueue_lookup(kqfd);
-    if (kq == NULL) {
-        // It is not a kqueue fd, but it could be a fd inside a kqueue
-        // Since we're creating duplicates of all fd's, we now have to walk
-        // through all known kqueues and remove the fd from them.
-		map_foreach(kqmap, _kqueue_close_cb, (void*)(long) kqfd);
-    }
-	else {
+	if (kq != NULL) {
+		result = 1;
 		kqueue_delref(kq);
-    }
+	}
     pthread_mutex_unlock(&kq_mtx);
+
+	return result;
 }
 
+struct kqueue_close_context {
+	// optimization to avoid allocations in most cases
+	struct kqueue* kqs_to_check_buffer[32];
+	struct kqueue** kqs_to_check;
+	size_t buffer_size;
+	size_t kq_count;
+	bool dynamic_buffer;
+};
+
+static void kqueue_close_ref_cb(int kqfd, void* kqptr, void* private) {
+	struct kqueue* kq = kqptr;
+	struct kqueue_close_context* context = private;
+
+	if (context->kq_count >= context->buffer_size) {
+		void* new_buffer = realloc(context->dynamic_buffer ? context->kqs_to_check : NULL, sizeof(*context->kqs_to_check) * (context->buffer_size * 2));
+
+		if (!new_buffer) {
+			// well, i guess we can't check this kqueue because we don't have space in the buffer for it :/
+			return;
+		}
+
+		if (!context->dynamic_buffer) {
+			memcpy(new_buffer, context->kqs_to_check, sizeof(*context->kqs_to_check) * context->kq_count);
+		}
+
+		context->kqs_to_check = new_buffer;
+		context->dynamic_buffer = true;
+		context->buffer_size *= 2;
+	}
+
+	context->kqs_to_check[context->kq_count] = kq;
+	++context->kq_count;
+
+	kqueue_addref(kq);
+};
+
+// this function is too expensive for how often it can be called (which is every time an FD is closed).
+// if possible, this should be optimized or, better yet, we should just completely refactor libkqueue so that
+// some of the things this function needs to do are no longer necessary (like walking through every single kqueue).
+void VISIBLE
+kqueue_closed_fd(int fd)
+{
+	if (kqmap == NULL)
+		return;
+
+	struct kevent64_s ev[2];
+
+	ev[0].ident = fd;
+	ev[0].flags = EV_DELETE | EV_RECEIPT;
+	ev[0].filter = EVFILT_READ;
+	ev[1].ident = fd;
+	ev[1].flags = EV_DELETE | EV_RECEIPT;
+	ev[1].filter = EVFILT_WRITE;
+
+	// we know it's not a kqueue FD (since kqueue_close() takes care of those),
+	// but it could be a fd inside a kqueue. Since we're creating duplicates of all fd's,
+	// we now have to walk through all known kqueues and remove the fd from them.
+
+	struct kqueue_close_context context;
+	context.kqs_to_check = context.kqs_to_check_buffer;
+	context.buffer_size = sizeof(context.kqs_to_check_buffer) / sizeof(*context.kqs_to_check_buffer);
+	context.kq_count = 0;
+	context.dynamic_buffer = false;
+
+	// we first have to copy all current kqueues into a buffer so we can check them with the kq_mtx dropped.
+	// this is necessary because some of the operations we perform should not be performed with the kq_mtx held.
+    // (e.g. acquiring other locks like the individual kqueue locks)
+	//
+	// FIXME: this is a terrible solution. another (possible better) solution would be to keep a map that maps FDs
+	//        to the kqueues they're in. then, each FD would hold a reference on the kqueues they're in and we can
+	//        just access those kqueues without additional locks (only the individual kqueue lock).
+
+	pthread_mutex_lock(&kq_mtx);
+	map_foreach(kqmap, kqueue_close_ref_cb, &context);
+	pthread_mutex_unlock(&kq_mtx);
+
+	for (size_t i = 0; i < context.kq_count; ++i) {
+		struct kqueue* kq = context.kqs_to_check[i];
+
+		kqueue_lock(kq);
+		// we don't care whether these operations succeed or not
+		kevent_copyin_one(kq, &ev[0]);
+		kevent_copyin_one(kq, &ev[1]);
+		kqueue_unlock(kq);
+	}
+
+	// now release the references we added
+	pthread_mutex_lock(&kq_mtx);
+	for (size_t i = 0; i < context.kq_count; ++i) {
+		kqueue_delref(context.kqs_to_check[i]);
+	}
+	pthread_mutex_unlock(&kq_mtx);
+
+	// and free the buffer (if we created one)
+	if (context.dynamic_buffer) {
+		free(context.kqs_to_check);
+	}
+}
+
+// FIXME: this can race with someone closing the old FD right after it's dup'ed but before we're informed.
+//        we should add a reference on the old FD before trying to dup it, then dup it, and then assign the reference
+//        to the new FD if the dup succeeded or delete the reference if the dup failed.
 void VISIBLE
 kqueue_dup(int oldfd, int newfd)
 {
@@ -196,10 +286,9 @@ static void _kqueue_close_atfork_cb(int kqfd, void* kqptr, void* private)
 	struct kqueue* kq = (struct kqueue*) kqptr;
 
     // Mutexes are not valid after a fork, reset it to unlocked state
-    pthread_mutex_init(&kq->kq_mtx, NULL);
+    tracing_mutex_init(&kq->kq_mtx, NULL);
 
     kqueue_delref(kq);
-    __close_for_kqueue(kqfd);
 }
 
 void VISIBLE kqueue_atfork(void)
@@ -219,8 +308,9 @@ void kqueue_addref(struct kqueue *kq)
 
 void kqueue_delref(struct kqueue *kq)
 {
-	if (!atomic_dec(&kq->kq_ref))
+	if (!atomic_dec(&kq->kq_ref)) {
 		kqueue_free(kq);
+	}
 }
 
 int VISIBLE
@@ -258,6 +348,7 @@ kqueue_impl(void)
 
     dbg_printf("created kqueue, fd=%d", kq->kq_id);
 
+    pthread_mutex_lock(&kq_mtx);
     tmp = map_delete(kqmap, kq->kq_id);
     if (tmp != NULL) {
         dbg_puts("FIXME -- memory leak here");
@@ -270,6 +361,7 @@ kqueue_impl(void)
         kqops.kqueue_free(kq);
         return (-1);
     }
+    pthread_mutex_unlock(&kq_mtx);
 
     return (kq->kq_id);
 }
