@@ -155,10 +155,12 @@ main(int argc, char **argv)
           .ut_func = test_evfilt_signal,
           .ut_end = INT_MAX },
 #endif
+#if !defined(_WIN32)
         { .ut_name = "proc",
           .ut_enabled = 1,
           .ut_func = test_evfilt_proc,
           .ut_end = INT_MAX },
+#endif
         { .ut_name = "timer",
           .ut_enabled = 1,
           .ut_func = test_evfilt_timer,

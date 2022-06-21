@@ -16,6 +16,12 @@
 
 #include "common.h"
 
+#if defined(_WIN32)
+#define SLEEP_MS(ms)            Sleep(ms)
+#else
+#define SLEEP_MS(microseconds)  usleep(microseconds * 1000)
+#endif
+
 void
 test_kevent_timer_add(struct test_context *ctx)
 {
@@ -204,7 +210,7 @@ test_kevent_timer_dispatch(struct test_context *ctx)
     kevent_cmp(&kev, ret);
 
     /* Confirm that the knote is disabled due to EV_DISPATCH */
-    usleep(500000); /* 500 ms */
+    SLEEP_MS(500);
     test_no_kevents(ctx->kqfd);
 
 #if WITH_NATIVE_KQUEUE_BUGS || !defined(__FreeBSD__)
@@ -223,7 +229,7 @@ test_kevent_timer_dispatch(struct test_context *ctx)
     test_no_kevents(ctx->kqfd);
 
     /* Get the next event */
-    usleep(1100000); /* 1100 ms */
+    SLEEP_MS(1100);
     kev.flags = EV_ADD | EV_CLEAR | EV_DISPATCH;
     kev.data = 5;
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
@@ -232,7 +238,7 @@ test_kevent_timer_dispatch(struct test_context *ctx)
 
     /* Remove the knote and ensure the event no longer fires */
     kevent_add(ctx->kqfd, &kev, 4, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
-    usleep(500000); /* 500 ms */
+    SLEEP_MS(500);
     test_no_kevents(ctx->kqfd);
 }
 #endif  /* EV_DISPATCH */

@@ -20,9 +20,10 @@ static void
 test_libkqueue_version(struct test_context *ctx)
 {
     struct kevent kev, receipt;
+    struct timespec ts = {0, 0};
 
     EV_SET(&kev, 0, EVFILT_LIBKQUEUE, EV_ADD, NOTE_VERSION, 0, NULL);
-    if (kevent(ctx->kqfd, &kev, 1, &receipt, 1, &(struct timespec){}) != 1) {
+    if (kevent(ctx->kqfd, &kev, 1, &receipt, 1, &ts) != 1) {
         printf("Unable to add the following kevent:\n%s\n",
                kevent_to_str(&kev));
         die("kevent");
@@ -38,9 +39,10 @@ static void
 test_libkqueue_version_str(struct test_context *ctx)
 {
     struct kevent kev, receipt;
+    struct timespec ts = { 0, 0 };
 
     EV_SET(&kev, 0, EVFILT_LIBKQUEUE, EV_ADD, NOTE_VERSION_STR, 0, NULL);
-    if (kevent(ctx->kqfd, &kev, 1, &receipt, 1, &(struct timespec){}) != 1) {
+    if (kevent(ctx->kqfd, &kev, 1, &receipt, 1, &ts) != 1) {
         printf("Unable to add the following kevent:\n%s\n",
                kevent_to_str(&kev));
         die("kevent");
