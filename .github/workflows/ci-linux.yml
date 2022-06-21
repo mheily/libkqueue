@@ -99,7 +99,6 @@ jobs:
           -DCMAKE_INSTALL_PREFIX="/usr" \
           -DCMAKE_INSTALL_LIBDIR="lib"  \
           -DCMAKE_VERBOSE_MAKEFILE:BOOL="ON" \
-          -DENABLE_TESTING="YES" \
           -DENABLE_ASAN="${ENABLE_ASAN:-NO}" \
           -DENABLE_LSAN="${ENABLE_LSAN:-NO}" \
           -DENABLE_UBSAN="${ENABLE_UBSAN:-NO}" \
