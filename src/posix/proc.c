@@ -288,16 +288,17 @@ wait_thread_loop(UNUSED void *arg)
     pthread_cond_signal(&proc_wait_thread_cond);
     pthread_mutex_unlock(&proc_wait_thread_mtx);
     do {
+        if (ret < 0) {
+            dbg_printf("sigwaitinfo(2): %s", strerror(errno));
+            continue;
+        }
+
         /*
          * Don't allow the thread to be cancelled until we've
          * finished one loop in the monitoring thread.  This
          * ensures there are no nasty issue on exit.
          */
         pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
-        if (ret < 0) {
-            dbg_printf("sigwaitinfo(2): %s", strerror(errno));
-            continue;
-        }
 
         /*
          * The knote_* functions (i.e. those that could free a
