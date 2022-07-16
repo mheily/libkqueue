@@ -288,6 +288,11 @@ wait_thread_loop(UNUSED void *arg)
     pthread_cond_signal(&proc_wait_thread_cond);
     pthread_mutex_unlock(&proc_wait_thread_mtx);
     do {
+        /*
+         * Check for errors before altering the cancellation
+         * state, so we don't end up calling sigwaitinfo
+         * with the cancellations disabled.
+         */
         if (ret < 0) {
             dbg_printf("sigwaitinfo(2): %s", strerror(errno));
             continue;
