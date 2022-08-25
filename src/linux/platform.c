@@ -19,6 +19,10 @@
 #include <pthread.h>
 #include "../common/private.h"
 
+#ifdef DARLING
+#include "../darling/listenregistry.h"
+#endif
+
 /*
  * Per-thread epoll event buffer used to ferry data between
  * kevent_wait() and kevent_copyout().
@@ -365,15 +369,21 @@ linux_get_descriptor_type(struct knote *kn)
             case ENOTSOCK:   /* same as lsock = 0 */
                 return (0);
                 break;
+#ifdef DARLING
+            /* Hack for WSL1 issue: https://github.com/microsoft/WSL/issues/8757 */
+            case EINVAL:
+                lsock = __darling_kqueue_get_listen_status(kn->kev.ident);
+                break;
+#endif
             default:
                 dbg_perror("getsockopt(3)");
                 return (-1);
         }
-    } else {
-        if (lsock) 
-            kn->kn_flags |= KNFL_PASSIVE_SOCKET;
-        return (0);
     }
+
+    if (lsock)
+        kn->kn_flags |= KNFL_PASSIVE_SOCKET;
+    return (0);
 }
 
 char *

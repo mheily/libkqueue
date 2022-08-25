@@ -24,6 +24,10 @@
 
 #include "private.h"
 
+#ifdef DARLING
+#include "../darling/listenregistry.h"
+#endif
+
 int DEBUG_KQUEUE = 0;
 char *KQUEUE_DEBUG_IDENT = "KQ";
 
@@ -258,6 +262,10 @@ kqueue_closed_fd(int fd)
 	if (context.dynamic_buffer) {
 		free(context.kqs_to_check);
 	}
+
+#ifdef DARLING
+    __darling_kqueue_unregister_listen(fd);
+#endif
 }
 
 // FIXME: this can race with someone closing the old FD right after it's dup'ed but before we're informed.
@@ -279,6 +287,11 @@ kqueue_dup(int oldfd, int newfd)
     }
 
     pthread_mutex_unlock(&kq_mtx);
+
+#ifdef DARLING
+    if (__darling_kqueue_get_listen_status(oldfd))
+        __darling_kqueue_register_listen(newfd);
+#endif
 }
 
 static void _kqueue_close_atfork_cb(int kqfd, void* kqptr, void* private)
