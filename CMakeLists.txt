@@ -97,6 +97,17 @@ else()
 endif()
 source_group(src FILES ${SRC})
 
+if (DARLING)
+	file(GLOB SRC_DARLING
+		src/darling/*.h
+		src/darling/*.c
+	)
+	list (APPEND SRC ${SRC_DARLING})
+	add_definitions(
+		-DDARLING=1
+	)
+endif (DARLING)
+
 #includes
 include_directories(
 	include
