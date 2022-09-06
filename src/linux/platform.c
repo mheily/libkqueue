@@ -237,7 +237,12 @@ linux_kevent_copyout(struct kqueue *kq, int nready,
         if (event->flags & EV_DISPATCH) 
             knote_disable(filt, kn); //FIXME: Error checking
         if (event->flags & EV_ONESHOT) {
-            knote_delete(filt, kn); //FIXME: Error checking
+            if ((kn->kev.flags & EV_DISPATCH2) == EV_DISPATCH2) {
+                // defer deletion until the knote is re-enabled
+                kn->kn_flags |= KNFL_DEFER_DELETE;
+            } else {
+                knote_delete(filt, kn); //FIXME: Error checking
+            }
         }
     }
 

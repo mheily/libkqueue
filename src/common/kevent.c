@@ -122,12 +122,6 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src)
     struct filter *filt;
     int rv = 0;
 
-    if (src->flags & EV_DISPATCH && src->flags & EV_ONESHOT) {
-        dbg_puts("Error: EV_DISPATCH and EV_ONESHOT are mutually exclusive");
-        errno = EINVAL;
-        return (-1);
-    }
-
     if (filter_lookup(&filt, kq, src->filter) < 0) 
         return (-1);
 
@@ -176,7 +170,7 @@ kevent_copyin_one(struct kqueue *kq, const struct kevent64_s *src)
         }
     }
 
-    if (src->flags & EV_DELETE) {
+    if ((src->flags & EV_DELETE) || ((kn->kn_flags & KNFL_DEFER_DELETE) && (src->flags & EV_ENABLE))) {
         rv = knote_delete(filt, kn);
         dbg_printf("knote_delete returned %d", rv);
     } else if (src->flags & EV_DISABLE) {
