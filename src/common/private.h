@@ -78,10 +78,10 @@ struct evfilt_data;
  *
  */
 #ifndef LIST_FOREACH_SAFE
-#define	LIST_FOREACH_SAFE(var, head, field, tvar)			\
-	for ((var) = LIST_FIRST((head));				\
-	    (var) && ((tvar) = LIST_NEXT((var), field), 1);		\
-	    (var) = (tvar))
+#define    LIST_FOREACH_SAFE(var, head, field, tvar)            \
+    for ((var) = LIST_FIRST((head));                \
+        (var) && ((tvar) = LIST_NEXT((var), field), 1);        \
+        (var) = (tvar))
 #endif
 
 /** Convenience macros
@@ -666,8 +666,16 @@ extern unsigned int kq_cnt;
  * kqueue internal API
  */
 #define kqueue_mutex_assert(kq, state) tracing_mutex_assert(&(kq)->kq_mtx, state)
-#define kqueue_lock(kq)                tracing_mutex_lock(&(kq)->kq_mtx)
-#define kqueue_unlock(kq)              tracing_mutex_unlock(&(kq)->kq_mtx)
+
+#define kqueue_lock(kq)                do { \
+                                           dbg_printf("locking kq=%p", kq); \
+                                           tracing_mutex_lock(&(kq)->kq_mtx); \
+                                       } while(0)
+
+#define kqueue_unlock(kq)              do { \
+                                           dbg_printf("unlocking kq=%p", kq); \
+                                           tracing_mutex_unlock(&(kq)->kq_mtx); \
+                                       } while(0)
 
 /*
  * knote internal API

@@ -331,9 +331,11 @@ kevent_copyin(struct kqueue *kq, const struct kevent changelist[], int nchanges,
 
 #ifndef _WIN32
 static void
-kevent_release_kq_mutex(void *kq)
+kevent_release_kq_mutex(void *arg)
 {
-    kqueue_unlock((struct kqueue *)kq);
+    struct kqueue *kq = arg;
+    dbg_printf("Unlocking kq=%p due to cancellation", kq);
+    kqueue_unlock(kq);
 }
 #endif
 
@@ -367,7 +369,7 @@ kevent(int kqfd,
     if (!changelist) changelist = null_kev;
 
 #ifndef _WIN32
-    prev_cancel_state = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &prev_cancel_state);
 #endif
     /*
      * Grab the global mutex.  This prevents
@@ -439,8 +441,10 @@ kevent(int kqfd,
          */
 #ifndef _WIN32
         (void)pthread_setcancelstate(prev_cancel_state, NULL);
-        if (prev_cancel_state == PTHREAD_CANCEL_ENABLE)
+        if (prev_cancel_state == PTHREAD_CANCEL_ENABLE) {
+            dbg_printf("Checking for deferred cancellations");
             pthread_testcancel();
+        }
 #endif
         rv = kqops.kevent_wait(kq, nevents, timeout);
 #ifndef _WIN32
@@ -482,16 +486,23 @@ kevent(int kqfd,
 
 out:
 #ifndef _WIN32
-    pthread_cleanup_pop(0);
+    /*
+     *  Test for cancellations first, so we don't
+     *  double unlock the kqueue.
+     */
+    pthread_setcancelstate(prev_cancel_state, NULL);
+    if (prev_cancel_state == PTHREAD_CANCEL_ENABLE) {
+        dbg_printf("Checking for deferred cancellations");
+        pthread_testcancel();
+    }
 #endif
-    kqueue_unlock(kq);
-    dbg_printf("--- END kevent %u ret %d ---", myid, rv);
 
 #ifndef _WIN32
-    pthread_setcancelstate(prev_cancel_state, NULL);
-    if (prev_cancel_state == PTHREAD_CANCEL_ENABLE)
-        pthread_testcancel();
+    pthread_cleanup_pop(0);
 #endif
+
+    kqueue_unlock(kq);
+    dbg_printf("--- END kevent %u ret %d ---", myid, rv);
 
     return (rv);
 }

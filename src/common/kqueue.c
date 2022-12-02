@@ -190,6 +190,8 @@ libkqueue_parent_fork(void)
     if (!libkqueue_fork_cleanup_active)
         return;
 
+    dbg_puts("resuming execution in parent");
+
     tracing_mutex_unlock(&kq_mtx);
 }
 
@@ -359,7 +361,7 @@ kqueue(void)
 #endif
 
 #ifndef _WIN32
-    prev_cancel_state = pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &prev_cancel_state);
 #endif
     kq = calloc(1, sizeof(*kq));
     if (kq == NULL)
