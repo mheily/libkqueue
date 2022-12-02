@@ -139,8 +139,6 @@ TSAN_IGNORE
 void
 libkqueue_pre_fork(void)
 {
-    struct kqueue *kq, *kq_tmp;
-
     /*
      * Unfortunately there's no way to remove the atfork
      * handlers, so all we can do if cleanup is
@@ -198,8 +196,6 @@ libkqueue_parent_fork(void)
 void
 libkqueue_child_fork(void)
 {
-    struct kqueue *kq, *kq_tmp;
-
     libkqueue_in_child = true;
 
     if (!libkqueue_fork_cleanup_active)
