@@ -142,18 +142,6 @@ libkqueue_pre_fork(void)
     struct kqueue *kq, *kq_tmp;
 
     /*
-     * Ensure that all global structures are in a
-     * consistent state before attempting the
-     * fork.
-     *
-     * If we don't do this then kq_mtx state will
-     * be undefined when the child starts cleaning
-     * up resources, and we could get deadlocks, nasty
-     * memory corruption and or crashes in the child.
-     */
-    tracing_mutex_lock(&kq_mtx);
-
-    /*
      * Unfortunately there's no way to remove the atfork
      * handlers, so all we can do if cleanup is
      * deactivated is bail as quickly as possible.
@@ -166,35 +154,44 @@ libkqueue_pre_fork(void)
         return;
 
     /*
-     * Acquire locks for all the active kqueues,
-     * this ensures in the child all kqueues are in
-     * a consistent state, ready to be freed.
+     * Ensure that all global structures are in a consistent
+     * state before attempting the fork.
      *
-     * This has the potential to stall out the process
-     * whilst we attempt to acquire all the locks,
-     * so it might be a good idea to make this
-     * configurable in future.
+     * If we don't do this then kq_mtx state will
+     * be undefined when the child starts cleaning
+     * up resources, and we could get deadlocks, nasty
+     * memory corruption and/or crashes in the child.
+     *
+     * We always lock the kq_mtx even when
+     * !libkqueue_thread_safe because it's still locked when
+     * kqueues are being freed, and we don't want to access
+     * freed memory when attempting to perform cleanup.
      */
-    dbg_puts("gathering kqueue locks on fork");
-    LIST_FOREACH_SAFE(kq, &kq_list, kq_entry, kq_tmp) {
-        kqueue_lock(kq);
-    }
+    tracing_mutex_lock(&kq_mtx);
+
+    /*
+     * We previously attempted to lock all the child
+     * kqueues, but when they were waiting in kevent_wait
+     * this caused fork to stall.
+     *
+     * The main reason for locking the child kqueues was
+     * to ensure filters and kqueues were in a consistent
+     * state at the time of the fork, to ensure we could
+     * free resources correctly... but as it was later
+     * discovered many systems really don't like free()
+     * being called in the forked child, so we were limited
+     * to async-safe calls like close... These should be
+     * safe no matter what the state of the kqueues so
+     * the locking was removed.
+     */
 }
 
 void
 libkqueue_parent_fork(void)
 {
-    struct kqueue *kq, *kq_tmp;
-
-    if (!libkqueue_fork_cleanup_active) {
-        tracing_mutex_unlock(&kq_mtx);
+    if (!libkqueue_fork_cleanup_active)
         return;
-    }
 
-    dbg_puts("releasing kqueue locks in parent");
-    LIST_FOREACH_SAFE(kq, &kq_list, kq_entry, kq_tmp) {
-        kqueue_unlock(kq);
-    }
     tracing_mutex_unlock(&kq_mtx);
 }
 
@@ -205,15 +202,8 @@ libkqueue_child_fork(void)
 
     libkqueue_in_child = true;
 
-    if (!libkqueue_fork_cleanup_active) {
-        tracing_mutex_unlock(&kq_mtx);
+    if (!libkqueue_fork_cleanup_active)
         return;
-    }
-
-    dbg_puts("releasing kqueue locks in child");
-    LIST_FOREACH_SAFE(kq, &kq_list, kq_entry, kq_tmp) {
-        kqueue_unlock(kq);
-    }
 
     dbg_puts("cleaning up forked resources");
     filter_fork_all();

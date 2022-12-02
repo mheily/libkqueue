@@ -1,41 +1,46 @@
 Unreleased
 ------------------------------------------------------------------------
- 
-2022-04-27  v2.6.2
+
+2022-11-02  v2.6.2
 ------------------------------------------------------------------------
 
    * Fix: Various build system and include fixes to allow libkqueue
      to build correctly with musl libc.
-     
+
    * Fix: Various macro and include fixes for Windows/MinGW builds.
      (Fixed by: neheb)
-     
-   * Always build both a static and a shared library. The STATIC_KQUEUE 
+
+   * Always build both a static and a shared library. The STATIC_KQUEUE
      build variable has been removed.
- 
+
+   * Fix: Don't attempt to lock kqueues on fork.  It's no longer needed
+     as we're not attempting to free memory in the kqueues, only close
+     file descriptors.  This may resolve stalling fork() calls where
+     kqueues were in a waiting state.
+
 2022-04-27  v2.6.1
 ------------------------------------------------------------------------
 
-  * Fix: Set the core dumped flag correctly in linux/proc on 
+  * Fix: Set the core dumped flag correctly in linux/proc on
     CLD_DUMPED.
 
   * Fix: Don't attempt to cleanup memory on fork as free() is not
     fork safe.  We still close open kqueue FDs on fork, and liberal
     use of CLOEXEC should clean up any lingering filter FDs though
     we may want to close these explicitly in future too.
- 
+
   * Fix: Double unlock in posix/proc.c
- 
+
   * Fix: Potential deadlock on kqueue initialisation failure.
 
   * Fix: Building for MSVC (Patch by Jan200101)
 
   * Fix: Sprinkle CLOEXEC around various places in the Linux and
     POSIX platforms to stop us leaking file descriptors on exec.
-    
-  * Add EVFILT_LIBKQUEUE/NOTE_THREAD_SAFE.  When set to 0, the 
-    global mutex is not locked on kqueue lookup.  The application 
-    must guarantee that kqueues must not be destroyed by a different 
+
+  * Add EVFILT_LIBKQUEUE/NOTE_THREAD_SAFE.  When set to 0, the
+    global mutex is not locked on kqueue lookup.  The application
+    must guarantee that kqueues must not be destroyed by a different
     thread to the one that created them.
 
 2022-03-21  v2.6.0
