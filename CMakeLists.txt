@@ -21,13 +21,13 @@ project(kqueue)
 
 if (DARLING)
 	include_directories(
-		"${CMAKE_SOURCE_DIR}/src/external/lkm"
+		"${CMAKE_SOURCE_DIR}/src/external/xnu"
 		"${CMAKE_BINARY_DIR}/src/external/darlingserver/include"
 		"${CMAKE_SOURCE_DIR}/src/external/darlingserver/include"
 	)
 	
 	# For epoll
-	include_directories("${CMAKE_SOURCE_DIR}/src/kernel/emulation/linux/ext")
+	include_directories("${CMAKE_SOURCE_DIR}/src/external/xnu/darling/src/libsystem_kernel/emulation/linux/ext")
 	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -nostdinc -DHAVE_SYS_EVENTFD_H -DHAVE_SYS_SIGNALFD_H -DHAVE_SYS_TIMERFD_H -ggdb -O0")
 
 	#add_definitions(-DKERNEL_PRIVATE)
