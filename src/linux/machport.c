@@ -29,7 +29,6 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <mach/message.h>
-#include "api.h"
 #include <darling/emulation/ext/for-libkqueue.h>
 #include <darlingserver/rpc-supplement.h>
 
