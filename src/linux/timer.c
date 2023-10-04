@@ -16,6 +16,7 @@
 
 #include "private.h"
 #include <sys/time.h>
+#include <mach/mach_time.h>
 
 #ifndef HAVE_SYS_TIMERFD_H
 
@@ -94,11 +95,15 @@ static void convert_to_itimerspec(struct itimerspec *dst, uint64_t src, bool one
 		gettimeofday(&now, NULL);
 	}
 
+	// for all these NOTE_ABSOLUTE __builtin_sub_overflow checks:
+	// not sure if we can just use `0` or if that's a special/reserved value, so let's use `1` to be safe
+
 	if (fflags & NOTE_SECONDS)
 	{
 		dbg_printf("...timer is in seconds: %llu\n", src);
 		if (fflags & NOTE_ABSOLUTE)
-			src -= now.tv_sec;
+			if (__builtin_sub_overflow(src, now.tv_sec, &src))
+				src = 1;
 
 		sec = src;
 		nsec = 0;
@@ -107,7 +112,8 @@ static void convert_to_itimerspec(struct itimerspec *dst, uint64_t src, bool one
 	{
 		dbg_printf("...timer is in useconds: %llu\n", src);
 		if (fflags & NOTE_ABSOLUTE)
-			src -= (now.tv_sec * 1000000ull) + now.tv_usec;
+			if (__builtin_sub_overflow(src, (now.tv_sec * 1000000ull) + now.tv_usec, &src))
+				src = 1;
 
 		sec = src / 1000000;
 		nsec = (src % 1000000) * 1000;
@@ -116,10 +122,25 @@ static void convert_to_itimerspec(struct itimerspec *dst, uint64_t src, bool one
 	{
 		dbg_printf("...timer is in nseconds: %llu\n", src);
 		if (fflags & NOTE_ABSOLUTE)
-			src -= (now.tv_sec * 1000000000ull) + now.tv_usec*1000;
+			if (__builtin_sub_overflow(src, (now.tv_sec * 1000000000ull) + now.tv_usec*1000, &src))
+				src = 1;
 
 		sec = src / 1000000000;
 		nsec = src % 1000000000;
+	}
+	else if (fflags & NOTE_MACHTIME)
+	{
+		dbg_printf("...timer is in Mach-time-units: %llu\n", src);
+		if (fflags & NOTE_ABSOLUTE)
+			if (__builtin_sub_overflow(src, mach_absolute_time(), &src))
+				src = 1;
+
+		mach_timebase_info_data_t timebase;
+		mach_timebase_info(&timebase);
+		// the timebase info is in nanoseconds
+		uint64_t mach_nsec = (src * timebase.numer) / (timebase.denom);
+		sec = mach_nsec / 1000000000;
+		nsec = mach_nsec % 1000000000;
 	}
 	else
 	{
