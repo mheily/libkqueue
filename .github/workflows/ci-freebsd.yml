@@ -18,15 +18,15 @@ jobs:
   freebsd-tests:
 # virtualbox takes a long time to start
     timeout-minutes: 15
-    runs-on: macos-10.15
+    runs-on: ubuntu-latest
     name: "FreeBSD tests"
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
       with:
         path: libkqueue
 
     - name: libkqueue test suite
-      uses: vmactions/freebsd-vm@v0.1.5
+      uses: vmactions/freebsd-vm@v1
       with:
         usesh: true
         sync: sshfs
