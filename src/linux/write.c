@@ -73,11 +73,6 @@ evfilt_write_knote_create(struct filter *filt, struct knote *kn)
     if (linux_get_descriptor_type(kn) < 0)
         return (-1);
 
-    if (kn->kn_flags & KNFL_FILE) {
-        errno = EBADF;
-        return (-1);
-    }
-
     /*
      * Convert the kevent into an epoll_event
      */
