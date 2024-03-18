@@ -169,6 +169,10 @@ main(int argc, char **argv)
           .ut_func = test_evfilt_vnode,
           .ut_end = INT_MAX },
 #endif
+        { .ut_name = "write",
+          .ut_enabled = 1,
+          .ut_func = test_evfilt_write,
+          .ut_end = INT_MAX },
 #ifdef EVFILT_USER
         { .ut_name = "user",
           .ut_enabled = 1,

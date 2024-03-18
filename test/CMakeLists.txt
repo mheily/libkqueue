@@ -25,7 +25,8 @@ set(LIBKQUEUE_TEST_SOURCES
     test.c
     timer.c
     user.c
-    vnode.c)
+    vnode.c
+    write.c)
 if(UNIX)
   list(APPEND LIBKQUEUE_TEST_SOURCES
        proc.c
