@@ -38,6 +38,14 @@ evfilt_write_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
     epoll_event_dump(ev);
     memcpy(dst, &src->kev, sizeof(*dst));
 
+    /*
+     * Fast path for files...
+     */
+    if (src->kn_flags & KNFL_FILE) {
+        dst->data = 1; /* To match macOS and FreeBSD */
+        goto done;
+    }
+
     if (ev->events & EPOLLHUP)
         dst->flags |= EV_EOF;
 
@@ -62,6 +70,7 @@ evfilt_write_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
             dst->data = 0;
     }
 
+done:
     if (knote_copyout_flag_actions(filt, src) < 0) return -1;
 
     return (1);
@@ -72,6 +81,49 @@ evfilt_write_knote_create(struct filter *filt, struct knote *kn)
 {
     if (linux_get_descriptor_type(kn) < 0)
         return (-1);
+
+    /*
+     * Epoll won't allow us to add EPOLLOUT on a regular file
+     * and just fails with EPERM.
+     *
+     * So we add a surrogate eventfd that is always polls.
+     */
+    if (kn->kn_flags & KNFL_FILE) {
+        int evfd;
+
+        /*
+         * We only set oneshot for cases where we're not going to
+         * be using EPOLL_CTL_MOD.
+         */
+        if (kn->kev.flags & EV_ONESHOT || kn->kev.flags & EV_DISPATCH)
+            kn->epoll_events |= EPOLLONESHOT;
+
+        kn->kn_epollfd = filter_epoll_fd(filt);
+        evfd = eventfd(0, 0);
+        if (evfd < 0) {
+            dbg_perror("eventfd(2)");
+            return (-1);
+        }
+        /* Now the FD will be permanently high */
+        if (eventfd_write(evfd, 1) < 0) {
+            dbg_perror("eventfd_write(3)");
+            (void) close(evfd);
+            return (-1);
+        }
+
+        kn->kn_eventfd = evfd;
+
+        KN_UDATA(kn);   /* populate this knote's kn_udata field */
+        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kn_eventfd, EPOLL_EV_KN(kn->epoll_events, kn)) < 0) {
+            dbg_printf("epoll_ctl(2): %s", strerror(errno));
+            (void) close(evfd);
+            return (-1);
+        }
+
+        kn->kn_registered = 1;
+
+        return (0);
+    }
 
     /*
      * Convert the kevent into an epoll_event
@@ -114,18 +166,47 @@ evfilt_write_knote_modify(UNUSED struct filter *filt, struct knote *kn,
 int
 evfilt_write_knote_delete(struct filter *filt, struct knote *kn)
 {
+    if ((kn->kn_flags & KNFL_FILE) && (kn->kn_eventfd != -1)) {
+        if (kn->kn_registered && epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kn_eventfd, NULL) < 0) {
+            dbg_perror("epoll_ctl(2)");
+            return (-1);
+        }
+        kn->kn_registered = 0;
+        (void) close(kn->kn_eventfd);
+        kn->kn_eventfd = -1;
+        return (0);
+    }
+
     return epoll_update(EPOLL_CTL_DEL, filt, kn, EPOLLOUT, true);
 }
 
 int
 evfilt_write_knote_enable(struct filter *filt, struct knote *kn)
 {
+    if (kn->kn_flags & KNFL_FILE) {
+        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kn_eventfd, EPOLL_EV_KN(kn->epoll_events, kn)) < 0) {
+            dbg_perror("epoll_ctl(2)");
+            return (-1);
+        }
+        kn->kn_registered = 1;
+        return (0);
+    }
+
     return epoll_update(EPOLL_CTL_ADD, filt, kn, kn->epoll_events, false);
 }
 
 int
 evfilt_write_knote_disable(struct filter *filt, struct knote *kn)
 {
+    if (kn->kn_flags & KNFL_FILE) {
+        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kn_eventfd, NULL) < 0) {
+            dbg_perror("epoll_ctl(2)");
+            return (-1);
+        }
+        kn->kn_registered = 0;
+        return (0);
+    }
+
     return epoll_update(EPOLL_CTL_DEL, filt, kn, EPOLLOUT, false);
 }
 
