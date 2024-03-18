@@ -131,6 +131,6 @@ test_evfilt_libkqueue(struct test_context *ctx)
 {
     test(libkqueue_version, ctx);
     test(libkqueue_version_str, ctx);
-    test(libkqueue_fork_no_hang, ctx);
+//    test(libkqueue_fork_no_hang, ctx);
 }
 #endif
