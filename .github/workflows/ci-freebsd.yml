@@ -31,9 +31,7 @@ jobs:
         usesh: true
         sync: sshfs
         prepare: |
-          pkg install -y         \
-            cmake                \
-            llvm                 \
+          pkg install -y cmake llvm
         run: |
           freebsd-version
           cd libkqueue/test
