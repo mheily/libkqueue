@@ -91,6 +91,15 @@ evfilt_write_knote_create(struct filter *filt, struct knote *kn)
     if (kn->kn_flags & KNFL_FILE) {
         int evfd;
 
+        /* Convert the kevent into an epoll_event */
+#if defined(HAVE_EPOLLRDHUP)
+        kn->epoll_events = EPOLLIN | EPOLLRDHUP;
+#else
+        kn->epoll_events = EPOLLIN;
+#endif
+        if (kn->kev.flags & EV_CLEAR)
+            kn->epoll_events |= EPOLLET;
+
         /*
          * We only set oneshot for cases where we're not going to
          * be using EPOLL_CTL_MOD.
