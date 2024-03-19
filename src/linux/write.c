@@ -41,10 +41,7 @@ evfilt_write_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
     /*
      * Fast path for files...
      */
-    if (src->kn_flags & KNFL_FILE) {
-        dst->data = 1; /* To match macOS and FreeBSD */
-        goto done;
-    }
+    if (src->kn_flags & KNFL_FILE) goto done;
 
     if (ev->events & EPOLLHUP)
         dst->flags |= EV_EOF;

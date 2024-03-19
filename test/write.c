@@ -36,8 +36,10 @@ test_kevent_write_regular_file(struct test_context *ctx)
     kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
 
+#ifdef __APPLE__
     /* macOS sets this high for some reason */
     kev.data = 1;
+#endif
 
     /* File should appear immediately writable */
     kevent_get(NULL, 0, ctx->kqfd, 1);
