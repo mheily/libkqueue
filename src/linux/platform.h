@@ -20,11 +20,20 @@
 struct filter;
 
 #include <sys/syscall.h>
+#ifdef DARLING
+#include <darling/emulation/syscall/linux/ext/sys/epoll.h>
+#include <darling/emulation/syscall/linux/ext/sys/inotify.h>
+#else
 #include <sys/epoll.h>
-#include <sys/queue.h>
 #include <sys/inotify.h>
+#endif
+#include <sys/queue.h>
 #if HAVE_SYS_EVENTFD_H
+#ifdef DARLING
+# include <darling/emulation/syscall/linux/ext/sys/eventfd.h>
+#else
 # include <sys/eventfd.h>
+#endif
 #else
 # define eventfd(a,b) syscall(SYS_eventfd, (a), (b))
 
@@ -36,14 +45,18 @@ struct filter;
   }
 #endif
 #if HAVE_SYS_TIMERFD_H
+#ifdef DARLING
+#include <darling/emulation/syscall/linux/ext/sys/timerfd.h>
+#else
 # include <sys/timerfd.h>
+#endif
 #endif
 
 /*
  * Get the current thread ID
  */
 #ifdef DARLING
-#include <darling/emulation/base.h>
+#include <darling/emulation/syscall/common/base.h>
 # define syscall __linux_syscall
 #else
 # define _GNU_SOURCE

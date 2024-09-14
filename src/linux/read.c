@@ -28,7 +28,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include <darling/emulation/ext/for-libkqueue.h>
+#include <darling/emulation/syscall/other/for_libkqueue.h>
 
 #include "private.h"
 
