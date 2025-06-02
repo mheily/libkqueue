@@ -73,6 +73,28 @@ static int nb_max_fd;
 static void
 linux_kqueue_free(struct kqueue *kq);
 
+/*
+ * Helper method for dealing with the fd_map to avoid calling calloc()
+ * on the entire set of fds at once. fd_map uses 0 to indicate that
+ * an fd is unused instead of -1, so this function adapts the stored
+ * file descriptors to match.
+ */
+static void
+fd_map_set(int from, int to)
+{
+    fd_map[from] = to + 1;
+}
+
+/*
+ * Helper method for dealing with the fd_map to avoid calling calloc()
+ * on the entire set of fds at once. See the comment on fd_map_set().
+ */
+static int
+fd_map_get(int fd)
+{
+    return fd_map[fd] - 1;
+}
+
 static void
 monitoring_thread_cleanup(UNUSED void *arg)
 {
@@ -178,7 +200,7 @@ monitoring_thread_kqueue_cleanup(int signal_fd)
      * Signal is received for read side of pipe
      * Get FD for write side as it's the kqueue identifier
      */
-    fd = fd_map[signal_fd];
+    fd = fd_map_get(signal_fd);
     if (fd < 0) {
        /* Should not happen */
         dbg_printf("fd=%i - not a known FD", fd);
@@ -235,8 +257,6 @@ monitoring_thread_loop(UNUSED void *arg)
     int res = 0;
     siginfo_t info;
 
-    int i;
-
     sigset_t monitoring_sig_set;
 
     /* Set the thread's name to something descriptive so it shows up in gdb,
@@ -263,8 +283,6 @@ monitoring_thread_loop(UNUSED void *arg)
     error:
         return NULL;
     }
-    for (i = 0; i < nb_max_fd; i++)
-        fd_map[i] = -1;
 
     fd_use_cnt = calloc(nb_max_fd, sizeof(unsigned int));
     if (fd_use_cnt == NULL){
@@ -298,7 +316,7 @@ monitoring_thread_loop(UNUSED void *arg)
          */
         pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
         tracing_mutex_lock(&kq_mtx);
-        dbg_printf("fd=%i - freeing kqueue due to fd closure (signal) for sfd=%i ", fd_map[info.si_fd], info.si_fd);
+        dbg_printf("fd=%i - freeing kqueue due to fd closure (signal) for sfd=%i ", fd_map_get(info.si_fd), info.si_fd);
 
         /*
          * Release resources used by this kqueue
@@ -535,7 +553,7 @@ linux_kqueue_init(struct kqueue *kq)
     }
 
     /* Update pipe FD map */
-    fd_map[kq->pipefd[0]] = kq->kq_id;
+    fd_map_set(kq->pipefd[0], kq->kq_id);
 
     /* Mark this id as in use */
     fd_use_cnt[kq->kq_id]++;
