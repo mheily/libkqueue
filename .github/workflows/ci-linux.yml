@@ -35,14 +35,14 @@ jobs:
       fail-fast: false
       matrix:
           env:
-            - { CC: gcc,      OS: ubuntu-20.04, NAME: release-gcc,               BUILD_TYPE: Release    }
-            - { CC: clang,    OS: ubuntu-20.04, NAME: release-clang,             BUILD_TYPE: Release    }
-            - { CC: musl-gcc, OS: ubuntu-20.04, NAME: release-musl-gcc,          BUILD_TYPE: Release    }
-            - { CC: clang,    OS: ubuntu-20.04, NAME: debug-asan,                BUILD_TYPE: Debug,    ENABLE_ASAN: YES,   ENABLE_LSAN: YES,   ENABLE_UBSAN: YES }
-            - { CC: clang,    OS: ubuntu-20.04, NAME: debug-tsan,                BUILD_TYPE: Debug,    ENABLE_TSAN: YES }
+            - { CC: gcc,      OS: ubuntu-22.04, NAME: release-gcc,               BUILD_TYPE: Release    }
+            - { CC: clang,    OS: ubuntu-22.04, NAME: release-clang,             BUILD_TYPE: Release    }
+            - { CC: musl-gcc, OS: ubuntu-22.04, NAME: release-musl-gcc,          BUILD_TYPE: Release    }
+            - { CC: clang,    OS: ubuntu-22.04, NAME: debug-asan,                BUILD_TYPE: Debug,    ENABLE_ASAN: YES,   ENABLE_LSAN: YES,   ENABLE_UBSAN: YES }
+            - { CC: clang,    OS: ubuntu-22.04, NAME: debug-tsan,                BUILD_TYPE: Debug,    ENABLE_TSAN: YES }
             # Older kernel triggers a switch to posix/proc as it doesn't support pidfd.
-            - { CC: clang,    OS: ubuntu-18.04, NAME: debug-asan-posix-proc,     BUILD_TYPE: Debug,    ENABLE_ASAN: YES,   ENABLE_LSAN: YES,   ENABLE_UBSAN: YES }
-            - { CC: clang,    OS: ubuntu-18.04, NAME: debug-tsan-posix-proc,     BUILD_TYPE: Debug,    ENABLE_TSAN: YES }
+            - { CC: clang,    OS: ubuntu-24.04, NAME: debug-asan-posix-proc,     BUILD_TYPE: Debug,    ENABLE_ASAN: YES,   ENABLE_LSAN: YES,   ENABLE_UBSAN: YES }
+            - { CC: clang,    OS: ubuntu-24.04, NAME: debug-tsan-posix-proc,     BUILD_TYPE: Debug,    ENABLE_TSAN: YES }
 
     runs-on: ${{ matrix.env.OS }}
 
@@ -53,31 +53,39 @@ jobs:
     steps:
     - uses: actions/checkout@v2
 
+    - name: Set environment
+      run: |
+        sudo apt-get install -y --no-install-recommends curl gpg lsb-release
+        MYREL="`lsb_release -c | grep ^Codename | awk '{print $2}'`"
+        echo "CLANG_VER=18" >> ${GITHUB_ENV}
+        echo "GCC_VER=13" >> ${GITHUB_ENV}
+        echo "MYREL=${MYREL}" >> ${GITHUB_ENV}
+
     - name: Add llvm source
-      if: ${{ matrix.env.CC == 'clang' && matrix.env.OS == 'ubuntu-18.04' }}
+      if: ${{ matrix.env.CC == 'clang' }}
       uses: myci-actions/add-deb-repo@10
       with:
-        repo: deb http://apt.llvm.org/bionic/ llvm-toolchain-bionic-10 main
+        repo: deb http://apt.llvm.org/${{ env.MYREL }}/ llvm-toolchain-${{ env.MYREL }}-${{ env.CLANG_VER }} main
         repo-name: llvm-toolchain
         keys-asc: https://apt.llvm.org/llvm-snapshot.gpg.key
 
     - name: Add GCC source
-      if: ${{ matrix.env.CC == 'gcc' && matrix.env.OS == 'ubuntu-18.04' }}
+      if: ${{ matrix.env.CC == 'gcc' }}
       run: |
         sudo add-apt-repository ppa:ubuntu-toolchain-r/test
 
-    - name: Install LLVM 10
+    - name: Install LLVM ${{ env.CLANG_VER }}
       if: ${{ matrix.env.CC == 'clang' }}
       run: |
-        sudo apt-get install -y --no-install-recommends clang-10 llvm-10 gdb
-        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-10 60 && sudo update-alternatives --set clang /usr/bin/clang-10
-        sudo update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer /usr/bin/llvm-symbolizer-10 60 && sudo update-alternatives --set llvm-symbolizer /usr/bin/llvm-symbolizer-10
+        sudo apt-get install -y --no-install-recommends clang-${{ env.CLANG_VER }} llvm-${{ env.CLANG_VER }} gdb libclang-rt-${{ env.CLANG_VER }}-dev
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ env.CLANG_VER }} 60 && sudo update-alternatives --set clang /usr/bin/clang-${{ env.CLANG_VER }}
+        sudo update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer /usr/bin/llvm-symbolizer-${{ env.CLANG_VER }} 60 && sudo update-alternatives --set llvm-symbolizer /usr/bin/llvm-symbolizer-${{ env.CLANG_VER }}
 
-    - name: Install GCC 7
+    - name: Install GCC ${{ env.GCC_VER }}
       if: ${{ matrix.env.CC == 'gcc' }}
       run: |
-        sudo apt-get install -y --no-install-recommends gcc-7 gccgo-7 gdb
-        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-7 9999 && sudo update-alternatives --config gcc
+        sudo apt-get install -y --no-install-recommends gcc-${{ env.GCC_VER }} gccgo-${{ env.GCC_VER }} gdb
+        sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-${{ env.GCC_VER }} 9999 && sudo update-alternatives --config gcc
 
     - name: Install MUSL
       if: ${{ matrix.env.CC == 'musl-gcc' }}
