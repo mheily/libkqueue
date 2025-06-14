@@ -72,6 +72,8 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo)
 endif()
@@ -277,6 +279,7 @@ if(WIN32)
   target_compile_definitions(objlib PRIVATE _CRT_SECURE_NO_WARNINGS)
   target_compile_definitions(objlib PRIVATE WIN32_LEAN_AND_MEAN)
 else()
+  include(StdAtomicCheck)
   target_compile_definitions(objlib PRIVATE _XOPEN_SOURCE=600)
 endif()
 
