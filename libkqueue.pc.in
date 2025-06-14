@@ -8,5 +8,5 @@ Description: Emulates FreeBSD kqueue(2) on other platforms
 Version: @PROJECT_VERSION@
 Requires:
 Libs: -L${libdir} -lkqueue
-Libs.private: -lpthread -lrt
+Libs.private: -lpthread -lrt @EXTRA_PRIVATE_LIBS@
 Cflags: -I${includedir}/kqueue
