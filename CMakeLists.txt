@@ -16,6 +16,9 @@
 
 set(PROJECT_VERSION 2.6.1)
 
+option(ENABLE_STATIC "Build static library" ON)
+option(ENABLE_SHARED "Build shared library" ON)
+
 if(EXISTS "/etc/debian_version")
   cmake_minimum_required(VERSION 3.7.2)
 else()
@@ -257,20 +260,23 @@ source_group(src
                ${LIBKQUEUE_SOURCES})
 
 add_library(objlib OBJECT ${LIBKQUEUE_SOURCES} ${LIBKQUEUE_HEADERS})
-add_library(kqueue SHARED $<TARGET_OBJECTS:objlib>)
-add_library(kqueue_static STATIC $<TARGET_OBJECTS:objlib>)
-if (CMAKE_SYSTEM_NAME MATCHES Windows)
-  set_target_properties(kqueue_static
-          PROPERTIES
-          OUTPUT_NAME kqueue_static
-          ARCHIVE_OUTPUT_DIRECTORY kqueueStatic)
-else()
-  set_target_properties(kqueue_static PROPERTIES OUTPUT_NAME kqueue)
+if(ENABLE_SHARED)
+  add_library(kqueue SHARED $<TARGET_OBJECTS:objlib>)
+  # We should have absolute ABI compatibility between versions as none
+  # of the public function signatures of variables will change.
+  set_target_properties(kqueue PROPERTIES SOVERSION 0)
 endif()
-
-# We should have absolute ABI compatibility between versions as none
-# of the public function signatures of variables will change.
-set_target_properties(kqueue PROPERTIES SOVERSION 0)
+if(ENABLE_STATIC)
+  add_library(kqueue_static STATIC $<TARGET_OBJECTS:objlib>)
+  if (CMAKE_SYSTEM_NAME MATCHES Windows)
+    set_target_properties(kqueue_static
+            PROPERTIES
+            OUTPUT_NAME kqueue_static
+            ARCHIVE_OUTPUT_DIRECTORY kqueueStatic)
+  else()
+    set_target_properties(kqueue_static PROPERTIES OUTPUT_NAME kqueue)
+  endif()
+endif()
 
 if(WIN32)
   target_compile_definitions(objlib PRIVATE _USRDLL;_WINDLL)
@@ -309,7 +315,9 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL Emscripten)
   target_compile_options(objlib PRIVATE -pthread)
 else()
-  target_link_libraries(kqueue PRIVATE Threads::Threads)
+  if(ENABLE_SHARED)
+    target_link_libraries(kqueue PRIVATE Threads::Threads)
+  endif()
 endif()
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/config.h.in
@@ -331,11 +339,16 @@ install(FILES
         DESTINATION
           "${CMAKE_INSTALL_FULL_INCLUDEDIR}/kqueue/sys"
         COMPONENT headers)
-install(TARGETS
-          kqueue kqueue_static
-        DESTINATION
-          "${CMAKE_INSTALL_FULL_LIBDIR}"
-        COMPONENT libraries)
+if(TARGET kqueue)
+  install(TARGETS kqueue
+    DESTINATION "${CMAKE_INSTALL_FULL_LIBDIR}"
+    COMPONENT libraries)
+endif()
+if(TARGET kqueue_static)
+  install(TARGETS kqueue_static
+    DESTINATION "${CMAKE_INSTALL_FULL_LIBDIR}"
+    COMPONENT libraries)
+endif()
 install(FILES
           "${CMAKE_SOURCE_DIR}/kqueue.2"
         DESTINATION
