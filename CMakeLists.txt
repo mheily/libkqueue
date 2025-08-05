@@ -14,7 +14,7 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
 
-set(PROJECT_VERSION 2.6.1)
+set(PROJECT_VERSION 2.6.3)
 
 option(ENABLE_STATIC "Build static library" ON)
 option(ENABLE_SHARED "Build shared library" ON)
