@@ -3,7 +3,6 @@ set -e
 
 container_name="libkqueue-dev"
 dev_image="libkqueue-clang-cmake-dev:latest"
-platform="linux/amd64"
 
 # Verbosity
 verbose=0
@@ -53,17 +52,17 @@ hash_file() {
 image_build() {
   [ -f Dockerfile ] || { error "no Dockerfile in $(pwd)"; exit 1; }
   hash=$(hash_file Dockerfile)
-  debug "(re-)building image with $platform -t $dev_image --build-arg IMAGE_FINGERPRINT=$hash ."
-  docker build --platform=$platform -t "$dev_image" --build-arg "IMAGE_FINGERPRINT=$hash" .
+  debug "(re-)building image with -t $dev_image --build-arg IMAGE_FINGERPRINT=$hash ."
+  docker build -t "$dev_image" --build-arg "IMAGE_FINGERPRINT=$hash" .
 }
 
 run_container() {
     debug "Starting container '$container_name' with image '$dev_image'"
     docker run --rm -it \
-      --platform=${platform} \
       --name "$container_name" \
       --hostname "$container_name" \
       -u "$(id -u)":"$(id -g)" \
+      --privileged \
       -e HOME=/home/dev \
       -w /home/dev \
       -v "$PWD":/home/dev \
