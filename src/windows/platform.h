@@ -173,5 +173,12 @@ typedef CRITICAL_SECTION           pthread_rwlock_t;
 #define pthread_rwlock_unlock      LeaveCriticalSection
 #define pthread_rwlock_init(x,y)   InitializeCriticalSection((x))
 
+/* Emulate the POSIX symbolic names for the 'how' argument to shutdown(2) */
+#define SHUT_RD     SD_RECEIVE
+#define SHUT_WR     SD_SEND
+#define SHUT_RDWR   SD_BOTH
+
+/* Emulate the POSIX pipe(2) interface */
+#define pipe(x) _pipe(x, 512, 0)
 
 #endif  /* ! _KQUEUE_WINDOWS_PLATFORM_H */

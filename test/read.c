@@ -593,6 +593,11 @@ test_kevent_regular_file(struct test_context *ctx)
 void
 test_transition_from_write_to_read(struct test_context *ctx)
 {
+#if defined(_WIN32)
+    // socketpair() is not available on Windows.
+    return;
+#else
+
     struct kevent kev, ret[1];
     int kqfd;
     int sd[2];
@@ -613,6 +618,7 @@ test_transition_from_write_to_read(struct test_context *ctx)
     close(sd[0]);
     close(sd[1]);
     close(kqfd);
+#endif
 }
 
 void

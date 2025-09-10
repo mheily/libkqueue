@@ -22,7 +22,6 @@ set(LIBKQUEUE_TEST_SOURCES
     kqueue.c
     libkqueue.c
     main.c
-    proc.c
     read.c
     test.c
     threading.c

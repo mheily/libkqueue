@@ -152,15 +152,11 @@ check_include_files(sys/queue.h HAVE_SYS_QUEUE_H)
 check_include_files(sys/signalfd.h HAVE_SYS_SIGNALFD_H)
 check_include_files(sys/timerfd.h HAVE_SYS_TIMERFD_H)
 check_include_files(sys/types.h HAVE_SYS_TYPES_H)
-if(ENABLE_TESTING)
-  check_include_files(err.h HAVE_ERR_H)
-endif()
+check_include_files(err.h HAVE_ERR_H)
 
 check_symbol_exists(EPOLLRDHUP sys/epoll.h HAVE_EPOLLRDHUP)
 check_symbol_exists(NOTE_TRUNCATE sys/event.h HAVE_NOTE_TRUNCATE)
-if(ENABLE_TESTING)
-  check_symbol_exists(NOTE_REVOKE sys/event.h HAVE_NOTE_REVOKE)
-endif()
+check_symbol_exists(NOTE_REVOKE sys/event.h HAVE_NOTE_REVOKE)
 
 set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
 check_symbol_exists(ppoll poll.h HAVE_DECL_PPOLL)
@@ -311,9 +307,7 @@ if(WIN32)
 endif()
 
 
-if(ENABLE_TESTING)
-  add_subdirectory(test)
-endif()
+add_subdirectory(test)
 
 if(CMAKE_SYSTEM_NAME STREQUAL Emscripten)
   target_compile_options(objlib PRIVATE -pthread)
