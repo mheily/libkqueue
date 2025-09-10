@@ -70,5 +70,7 @@ test_kevent_threading_close(struct test_context *ctx)
 void
 test_threading(struct test_context *ctx)
 {
+#ifdef NATIVE_KQUEUE
 	test(kevent_threading_close, ctx);
+#endif
 }

@@ -55,6 +55,10 @@
 #  include <netinet/in.h>
 #endif
 
+#if defined(__APPLE__) || defined(__FreeBSD__)
+#define NATIVE_KQUEUE 1
+#endif
+
 #ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/stat.h>

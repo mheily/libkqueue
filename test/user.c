@@ -237,6 +237,8 @@ test_evfilt_user(struct test_context *ctx)
 #ifdef EV_DISPATCH
     test(kevent_user_dispatch, ctx);
 #endif
+#ifdef NATIVE_KQUEUE
     test(kevent_user_trigger_from_thread, ctx);
+#endif
     /* TODO: try different fflags operations */
 }
