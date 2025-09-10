@@ -186,6 +186,10 @@ main(int argc, char **argv)
           .ut_end = INT_MAX },
         { NULL, 0, NULL },
 #endif
+        { .ut_name = "threading",
+          .ut_enabled = 1,
+          .ut_func = test_threading,
+          .ut_end = INT_MAX },
     };
     struct unit_test *test;
     int c, i, iterations;

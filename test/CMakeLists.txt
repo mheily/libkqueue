@@ -13,6 +13,8 @@
 # ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
+cmake_minimum_required(VERSION 3.7.2)
+
 project(libkqueue-test LANGUAGES C)
 
 set(LIBKQUEUE_TEST_SOURCES
@@ -23,6 +25,7 @@ set(LIBKQUEUE_TEST_SOURCES
     proc.c
     read.c
     test.c
+    threading.c
     timer.c
     user.c
     vnode.c

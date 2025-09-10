@@ -176,6 +176,55 @@ test_kevent_user_dispatch(struct test_context *ctx)
 }
 #endif     /* EV_DISPATCH */
 
+struct trigger_args {
+    int         kqfd;
+    uintptr_t   ident;
+};
+
+static void *
+trigger_user_event_thread(void *arg)
+{
+    struct trigger_args *ta = arg;
+    struct kevent tmp;
+
+    /* Trigger the user event from this thread */
+    kevent_add(ta->kqfd, &tmp, ta->ident, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+    return NULL;
+}
+
+static void
+test_kevent_user_trigger_from_thread(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    pthread_t th;
+    struct trigger_args args;
+
+    test_no_kevents(ctx->kqfd);
+
+    /* Use a distinct ident to avoid confusion with other tests */
+    args.kqfd = ctx->kqfd;
+    args.ident = 3;
+
+    /* Add the event, then trigger it from another thread */
+    kevent_add(ctx->kqfd, &kev, args.ident, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+
+    if (pthread_create(&th, NULL, trigger_user_event_thread, &args) != 0)
+        die("failed creating thread");
+
+    if (pthread_join(th, NULL) != 0)
+        die("pthread_join failed");
+
+    /* Prepare expected event (mask out control bits) */
+    kev.fflags &= ~NOTE_FFCTRLMASK;
+    kev.fflags &= ~NOTE_TRIGGER;
+
+    /* Fetch and compare */
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    kevent_cmp(&kev, ret);
+
+    test_no_kevents(ctx->kqfd);
+}
+
 void
 test_evfilt_user(struct test_context *ctx)
 {
@@ -188,5 +237,6 @@ test_evfilt_user(struct test_context *ctx)
 #ifdef EV_DISPATCH
     test(kevent_user_dispatch, ctx);
 #endif
+    test(kevent_user_trigger_from_thread, ctx);
     /* TODO: try different fflags operations */
 }
