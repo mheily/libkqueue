@@ -19,9 +19,11 @@ _CPack_Packages/
 cmake_install.cmake
 install_manifest*.txt
 libkqueue.so*
+libkqueue.a
 tags
 test/CMakeCache.txt
 test/CMakeFiles/
 test/cmake_install.cmake
 test/libkqueue-test
 version.h
+.bash_history
