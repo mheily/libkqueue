@@ -147,7 +147,10 @@ typedef struct {
 # define tracing_mutex_unlock(x)  do { \
     (x)->mtx_status = MTX_UNLOCKED; \
     (x)->mtx_owner = -1; \
-    pthread_mutex_unlock(&((x)->mtx_lock)); \
+    if (unlikely(pthread_mutex_unlock(&((x)->mtx_lock)) < 0)) {\
+        dbg_perror("pthread_mutex_unlock"); \
+        assert(0); \
+    }; \
     dbg_printf("[%i]: unlocked %s", __LINE__, # x); \
 } while (0)
 
