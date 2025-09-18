@@ -36,9 +36,8 @@ jobs:
       - name: Configure build system
         run: |
           cmake --version
-          cmake -S . -B build_x64 -A x64 -G "Visual Studio 16 2019" -DSTATICLIB=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON
+          cmake -S . -B build_x64 -A x64 -G "Visual Studio 17 2022" -DSTATICLIB=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_VERBOSE_MAKEFILE=ON
 
       - name: Build libkqueue
         run: |
           cmake --build build_x64 --target install --config Release --parallel 1
-
