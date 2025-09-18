@@ -134,11 +134,17 @@ windows_kevent_copyout(struct kqueue *kq, int nready,
 {
     struct filter *filt;
     struct knote* kn;
-    int rv, nret;
+    int rv, nret, filt_index;
 
     //FIXME: not true for EVFILT_IOCP
     kn = (struct knote *) iocp_buf.overlap;
-    filt = &kq->kq_filt[~(kn->kev.filter)];
+    filt_index = ~(kn->kev.filter);
+    if (filt_index < 0 || filt_index >= EVFILT_SYSCOUNT) {
+        dbg_puts("bad filter index in windows_kevent_copyout");
+        return 0;
+    }
+    filt = &kq->kq_filt[filt_index];
+
     rv = filt->kf_copyout(eventlist, nevents, filt, kn, &iocp_buf);
     if (unlikely(rv < 0)) {
         dbg_puts("knote_copyout failed");
