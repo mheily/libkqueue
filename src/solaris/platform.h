@@ -17,9 +17,9 @@
 #ifndef  _KQUEUE_SOLARIS_PLATFORM_H
 #define  _KQUEUE_SOLARIS_PLATFORM_H
 
-#include <atomic.h>
 #include <errno.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <sys/queue.h>
 #include <sys/resource.h>
@@ -27,14 +27,17 @@
 
 #include "../posix/eventfd.h"
 
-#define atomic_uintptr_t                  uintptr_t
-#define atomic_uint                       unsigned int
-#define atomic_inc                        atomic_inc_32_nv
-#define atomic_dec                        atomic_dec_32_nv
-#define atomic_cas(p, oval, nval)         (atomic_cas(p, oval, nval) == oval)
-#define atomic_ptr_cas(p, oval, nval)     (atomic_cas_ptr(p, oval, nval) == oval)
-#define atomic_ptr_swap(p, nval)          (atomic_swap_ptr(p, nval)
-#define atomic_ptr_load(p)                (*p)
+/*
+ * C11 atomic operations
+ */
+#define atomic_inc(p)                 (atomic_fetch_add((p), 1) + 1)
+#define atomic_dec(p)                 (atomic_fetch_sub((p), 1) - 1)
+
+/* We use compound literals here to stop the 'expected' values from being overwritten */
+#define atomic_cas(p, oval, nval)     atomic_compare_exchange_strong(p, &(__typeof__(oval)){ oval }, nval)
+#define atomic_ptr_cas(p, oval, nval) atomic_compare_exchange_strong(p, (&(uintptr_t){ (uintptr_t)oval }), (uintptr_t)nval)
+#define atomic_ptr_swap(p, nval)      atomic_exchange(p, (uintptr_t)nval)
+#define atomic_ptr_load(p)            atomic_load(p)
 
 /*
  * Event ports
