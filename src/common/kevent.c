@@ -145,7 +145,7 @@ kevent_dump(const struct kevent *kev)
 
     snprintf((char *) buf, sizeof(buf),
             "{ ident=%i, filter=%s, %s, %s, data=%d, udata=%p }",
-            (u_int) kev->ident,
+            (unsigned int) kev->ident,
             kevent_filter_dump(kev),
             kevent_flags_dump(kev),
             kevent_fflags_dump(kev),

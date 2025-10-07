@@ -55,7 +55,7 @@ int
 evfilt_user_knote_create(struct filter *filt UNUSED, struct knote *kn UNUSED)
 {
 #if TODO
-    u_int ffctrl;
+    unsigned int ffctrl;
 
     //determine if EV_ADD + NOTE_TRIGGER in the same kevent will cause a trigger */
     if ((!(dst->kev.flags & EV_DISABLE)) && src->fflags & NOTE_TRIGGER) {
