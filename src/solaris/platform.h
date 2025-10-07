@@ -21,13 +21,19 @@ struct filter;
 
 #include <errno.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <stropts.h>
+#include <sys/poll.h>
 #include <sys/queue.h>
 #include <sys/resource.h>
 #include <sys/time.h>
 
 #include "../posix/eventfd.h"
+#include "../posix/platform_ext.h"
+
+#define EVENTFD_PLATFORM_SPECIFIC	POSIX_EVENTFD_PLATFORM_SPECIFIC
 
 /*
  * C11 atomic operations
