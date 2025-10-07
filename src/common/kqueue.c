@@ -80,21 +80,23 @@ get_fd_limit(void)
 unsigned int
 get_fd_used(void)
 {
+#ifdef __linux__
     unsigned int fd_max = get_fd_limit();
     unsigned int i;
     unsigned int used = 0;
     int our_errno = errno; /* Preserve errno */
 
-#ifdef __linux__
     for (i = 0; i < fd_max; i++) {
         if (fcntl(i, F_GETFD) == 0)
             used++;
     }
-#endif
 
     errno = our_errno;
 
     return used;
+#else
+    return 0;
+#endif
 }
 
 static struct map *kqmap;
