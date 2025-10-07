@@ -17,6 +17,8 @@
 #ifndef  _KQUEUE_SOLARIS_PLATFORM_H
 #define  _KQUEUE_SOLARIS_PLATFORM_H
 
+struct filter;
+
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
