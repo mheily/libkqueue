@@ -41,7 +41,7 @@ signal_handler(int sig)
 
     s = &sigtbl[sig];
     dbg_printf("sig=%d %d", sig, s->st_signum);
-    atomic_inc((volatile uint32_t *) &s->st_count);
+    (void)atomic_inc((volatile uint32_t *) &s->st_count);
     port_send(s->st_port, X_PORT_SOURCE_SIGNAL, &sigtbl[sig]);
     /* TODO: crash if port_send() fails? */
 }
