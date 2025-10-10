@@ -144,6 +144,14 @@ typedef struct {
     } \
 } while (0)
 
+#ifdef _WIN32
+# define tracing_mutex_unlock(x)  do { \
+    (x)->mtx_status = MTX_UNLOCKED; \
+    (x)->mtx_owner = -1; \
+    pthread_mutex_unlock(&((x)->mtx_lock)); \
+    dbg_printf("[%i]: unlocked %s", __LINE__, # x); \
+} while (0)
+#else
 # define tracing_mutex_unlock(x)  do { \
     (x)->mtx_status = MTX_UNLOCKED; \
     (x)->mtx_owner = -1; \
@@ -153,6 +161,7 @@ typedef struct {
     }; \
     dbg_printf("[%i]: unlocked %s", __LINE__, # x); \
 } while (0)
+#endif
 
 typedef void (*dbg_func_t)(char const *fmt, ...);
 
