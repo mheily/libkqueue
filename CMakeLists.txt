@@ -266,7 +266,8 @@ if(ENABLE_SHARED)
   add_library(kqueue SHARED $<TARGET_OBJECTS:objlib>)
   # We should have absolute ABI compatibility between versions as none
   # of the public function signatures of variables will change.
-  set_target_properties(kqueue PROPERTIES SOVERSION 0)
+  set(KQUEUE_SOVERSION 0)
+  set_target_properties(kqueue PROPERTIES SOVERSION ${KQUEUE_SOVERSION})
 endif()
 if(ENABLE_STATIC)
   add_library(kqueue_static STATIC $<TARGET_OBJECTS:objlib>)
@@ -420,7 +421,9 @@ endif()
 #
 #  DEB Specific configuration
 #
-set(CPACK_DEBIAN_MAIN_PACKAGE_NAME "${CPACK_PACKAGE_NAME}")
+# Use soversion suffix for the runtime package name (e.g. libkqueue0)
+# to follow the Debian shared library packaging convention.
+set(CPACK_DEBIAN_MAIN_PACKAGE_NAME "${CPACK_PACKAGE_NAME}${KQUEUE_SOVERSION}")
 set(CPACK_DEBIAN_MAIN_PACKAGE_SECTION "libs")
 
 set(CPACK_DEBIAN_DEVEL_PACKAGE_NAME "${CPACK_PACKAGE_NAME}-dev")
@@ -437,10 +440,10 @@ set(CPACK_DEBIAN_PACKAGE_GENERATE_SHLIBS ON)
 #  library package is in sync with the headers.
 #
 if (PROJECT_VERSION_RELEASE)
-set(CPACK_DEBIAN_DEVEL_PACKAGE_DEPENDS "${CPACK_PACKAGE_NAME} (= ${PROJECT_VERSION}-${PROJECT_VERSION_RELEASE})")
+set(CPACK_DEBIAN_DEVEL_PACKAGE_DEPENDS "${CPACK_DEBIAN_MAIN_PACKAGE_NAME} (= ${PROJECT_VERSION}-${PROJECT_VERSION_RELEASE})")
 set(CPACK_DEBIAN_PACKAGE_RELEASE ${PROJECT_VERSION_RELEASE})
 else()
-set(CPACK_DEBIAN_DEVEL_PACKAGE_DEPENDS "${CPACK_PACKAGE_NAME} (= ${PROJECT_VERSION})")
+set(CPACK_DEBIAN_DEVEL_PACKAGE_DEPENDS "${CPACK_DEBIAN_MAIN_PACKAGE_NAME} (= ${PROJECT_VERSION})")
 endif()
 
 set(CPACK_SOURCE_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${PROJECT_VERSION}")
