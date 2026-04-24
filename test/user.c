@@ -93,6 +93,16 @@ test_kevent_user_disable_and_enable(struct test_context *ctx)
     kev.fflags &= ~NOTE_TRIGGER;
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
     kevent_cmp(&kev, ret);
+
+    /*
+     * Tear down so later tests that re-register ident=1 start from
+     * a clean slate.  Historically this test left the knote alive
+     * and later tests relied on that residual state, which masked
+     * test-ordering bugs (e.g. re-EV_ADD not merging EV_DISPATCH on
+     * macOS).  Keep each test hermetic.
+     */
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
 }
 
 static void
@@ -135,6 +145,114 @@ test_kevent_user_multi_trigger_merged(struct test_context *ctx)
 }
 
 #ifdef EV_DISPATCH
+/** Assert that EV_DISPATCH is a durable knote attribute
+ *
+ *  BSD kqueue treats EV_DISPATCH as sticky - once set at EV_ADD
+ *  time it survives every subsequent kevent() operation (bare
+ *  NOTE_TRIGGER, EV_DISABLE/EV_ENABLE cycles, EV_ENABLE with
+ *  NOTE_TRIGGER) and keeps being reported in the returned
+ *  `struct kevent` until EV_DELETE.
+ *
+ *  Pre-fix libkqueue silently cleared EV_DISPATCH out of the
+ *  stored knote on any modify whose src->flags didn't include
+ *  EV_DISPATCH, so every second fire returned with the bit clear.
+ */
+void
+test_kevent_user_dispatch_durable(struct test_context *ctx)
+{
+    struct kevent kev, tmp, ret[1];
+
+    test_no_kevents(ctx->kqfd);
+
+    kevent_add(ctx->kqfd, &kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR | EV_DISPATCH, 0, 0, NULL);
+
+    kev.fflags &= ~NOTE_FFCTRLMASK;
+    kev.fflags &= ~NOTE_TRIGGER;
+
+    /* 1) bare NOTE_TRIGGER - EV_DISPATCH must survive */
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (!(ret[0].flags & EV_DISPATCH))
+        die("EV_DISPATCH lost after bare NOTE_TRIGGER");
+    kevent_cmp(&kev, ret);
+    test_no_kevents(ctx->kqfd);
+
+    /* 2) EV_ENABLE | NOTE_TRIGGER atomic re-arm - must still survive */
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_ENABLE, NOTE_TRIGGER, 0, NULL);
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (!(ret[0].flags & EV_DISPATCH))
+        die("EV_DISPATCH lost after EV_ENABLE|NOTE_TRIGGER");
+    kevent_cmp(&kev, ret);
+    test_no_kevents(ctx->kqfd);
+
+    /* 3) explicit EV_DISABLE then EV_ENABLE cycle - must still survive */
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_DISABLE, 0, 0, NULL);
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_ENABLE, 0, 0, NULL);
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (!(ret[0].flags & EV_DISPATCH))
+        die("EV_DISPATCH lost after EV_DISABLE/EV_ENABLE cycle");
+    kevent_cmp(&kev, ret);
+    test_no_kevents(ctx->kqfd);
+
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
+}
+
+/** Exercise `EV_ENABLE | NOTE_TRIGGER` in a single kevent()
+ *
+ *  After an `EV_DISPATCH` knote has fired (and been auto-disabled),
+ *  a common idiom is to re-arm and re-signal it atomically with a
+ *  single `kevent(EV_ENABLE | NOTE_TRIGGER)` call.  That shape is
+ *  used by cross-thread wakeups where the producer doesn't want two
+ *  syscalls per signal.
+ *
+ *  Prior to the EV_ENABLE fallthrough fix, the EV_ENABLE branch in
+ *  `kevent_copyin_one` short-circuited and `kn_modify` was never
+ *  called, so `NOTE_TRIGGER` was silently dropped and the waiter
+ *  never woke.
+ */
+void
+test_kevent_user_dispatch_enable_and_trigger_atomic(struct test_context *ctx)
+{
+    struct kevent kev, tmp, ret[1];
+
+    test_no_kevents(ctx->kqfd);
+
+    /* Add an EV_DISPATCH knote and fire it once so it auto-disables */
+    kevent_add(ctx->kqfd, &kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR | EV_DISPATCH, 0, 0, NULL);
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+
+    kev.fflags &= ~NOTE_FFCTRLMASK;
+    kev.fflags &= ~NOTE_TRIGGER;
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    kevent_cmp(&kev, ret);
+
+    /* Auto-disabled after the dispatch fire */
+    test_no_kevents(ctx->kqfd);
+
+    /*
+     * Re-arm the auto-disabled knote and signal it in a single
+     * kevent() call.  Consumers (e.g. cross-thread wakeup code paths)
+     * rely on this to avoid two syscalls per signal.
+     *
+     * Pre-fix libkqueue took the EV_ENABLE branch and short-circuited
+     * before kn_modify ran, dropping NOTE_TRIGGER on the floor and
+     * leaving the waiter stuck here.
+     */
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_ENABLE, NOTE_TRIGGER, 0, NULL);
+
+    kev.fflags &= ~NOTE_FFCTRLMASK;
+    kev.fflags &= ~NOTE_TRIGGER;
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    kevent_cmp(&kev, ret);
+
+    test_no_kevents(ctx->kqfd);
+
+    kevent_add(ctx->kqfd, &kev, 1, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
+}
+
 void
 test_kevent_user_dispatch(struct test_context *ctx)
 {
@@ -146,11 +264,13 @@ test_kevent_user_dispatch(struct test_context *ctx)
     kevent_add(ctx->kqfd, &kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR | EV_DISPATCH, 0, 0, NULL);
     kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
 
-    /* Retrieve one event */
+    /*
+     * Retrieve one event.  EV_DISPATCH is a durable knote attribute:
+     * BSD kqueue reports it in every returned kevent until EV_DELETE,
+     * so expect it preserved here.
+     */
     kev.fflags &= ~NOTE_FFCTRLMASK;
     kev.fflags &= ~NOTE_TRIGGER;
-
-    kev.flags ^= EV_DISPATCH;
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
     kevent_cmp(&kev, ret);
 
@@ -158,8 +278,7 @@ test_kevent_user_dispatch(struct test_context *ctx)
     test_no_kevents(ctx->kqfd);
 
     /* Re-enable the kevent */
-    /* FIXME- is EV_DISPATCH needed when rearming ? */
-    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_ENABLE | EV_CLEAR | EV_DISPATCH, 0, 0, NULL);
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_ENABLE, 0, 0, NULL);
     test_no_kevents(ctx->kqfd);
 
     /* Trigger the event */
@@ -236,6 +355,8 @@ test_evfilt_user(struct test_context *ctx)
     test(kevent_user_multi_trigger_merged, ctx);
 #ifdef EV_DISPATCH
     test(kevent_user_dispatch, ctx);
+    test(kevent_user_dispatch_durable, ctx);
+    test(kevent_user_dispatch_enable_and_trigger_atomic, ctx);
 #endif
 #ifdef NATIVE_KQUEUE
     test(kevent_user_trigger_from_thread, ctx);

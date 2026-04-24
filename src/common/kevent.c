@@ -235,22 +235,73 @@ kevent_copyin_one(const struct knote **out, struct kqueue *kq, const struct keve
         rv = knote_delete(filt, kn);
     } else if (src->flags & EV_DISABLE) {
         rv = knote_disable(filt, kn);
-    } else if (src->flags & EV_ENABLE) {
-        rv = knote_enable(filt, kn);
-    } else if (src->flags & EV_ADD || src->flags == 0 || src->flags & EV_RECEIPT) {
-        rv = filt->kn_modify(filt, kn, src);
+    } else {
         /*
-         * Implement changes common to all filters
+         * EV_ENABLE may be combined with filter-specific state
+         * changes in a single kevent() - notably
+         * `EV_ENABLE | NOTE_TRIGGER` on EVFILT_USER, the idiom
+         * consumers use to atomically re-arm a previously-dispatched
+         * knote and signal it in one syscall.  Previously EV_ENABLE
+         * short-circuited before kn_modify so the filter-level state
+         * (NOTE_TRIGGER -> eventfd raise) was silently dropped and
+         * the waiter never woke.
+         *
+         * Enable first, then fall into the normal modify path below
+         * if the caller also has filter state to apply.  Bare
+         * EV_ENABLE must NOT reach kn_modify because some filter
+         * kn_modify implementations reject modifies that don't look
+         * like a full re-declaration (e.g. evfilt_read_knote_modify
+         * returns -1 for sockets unless EV_CLEAR is set).
+         *
+         * This mirrors the earlier EV_RECEIPT fix in commit 1bda040.
          */
-        if (rv == 0) {
-            /* update udata */
-            kn->kev.udata = src->udata;
-
-            /* sync up the dispatch bit */
-            COPY_FLAGS_BIT(kn->kev, (*src), EV_DISPATCH);
+        if (src->flags & EV_ENABLE) {
+            rv = knote_enable(filt, kn);
+            if (rv != 0) goto out;
         }
-        dbg_printf("kn=%p - kn_modify rv=%d", kn, rv);
+
+        /*
+         * Normal modify path: EV_ADD on existing knote, bare
+         * NOTE_TRIGGER (flags == 0), EV_RECEIPT, or an EV_ENABLE
+         * that came alongside a NOTE_TRIGGER.  We intentionally
+         * scope the EV_ENABLE fallthrough to NOTE_TRIGGER rather
+         * than "any fflags" because several filters (e.g. VNODE)
+         * currently have stub kn_modify implementations that
+         * return -1 for a bare EV_ENABLE + fflags re-declaration,
+         * and we shouldn't regress those tests just to fix the
+         * EVFILT_USER atomic re-arm.
+         */
+        if (src->flags & EV_ADD || src->flags == 0 ||
+            src->flags & EV_RECEIPT ||
+            ((src->flags & EV_ENABLE) && (src->fflags & NOTE_TRIGGER))) {
+            rv = filt->kn_modify(filt, kn, src);
+            if (rv == 0) {
+                /*
+                 * udata is opaque user state every filter stores
+                 * and BSD clobbers it on any modify (empirically
+                 * confirmed against macOS native kqueue - bare
+                 * NOTE_TRIGGER with udata == NULL overwrites the
+                 * stored udata), so match that.
+                 */
+                kn->kev.udata = src->udata;
+
+                /*
+                 * EV_DISPATCH is a durable knote attribute: set
+                 * at EV_ADD and sticky until EV_DELETE, reported
+                 * in every returned kevent in between.  Only
+                 * re-EV_ADD gets to re-declare it; bare modifies
+                 * (flags == 0 NOTE_TRIGGER, EV_RECEIPT, the
+                 * EV_ENABLE|NOTE_TRIGGER atomic re-arm above)
+                 * must leave it alone, otherwise we wipe what the
+                 * caller set at EV_ADD and diverge from BSD.
+                 */
+                if (src->flags & EV_ADD)
+                    COPY_FLAGS_BIT(kn->kev, (*src), EV_DISPATCH);
+            }
+            dbg_printf("kn=%p - kn_modify rv=%d", kn, rv);
+        }
     }
+out:
     *out = kn;
 
     return (rv);
