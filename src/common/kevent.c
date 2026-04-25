@@ -497,7 +497,22 @@ kevent(int kqfd,
             pthread_testcancel();
         }
 #endif
+        /*
+         * Drop the kq mutex across the wait.  Native BSD kqueue
+         * allows concurrent kevent() calls on the same kq from
+         * different threads - holding kq_mtx across the wait
+         * blocks any other thread that wants to add or trigger
+         * events on this kq, which is the common cross-thread
+         * EVFILT_USER wake pattern.  The kernel-side wait
+         * primitive (epoll_wait on Linux) is itself thread-safe;
+         * the lock only protected libkqueue's userspace knote
+         * tree, which we don't touch in the wait path.  Re-take
+         * the lock before kevent_copyout so the knote tree
+         * traversal there stays serialised.
+         */
+        kqueue_unlock(kq);
         rv = kqops.kevent_wait(kq, nevents, timeout);
+        kqueue_lock(kq);
 #ifndef _WIN32
         (void)pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
 #endif
