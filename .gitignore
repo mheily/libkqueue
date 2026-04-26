@@ -8,6 +8,10 @@ config.h
 *.swp
 .fuse*
 cmake-build-*/
+build/
+build-*/
+test/build/
+test/build-*/
 CMakeCache.txt
 CMakeFiles/
 CPackConfig.cmake
