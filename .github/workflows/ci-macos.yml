@@ -20,7 +20,7 @@ jobs:
     runs-on: macos-latest
     name: "macOS tests"
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v5
 
     - name: Build and configure
       run: |

@@ -16,10 +16,10 @@ jobs:
     timeout-minutes: 5
     strategy:
       fail-fast: false
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
     name: "ci-linux-coverity"
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v5
 
     - name: Install build deps
       run: |
@@ -28,6 +28,20 @@ jobs:
           devscripts \
           fakeroot \
           gridsite-clients
+
+    - name: Set environment
+      run: |
+        sudo apt-get install -y --no-install-recommends curl gpg lsb-release
+        MYREL="`lsb_release -c | grep ^Codename | awk '{print $2}'`"
+        echo "CLANG_VER=20" >> ${GITHUB_ENV}
+        echo "MYREL=${MYREL}" >> ${GITHUB_ENV}
+
+    - name: Add llvm source
+      uses: myci-actions/add-deb-repo@10
+      with:
+        repo: deb http://apt.llvm.org/${{ env.MYREL }}/ llvm-toolchain-${{ env.MYREL }}-${{ env.CLANG_VER }} main
+        repo-name: llvm-toolchain
+        keys-asc: https://apt.llvm.org/llvm-snapshot.gpg.key
 
     - name: Download coverity tool MD5
       run: |
@@ -38,7 +52,7 @@ jobs:
         TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
 
     - name: Cache coverity tool
-      uses: actions/cache@v2
+      uses: actions/cache@v4
       id: cache-coverity
       with:
         path: coverity_tool.tar.gz
@@ -58,11 +72,11 @@ jobs:
         mkdir coverity_tool
         tar xzf coverity_tool.tar.gz --strip 1 -C coverity_tool
 
-    - name: Install LLVM 10
+    - name: Install LLVM ${{ env.CLANG_VER }}
       run: |
-        sudo apt-get install -y --no-install-recommends clang-10 llvm-10
-        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-10 60 && sudo update-alternatives --set clang /usr/bin/clang-10
-        sudo update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer /usr/bin/llvm-symbolizer-10 60 && sudo update-alternatives --set llvm-symbolizer /usr/bin/llvm-symbolizer-10
+        sudo apt-get install -y --no-install-recommends clang-${{ env.CLANG_VER }} llvm-${{ env.CLANG_VER }} libclang-rt-${{ env.CLANG_VER }}-dev
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ env.CLANG_VER }} 60 && sudo update-alternatives --set clang /usr/bin/clang-${{ env.CLANG_VER }}
+        sudo update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer /usr/bin/llvm-symbolizer-${{ env.CLANG_VER }} 60 && sudo update-alternatives --set llvm-symbolizer /usr/bin/llvm-symbolizer-${{ env.CLANG_VER }}
 
     - name: Configure build system
       run: |

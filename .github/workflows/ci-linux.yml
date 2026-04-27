@@ -35,11 +35,11 @@ jobs:
       fail-fast: false
       matrix:
           env:
-            - { CC: gcc,      OS: ubuntu-22.04, NAME: release-gcc,               BUILD_TYPE: Release    }
-            - { CC: clang,    OS: ubuntu-22.04, NAME: release-clang,             BUILD_TYPE: Release    }
-            - { CC: musl-gcc, OS: ubuntu-22.04, NAME: release-musl-gcc,          BUILD_TYPE: Release    }
-            - { CC: clang,    OS: ubuntu-22.04, NAME: debug-asan,                BUILD_TYPE: Debug,    ENABLE_ASAN: YES,   ENABLE_LSAN: YES,   ENABLE_UBSAN: YES }
-            - { CC: clang,    OS: ubuntu-22.04, NAME: debug-tsan,                BUILD_TYPE: Debug,    ENABLE_TSAN: YES }
+            - { CC: gcc,      OS: ubuntu-24.04, NAME: release-gcc,               BUILD_TYPE: Release    }
+            - { CC: clang,    OS: ubuntu-24.04, NAME: release-clang,             BUILD_TYPE: Release    }
+            - { CC: musl-gcc, OS: ubuntu-24.04, NAME: release-musl-gcc,          BUILD_TYPE: Release    }
+            - { CC: clang,    OS: ubuntu-24.04, NAME: debug-asan,                BUILD_TYPE: Debug,    ENABLE_ASAN: YES,   ENABLE_LSAN: YES,   ENABLE_UBSAN: YES }
+            - { CC: clang,    OS: ubuntu-24.04, NAME: debug-tsan,                BUILD_TYPE: Debug,    ENABLE_TSAN: YES }
             # Older kernel triggers a switch to posix/proc as it doesn't support pidfd.
             - { CC: clang,    OS: ubuntu-24.04, NAME: debug-asan-posix-proc,     BUILD_TYPE: Debug,    ENABLE_ASAN: YES,   ENABLE_LSAN: YES,   ENABLE_UBSAN: YES }
             - { CC: clang,    OS: ubuntu-24.04, NAME: debug-tsan-posix-proc,     BUILD_TYPE: Debug,    ENABLE_TSAN: YES }
@@ -51,14 +51,14 @@ jobs:
     name: "${{ matrix.env.NAME }}"
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v5
 
     - name: Set environment
       run: |
         sudo apt-get install -y --no-install-recommends curl gpg lsb-release
         MYREL="`lsb_release -c | grep ^Codename | awk '{print $2}'`"
-        echo "CLANG_VER=18" >> ${GITHUB_ENV}
-        echo "GCC_VER=13" >> ${GITHUB_ENV}
+        echo "CLANG_VER=20" >> ${GITHUB_ENV}
+        echo "GCC_VER=14" >> ${GITHUB_ENV}
         echo "MYREL=${MYREL}" >> ${GITHUB_ENV}
 
     - name: Add llvm source
