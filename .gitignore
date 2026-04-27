@@ -31,3 +31,4 @@ test/cmake_install.cmake
 test/libkqueue-test
 version.h
 .bash_history
+.claude/

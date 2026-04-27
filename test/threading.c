@@ -307,7 +307,7 @@ test_kevent_threading_multi_waiter_delete_race(struct test_context *ctx)
     for (i = 0; i < N_WAITERS; i++) {
         wargs[i].kqfd = kqfd;
         wargs[i].ready = ready;
-        wargs[i].stop = 0;
+        atomic_init(&wargs[i].stop, 0);
         wargs[i].received = 0;
         wargs[i].errors = 0;
         if (pthread_create(&waiters[i], NULL, _multi_waiter, &wargs[i]) != 0)
@@ -404,7 +404,7 @@ test_kevent_threading_multi_waiter_oneshot(struct test_context *ctx)
     for (i = 0; i < N_WAITERS; i++) {
         wargs[i].kqfd = kqfd;
         wargs[i].ready = ready;
-        wargs[i].stop = 0;
+        atomic_init(&wargs[i].stop, 0);
         wargs[i].received = 0;
         wargs[i].errors = 0;
         if (pthread_create(&waiters[i], NULL, _multi_waiter, &wargs[i]) != 0)
@@ -459,7 +459,7 @@ spawn_waiters(int kqfd, pthread_t *waiters, struct multi_waiter_args *wargs, int
     for (i = 0; i < n; i++) {
         wargs[i].kqfd = kqfd;
         wargs[i].ready = ready;
-        wargs[i].stop = 0;
+        atomic_init(&wargs[i].stop, 0);
         wargs[i].received = 0;
         wargs[i].errors = 0;
         if (pthread_create(&waiters[i], NULL, _multi_waiter, &wargs[i]) != 0)
@@ -947,7 +947,7 @@ run_single_delivery(int kqfd, int n_waiters, int expected_deliveries,
 
     for (i = 0; i < n_waiters; i++) {
         wargs[i].kqfd = kqfd;
-        wargs[i].stop = 0;
+        atomic_init(&wargs[i].stop, 0);
         wargs[i].ready = ready;
         wargs[i].events = events;
         wargs[i].errors = 0;
@@ -1070,7 +1070,6 @@ test_kevent_threading_proc_single_delivery(struct test_context *ctx)
     if (pid < 0) die("fork");
     if (pid == 0) {
         for (;;) pause();
-        _exit(0);                /* unreachable */
     }
     fire_ctx.pid = pid;
 

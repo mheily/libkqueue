@@ -232,7 +232,7 @@ void                epoll_udata_defer_free(struct kqueue *kq, struct epoll_udata
  *                           determine the correct filter to notify
  *                           if the event fires.
  */
-#define EPOLL_EV_KN(_events, _kn) &(struct epoll_event){ .events = _events, .data = { .ptr = (_kn)->kn_udata }}
+#define EPOLL_EV_KN(_events, _kn) &(struct epoll_event){ .events = (uint32_t) (_events), .data = { .ptr = (_kn)->kn_udata }}
 
 /** Macro for building a temporary fds epoll_event
  *
@@ -241,20 +241,20 @@ void                epoll_udata_defer_free(struct kqueue *kq, struct epoll_udata
  *                           event. Is used during event demuxing to inform
  *                           multiple filters of read/write events on the fd.
  */
-#define EPOLL_EV_FDS(_events, _fds) &(struct epoll_event){ .events = _events, .data = { .ptr = (_fds)->fds_udata }}
+#define EPOLL_EV_FDS(_events, _fds) &(struct epoll_event){ .events = (uint32_t) (_events), .data = { .ptr = (_fds)->fds_udata }}
 
 /** Macro for building a temporary eventfd epoll_event
  *
  * @param[in] _events        One or more event flags EPOLLIN, EPOLLOUT etc...
  * @param[in] _efd           eventfd to build event for.
  */
-#define EPOLL_EV_EVENTFD(_events, _efd) &(struct epoll_event){ .events = _events, .data = { .ptr = (_efd)->efd_udata }}
+#define EPOLL_EV_EVENTFD(_events, _efd) &(struct epoll_event){ .events = (uint32_t) (_events), .data = { .ptr = (_efd)->efd_udata }}
 
 /** Macro for building a temporary epoll_event
  *
  * @param[in] _events        One or more event flags EPOLLIN, EPOLLOUT etc...
  */
-#define EPOLL_EV(_events) &(struct epoll_event){ .events = _events }
+#define EPOLL_EV(_events) &(struct epoll_event){ .events = (uint32_t) (_events) }
 
 /** Common structure passed as the epoll data.ptr
  *

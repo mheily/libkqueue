@@ -295,7 +295,7 @@ monitoring_thread_loop(UNUSED void *arg)
      */
     pthread_mutex_lock(&monitoring_thread_mtx);    /* Must try to lock to ensure parent is waiting on signal */
     pthread_cond_signal(&monitoring_thread_cond);
-    pthread_mutex_unlock(&monitoring_thread_mtx);
+    (void) pthread_mutex_unlock(&monitoring_thread_mtx);
 
     monitoring_thread_state = THREAD_EXIT_STATE_CANCEL_UNLOCKED;
     pthread_cleanup_push(monitoring_thread_cleanup, NULL)
@@ -356,13 +356,13 @@ linux_kqueue_start_thread(void)
     pthread_mutex_lock(&monitoring_thread_mtx);
     if (pthread_create(&monitoring_thread, NULL, monitoring_thread_loop, NULL)) {
          dbg_perror("linux_kqueue_start_thread failure");
-         pthread_mutex_unlock(&monitoring_thread_mtx);
+         (void) pthread_mutex_unlock(&monitoring_thread_mtx);
 
          return (-1);
     }
     /* Wait for thread creating to be done as we need monitoring_tid to be available */
     pthread_cond_wait(&monitoring_thread_cond, &monitoring_thread_mtx); /* unlocks mt_mtx allowing child to lock it */
-    pthread_mutex_unlock(&monitoring_thread_mtx);
+    (void) pthread_mutex_unlock(&monitoring_thread_mtx);
 
     return (0);
 }
