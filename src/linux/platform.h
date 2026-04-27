@@ -113,6 +113,17 @@ extern long int syscall (long int __sysno, ...);
 #define kqueue_epoll_fd(kq)     ((kq)->epollfd)
 #define filter_epoll_fd(filt)   ((filt)->kf_kqueue->epollfd)
 
+/*
+ * Tell common/kevent.c to drop kq->kq_mtx across kevent_wait.
+ *
+ * The Linux backend uses a userspace mutex around the epoll
+ * syscall.  Holding it across the wait would block any other
+ * thread that wants to add or trigger events on this kq, which
+ * breaks the cross-thread EVFILT_USER wake pattern.  See @ref
+ * kevent in src/common/kevent.c for the consumer side.
+ */
+#define KEVENT_WAIT_DROP_LOCK   1
+
 /** What type of udata was passed to epoll
  *
  */
