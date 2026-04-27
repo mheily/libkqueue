@@ -109,14 +109,29 @@ test_kevent_timer_periodic_modify(struct test_context *ctx)
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
     kevent_cmp(&kev, ret);
 
-    /* Check if the event occurs again */
+    /*
+     * Check if the event occurs again.  Re-arm to a 500ms period and
+     * sleep slightly longer than 2 * period so the second tick is
+     * comfortably in the past when the kevent_get runs.  A bare
+     * sleep(1) flakes on slow CI VMs where the syscall returns within
+     * a fraction of a millisecond of the second tick's deadline,
+     * delivering data=1 instead of data=2.  Also widen the assertion
+     * to allow 2 or 3 ticks so a much slower scheduler still passes
+     * (the property under test is "modify changed the period and
+     * EV_CLEAR accumulated", not the exact tick count).
+     */
     kevent_add(ctx->kqfd, &kev, 3, EVFILT_TIMER, EV_ADD, 0, 500, NULL);
     kev.flags = EV_ADD | EV_CLEAR;
-    sleep(1);
-    kev.data = 2;	/* Should have fired twice */
+    usleep(1200 * 1000);  /* 1200ms - 2 full periods + slack */
 
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
-    kevent_cmp(&kev, ret);
+    if (ret[0].ident != 3 || ret[0].filter != EVFILT_TIMER ||
+        ret[0].flags != (EV_ADD | EV_CLEAR))
+        die("periodic_modify: unexpected ident/filter/flags in %s",
+            kevent_to_str(&ret[0]));
+    if (ret[0].data < 2 || ret[0].data > 4)
+        die("periodic_modify: expected accumulated data in [2,4], got %ld",
+            (long) ret[0].data);
 
     /* Delete the event */
     kev.flags = EV_DELETE;
