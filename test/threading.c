@@ -189,6 +189,209 @@ test_kevent_threading_close(struct test_context *ctx)
         die("pthread_join failed");
 }
 
+/*
+ * Stress harness for the multi-waiter / deferred-free path.
+ *
+ * The Linux libkqueue implementation keeps an `epoll_udata` heap
+ * allocation alive across the kevent_wait window so that a thread
+ * which has a stale `data.ptr` in its TLS `epoll_events[]` buffer
+ * can still safely deref it after another thread has run EV_DELETE
+ * on the underlying knote.  The deferred udata is reclaimed only
+ * when no kevent() caller with an entry epoch <= the udata's
+ * boundary epoch is still in flight.
+ *
+ * The test below pounds on that path by:
+ *
+ *   - parking N waiter threads in concurrent epoll_wait calls on
+ *     the same kq, with timeouts long enough that the parent's
+ *     churn lands while every waiter is sleeping;
+ *
+ *   - cycling EVFILT_USER knotes from the parent: ADD a knote,
+ *     NOTE_TRIGGER it (kernel queues a ready event for whichever
+ *     waiter is dispatched), then EV_DELETE it (defer_free the
+ *     udata).  A waiter that wakes between the trigger and the
+ *     delete will dispatch normally; a waiter that wakes after
+ *     the delete will see ud_stale=true in copyout and skip.
+ *
+ * The dangerous case pre-fix was the second one: the waiter's TLS
+ * buffer carried a pointer into a freed heap slot.  ASAN/UBSAN
+ * builds catch the UAF directly; non-instrumented builds at least
+ * don't crash.
+ */
+struct multi_waiter_args {
+    int                 kqfd;
+    volatile int        stop;
+    int                 received;
+    int                 errors;
+};
+
+static void *
+multi_waiter(void *arg)
+{
+    struct multi_waiter_args   *a = arg;
+    struct kevent               ret[8];
+    struct timespec             timeout = { 0, 50L * 1000L * 1000L };  /* 50ms */
+    int                         n;
+
+    while (!a->stop) {
+        n = kevent_get_timeout(ret, NUM_ELEMENTS(ret), a->kqfd, &timeout);
+        if (n < 0) {
+            a->errors++;
+            break;
+        }
+        a->received += n;
+    }
+
+    return NULL;
+}
+
+static void
+test_kevent_threading_multi_waiter_delete_race(struct test_context *ctx)
+{
+    enum { N_WAITERS = 4, N_ITERATIONS = 200 };
+    pthread_t                   waiters[N_WAITERS];
+    struct multi_waiter_args    wargs[N_WAITERS];
+    struct kevent               kev[2];
+    struct timespec             warm_up = { 0, 50L * 1000L * 1000L };  /* 50ms */
+    int                         kqfd;
+    int                         i;
+
+    (void) ctx;
+
+    kqfd = kqueue();
+    if (kqfd < 0)
+        die("kqueue");
+
+    for (i = 0; i < N_WAITERS; i++) {
+        wargs[i].kqfd = kqfd;
+        wargs[i].stop = 0;
+        wargs[i].received = 0;
+        wargs[i].errors = 0;
+        if (pthread_create(&waiters[i], NULL, multi_waiter, &wargs[i]) != 0)
+            die("pthread_create");
+    }
+
+    /*
+     * Give waiters time to enter epoll_wait at least once so the
+     * first round of churn lands while all of them are sleeping.
+     */
+    if (nanosleep(&warm_up, NULL) < 0)
+        die("nanosleep");
+
+    for (i = 0; i < N_ITERATIONS; i++) {
+        uintptr_t ident = (uintptr_t) (i + 1);
+
+        /*
+         * Add the knote (allocates kn_udata, registers with epoll)
+         * and trigger it in a single changelist.  Kernel queues a
+         * ready event for whichever waiter epoll_wait dispatches.
+         */
+        EV_SET(&kev[0], ident, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+        EV_SET(&kev[1], ident, EVFILT_USER, EV_ENABLE, NOTE_TRIGGER, 0, NULL);
+        if (kevent(kqfd, kev, 2, NULL, 0, NULL) < 0)
+            die("kevent (add+trigger)");
+
+        /*
+         * Immediately delete the knote.  This calls
+         * epoll_ctl(EPOLL_CTL_DEL) and defer_frees the udata while
+         * a ready event for it may still be in the waiter's TLS
+         * buffer.  Copyout in the waiter must see ud_stale=true and
+         * skip dispatch without dereferencing the dangling back-
+         * pointer.
+         */
+        EV_SET(&kev[0], ident, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+        if (kevent(kqfd, kev, 1, NULL, 0, NULL) < 0)
+            die("kevent (delete)");
+    }
+
+    /*
+     * Stop the waiters and let any final timeout cycle drain so
+     * every kevent() caller exits and the deferred-free sweep
+     * gets a chance to reclaim everything before close().
+     */
+    for (i = 0; i < N_WAITERS; i++) wargs[i].stop = 1;
+
+    for (i = 0; i < N_WAITERS; i++) {
+        if (pthread_join(waiters[i], NULL) != 0)
+            die("pthread_join");
+        if (wargs[i].errors > 0)
+            die("waiter %d reported %d kevent errors", i, wargs[i].errors);
+    }
+
+    if (close(kqfd) < 0)
+        die("close");
+}
+
+/*
+ * Reproducer for copyout-time defer_free races.
+ *
+ * Each ADDed knote carries EV_ONESHOT, so when a waiter dispatches
+ * the triggered event the filter's kn_delete runs from inside
+ * copyout (via knote_copyout_flag_actions).  That path calls
+ * KN_UDATA_DEFER_FREE on the same kq while the caller is still
+ * holding kq_mtx and still in kq_inflight.  The boundary captured
+ * is the current kq_next_epoch, which may be higher than the
+ * caller's own entry epoch if other threads entered during the
+ * wait.  The deferred-free sweep is run at the caller's exit and
+ * must correctly leave the entry pinned until every later caller
+ * has also exited.
+ *
+ * Combined with N concurrent waiters, this stresses the
+ * "boundary >= caller's epoch" path that the rebase + sweep code
+ * has to get right.
+ */
+static void
+test_kevent_threading_multi_waiter_oneshot(struct test_context *ctx)
+{
+    enum { N_WAITERS = 4, N_ITERATIONS = 200 };
+    pthread_t                   waiters[N_WAITERS];
+    struct multi_waiter_args    wargs[N_WAITERS];
+    struct kevent               kev[2];
+    struct timespec             warm_up = { 0, 50L * 1000L * 1000L };
+    int                         kqfd;
+    int                         i;
+
+    (void) ctx;
+
+    kqfd = kqueue();
+    if (kqfd < 0)
+        die("kqueue");
+
+    for (i = 0; i < N_WAITERS; i++) {
+        wargs[i].kqfd = kqfd;
+        wargs[i].stop = 0;
+        wargs[i].received = 0;
+        wargs[i].errors = 0;
+        if (pthread_create(&waiters[i], NULL, multi_waiter, &wargs[i]) != 0)
+            die("pthread_create");
+    }
+
+    if (nanosleep(&warm_up, NULL) < 0)
+        die("nanosleep");
+
+    for (i = 0; i < N_ITERATIONS; i++) {
+        uintptr_t ident = (uintptr_t) (i + 1);
+
+        EV_SET(&kev[0], ident, EVFILT_USER,
+               EV_ADD | EV_ONESHOT | EV_CLEAR, 0, 0, NULL);
+        EV_SET(&kev[1], ident, EVFILT_USER, EV_ENABLE, NOTE_TRIGGER, 0, NULL);
+        if (kevent(kqfd, kev, 2, NULL, 0, NULL) < 0)
+            die("kevent (add+trigger oneshot)");
+    }
+
+    for (i = 0; i < N_WAITERS; i++) wargs[i].stop = 1;
+
+    for (i = 0; i < N_WAITERS; i++) {
+        if (pthread_join(waiters[i], NULL) != 0)
+            die("pthread_join");
+        if (wargs[i].errors > 0)
+            die("waiter %d reported %d kevent errors", i, wargs[i].errors);
+    }
+
+    if (close(kqfd) < 0)
+        die("close");
+}
+
 void
 test_threading(struct test_context *ctx)
 {
@@ -196,4 +399,6 @@ test_threading(struct test_context *ctx)
 	test(kevent_threading_close, ctx);
 #endif
 	test(kevent_threading_user_trigger_cross_thread, ctx);
+	test(kevent_threading_multi_waiter_delete_race, ctx);
+	test(kevent_threading_multi_waiter_oneshot, ctx);
 }

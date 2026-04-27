@@ -52,13 +52,24 @@ eventfd_raise(int evfd)
     return (rv);
 }
 
-/* NOTE: copy+pasted from linux_eventfd_lower() */
+/* NOTE: copy+pasted from linux_eventfd_lower()
+ *
+ * Drains the eventfd counter.  The eventfd is created O_NONBLOCK so a
+ * concurrent reader (e.g. another thread that woke from epoll_wait on
+ * the same kq) can race us to the read; the loser sees EAGAIN.
+ *
+ * @return
+ *      - 1  drained the counter (this caller "owns" the trigger).
+ *      - 0  EAGAIN: another reader already drained it; caller must
+ *           not dispatch a kevent for this wakeup.
+ *      - -1 read failed for some other reason.
+ *      - -EINTR  interrupted by a signal.
+ */
 static int
 eventfd_lower(int evfd)
 {
     uint64_t cur;
     ssize_t n;
-    int rv = 0;
 
     /* Reset the counter */
     dbg_printf("event_fd=%i - lowering event level", evfd);
@@ -66,23 +77,22 @@ eventfd_lower(int evfd)
     if (n < 0) {
         switch (errno) {
             case EAGAIN:
-                /* Not considered an error */
-                break;
+                return (0);
 
             case EINTR:
-                rv = -EINTR;
-                break;
+                return (-EINTR);
 
             default:
                 dbg_printf("read(2): %s", strerror(errno));
-                rv = -1;
+                return (-1);
         }
-    } else if (n != sizeof(cur)) {
+    }
+    if (n != sizeof(cur)) {
         dbg_puts("short read");
-        rv = -1;
+        return (-1);
     }
 
-    return (rv);
+    return (1);
 }
 
 int
@@ -95,8 +105,16 @@ linux_evfilt_user_copyout(struct kevent *dst, UNUSED int nevents, struct filter 
     if (src->kev.flags & EV_CLEAR)
         src->kev.fflags &= ~NOTE_TRIGGER;
     if (src->kev.flags & (EV_DISPATCH | EV_CLEAR | EV_ONESHOT)) {
-        if (eventfd_lower(src->kn_eventfd) < 0)
-            return (-1);
+        int rv = eventfd_lower(src->kn_eventfd);
+        if (rv < 0) return (-1);
+        /*
+         * Another waiter on the same kq drained the eventfd before
+         * we did - skip dispatch.  Without this, a blocking read on
+         * the eventfd would deadlock multi-waiter setups; with it,
+         * exactly one waiter dispatches per NOTE_TRIGGER and the
+         * losers return zero events from this slot.
+         */
+        if (rv == 0) return (0);
     }
 
     if (src->kev.flags & EV_DISPATCH)
@@ -112,8 +130,14 @@ linux_evfilt_user_knote_create(struct filter *filt, struct knote *kn)
 {
     int evfd;
 
-    /* Create an eventfd */
-    evfd = eventfd(0, EFD_CLOEXEC);
+    /*
+     * EFD_NONBLOCK so concurrent readers (multiple kevent() callers
+     * on the same kq racing for the same NOTE_TRIGGER) can detect
+     * "another thread already drained me" via EAGAIN rather than
+     * blocking forever in read().  See eventfd_lower() and
+     * linux_evfilt_user_copyout() for the consumer side.
+     */
+    evfd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
     if (evfd < 0) {
         if ((errno == EMFILE) || (errno == ENFILE)) {
             dbg_perror("eventfd(2) fd_used=%u fd_max=%u", get_fd_used(), get_fd_limit());
