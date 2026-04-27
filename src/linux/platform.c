@@ -95,6 +95,33 @@ fd_map_get(int fd)
     return fd_map[fd] - 1;
 }
 
+/*
+ * TSAN false-positive on this function.
+ *
+ * It's invoked from a pthread cleanup handler installed via
+ * pthread_cleanup_push at the top of the monitoring thread loop.
+ * When the cleanup runs (either from pthread_cancel or via
+ * pthread_cleanup_pop on self-exit) the synchronisation chain
+ * with the main thread's linux_libkqueue_free is:
+ *
+ *   main: tracing_mutex_lock(&kq_mtx)
+ *   main: pthread_cancel(monitoring_thread)
+ *   main: tracing_mutex_unlock(&kq_mtx)
+ *   main: pthread_join(monitoring_thread)
+ *   T1:   cleanup runs, conditionally tracing_mutex_lock(&kq_mtx)
+ *
+ * The lock-unlock-lock chain on kq_mtx is a happens-before, but
+ * TSAN can't always track it across the pthread_cancel + cleanup
+ * handler boundary.  TSAN reports races on the kq_mtx metadata
+ * fields and on kq_list with M0 in main's lockset but not T1's,
+ * even though both threads acquire the same mutex.
+ *
+ * The protection is real (lock is acquired before any access)
+ * but the instrumentation can't see it.  Suppress with
+ * no_sanitize("thread"); see also TSAN_IGNORE on
+ * libkqueue_pre_fork in src/common/kqueue.c for an analogous case.
+ */
+TSAN_IGNORE
 static void
 monitoring_thread_cleanup(UNUSED void *arg)
 {
