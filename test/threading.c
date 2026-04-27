@@ -223,7 +223,7 @@ test_kevent_threading_close(struct test_context *ctx)
  */
 struct multi_waiter_args {
     int                 kqfd;
-    volatile int        stop;
+    atomic_int          stop;
     int                 received;
     int                 errors;
 };
@@ -787,7 +787,7 @@ test_kevent_threading_write_delete_race(struct test_context *ctx)
  */
 struct count_waiter_args {
     int                  kqfd;
-    volatile int         stop;
+    atomic_int           stop;
     sem_t               *ready;
     sem_t               *events;
     int                  errors;
