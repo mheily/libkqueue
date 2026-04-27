@@ -58,13 +58,20 @@ elseif(UNIX)
 endif()
 
 #
-# Don't link against -lkqueue on OSX and FreeBSD
+# Don't link against -lkqueue on OSX and FreeBSD (native kqueue).  On
+# FreeBSD pthread is a separate library, so the threading tests still
+# need an explicit link there; macOS pulls pthread in via libSystem.
 #
 if(NOT "${CMAKE_SYSTEM_NAME}" MATCHES "(Darwin|FreeBSD)")
   target_link_libraries(libkqueue-test
                         PRIVATE
                         kqueue
                         Threads::Threads)
+elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
+  set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
+  set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+  find_package(Threads REQUIRED)
+  target_link_libraries(libkqueue-test PRIVATE Threads::Threads)
 endif()
 
 if(WIN32)
