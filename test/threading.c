@@ -1009,6 +1009,195 @@ test_kevent_threading_proc_single_delivery(struct test_context *ctx)
     if (close(kqfd) < 0) die("close");
 }
 
+struct user_single_delivery_fire_ctx { int kqfd; uintptr_t ident; };
+
+static void
+_user_single_delivery_fire(void *vctx)
+{
+    struct user_single_delivery_fire_ctx *fc = vctx;
+    struct kevent k;
+    EV_SET(&k, fc->ident, EVFILT_USER, EV_ENABLE, NOTE_TRIGGER, 0, NULL);
+    if (kevent(fc->kqfd, &k, 1, NULL, 0, NULL) < 0) die("kevent (user trigger)");
+}
+
+static void
+test_kevent_threading_user_single_delivery(struct test_context *ctx)
+{
+    struct kevent                          kev;
+    struct user_single_delivery_fire_ctx   fire_ctx;
+    int                                    kqfd;
+
+    (void) ctx;
+
+    kqfd = kqueue();
+    if (kqfd < 0) die("kqueue");
+
+    EV_SET(&kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent (user add)");
+
+    fire_ctx.kqfd = kqfd;
+    fire_ctx.ident = 1;
+    run_single_delivery(kqfd, 4, 1, _user_single_delivery_fire, &fire_ctx, "EVFILT_USER");
+
+    if (close(kqfd) < 0) die("close");
+}
+
+struct timer_single_delivery_fire_ctx { int kqfd; uintptr_t ident; };
+
+static void
+_timer_single_delivery_fire(void *vctx)
+{
+    struct timer_single_delivery_fire_ctx *fc = vctx;
+    struct kevent k;
+    /*
+     * EV_ADD with a 1ms one-shot timer.  The fire is the kernel's
+     * arming of the timer plus the 1ms expiry; from the test's
+     * perspective the EV_ADD kevent() returns immediately and the
+     * waiters then race for the single timer expiration event.
+     */
+    EV_SET(&k, fc->ident, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 1, NULL);
+    if (kevent(fc->kqfd, &k, 1, NULL, 0, NULL) < 0) die("kevent (timer add)");
+}
+
+static void
+test_kevent_threading_timer_single_delivery(struct test_context *ctx)
+{
+    struct kevent                           kev;
+    struct timer_single_delivery_fire_ctx   fire_ctx;
+    int                                     kqfd;
+
+    (void) ctx;
+
+    kqfd = kqueue();
+    if (kqfd < 0) die("kqueue");
+
+    fire_ctx.kqfd = kqfd;
+    fire_ctx.ident = 1;
+    run_single_delivery(kqfd, 4, 1, _timer_single_delivery_fire, &fire_ctx, "EVFILT_TIMER");
+
+    /* Clean up - the EV_ONESHOT may have already auto-deleted, so
+     * tolerate ENOENT. */
+    EV_SET(&kev, 1, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0 && errno != ENOENT)
+        die("kevent (timer delete)");
+    if (close(kqfd) < 0) die("close");
+}
+
+struct vnode_single_delivery_fire_ctx { int fd; };
+
+static void
+_vnode_single_delivery_fire(void *vctx)
+{
+    struct vnode_single_delivery_fire_ctx *fc = vctx;
+    if (write(fc->fd, "x", 1) != 1) die("write");
+}
+
+static void
+test_kevent_threading_vnode_single_delivery(struct test_context *ctx)
+{
+    struct kevent                          kev;
+    struct vnode_single_delivery_fire_ctx  fire_ctx;
+    char                                   path[1024];
+    int                                    kqfd, fd;
+
+    (void) ctx;
+
+    snprintf(path, sizeof(path), "/tmp/libkqueue-vnode-single.%d", (int) getpid());
+    fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) die("open");
+    fire_ctx.fd = fd;
+
+    kqfd = kqueue();
+    if (kqfd < 0) die("kqueue");
+
+    EV_SET(&kev, fd, EVFILT_VNODE, EV_ADD | EV_CLEAR, NOTE_WRITE, 0, NULL);
+    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent (vnode add)");
+
+    run_single_delivery(kqfd, 4, 1, _vnode_single_delivery_fire, &fire_ctx, "EVFILT_VNODE");
+
+    EV_SET(&kev, fd, EVFILT_VNODE, EV_DELETE, 0, 0, NULL);
+    (void) kevent(kqfd, &kev, 1, NULL, 0, NULL);
+    if (close(kqfd) < 0) die("close kqfd");
+    if (close(fd) < 0) die("close fd");
+    unlink(path);
+}
+
+struct read_single_delivery_fire_ctx { int writefd; };
+
+static void
+_read_single_delivery_fire(void *vctx)
+{
+    struct read_single_delivery_fire_ctx *fc = vctx;
+    if (write(fc->writefd, "x", 1) != 1) die("write");
+}
+
+static void
+test_kevent_threading_read_single_delivery(struct test_context *ctx)
+{
+    struct kevent                          kev;
+    struct read_single_delivery_fire_ctx   fire_ctx;
+    int                                    kqfd, pipefd[2];
+
+    (void) ctx;
+
+    if (pipe(pipefd) < 0) die("pipe");
+    fire_ctx.writefd = pipefd[1];
+
+    kqfd = kqueue();
+    if (kqfd < 0) die("kqueue");
+
+    EV_SET(&kev, pipefd[0], EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent (read add)");
+
+    run_single_delivery(kqfd, 4, 1, _read_single_delivery_fire, &fire_ctx, "EVFILT_READ");
+
+    EV_SET(&kev, pipefd[0], EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent (read delete)");
+    if (close(kqfd) < 0) die("close kqfd");
+    if (close(pipefd[0]) < 0) die("close pipe[0]");
+    if (close(pipefd[1]) < 0) die("close pipe[1]");
+}
+
+struct write_single_delivery_fire_ctx { int kqfd; int writefd; };
+
+static void
+_write_single_delivery_fire(void *vctx)
+{
+    /*
+     * Write side starts writable; the fire is the EV_ADD itself,
+     * which causes the kernel to immediately mark the fd ready.
+     */
+    struct write_single_delivery_fire_ctx *fc = vctx;
+    struct kevent k;
+    EV_SET(&k, fc->writefd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(fc->kqfd, &k, 1, NULL, 0, NULL) < 0) die("kevent (write add)");
+}
+
+static void
+test_kevent_threading_write_single_delivery(struct test_context *ctx)
+{
+    struct kevent                          kev;
+    struct write_single_delivery_fire_ctx  fire_ctx;
+    int                                    kqfd, pipefd[2];
+
+    (void) ctx;
+
+    if (pipe(pipefd) < 0) die("pipe");
+
+    kqfd = kqueue();
+    if (kqfd < 0) die("kqueue");
+
+    fire_ctx.kqfd = kqfd;
+    fire_ctx.writefd = pipefd[1];
+    run_single_delivery(kqfd, 4, 1, _write_single_delivery_fire, &fire_ctx, "EVFILT_WRITE");
+
+    EV_SET(&kev, pipefd[1], EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+    (void) kevent(kqfd, &kev, 1, NULL, 0, NULL);
+    if (close(kqfd) < 0) die("close kqfd");
+    if (close(pipefd[0]) < 0) die("close pipe[0]");
+    if (close(pipefd[1]) < 0) die("close pipe[1]");
+}
+
 void
 test_threading(struct test_context *ctx)
 {
@@ -1024,6 +1213,11 @@ test_threading(struct test_context *ctx)
 	test(kevent_threading_proc_delete_race, ctx);
 	test(kevent_threading_read_delete_race, ctx);
 	test(kevent_threading_write_delete_race, ctx);
+	test(kevent_threading_user_single_delivery, ctx);
+	test(kevent_threading_timer_single_delivery, ctx);
 	test(kevent_threading_signal_single_delivery, ctx);
+	test(kevent_threading_vnode_single_delivery, ctx);
 	test(kevent_threading_proc_single_delivery, ctx);
+	test(kevent_threading_read_single_delivery, ctx);
+	test(kevent_threading_write_single_delivery, ctx);
 }
