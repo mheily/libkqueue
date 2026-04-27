@@ -44,7 +44,16 @@ struct signalfd_siginfo
 };
 #endif
 
-static void
+/*
+ * Drain the signalfd of one queued signal.
+ *
+ * Returns:
+ *   1  drained one signal (caller "owns" the dispatch)
+ *   0  EAGAIN: another reader on the same kq already drained it;
+ *      caller must skip dispatch
+ *   does not return on other read errors (aborts)
+ */
+static int
 signalfd_reset(int sigfd)
 {
     struct signalfd_siginfo sig;
@@ -52,13 +61,18 @@ signalfd_reset(int sigfd)
 
     /* Discard any pending signal */
     n = read(sigfd, &sig, sizeof(sig));
-    if (n < 0 || n != sizeof(sig)) {
+    if (n < 0) {
         if (errno == EWOULDBLOCK)
-            return;
+            return (0);
         //FIXME: eintr?
         dbg_perror("read(2) from signalfd");
         abort();
     }
+    if (n != sizeof(sig)) {
+        dbg_perror("read(2) from signalfd: short read");
+        abort();
+    }
+    return (1);
 }
 
 static int
@@ -133,7 +147,10 @@ evfilt_signal_copyout(struct kevent *dst, UNUSED int nevents, struct filter *fil
 
     sigfd = src->kn_signalfd;
 
-    signalfd_reset(sigfd);
+    /* Another waiter on the same kq drained the signalfd before us;
+     * skip dispatch.  Without this short-circuit, every waker
+     * dispatches a duplicate kevent for the same signal arrival. */
+    if (signalfd_reset(sigfd) == 0) return (0);
 
     memcpy(dst, &src->kev, sizeof(*dst));
     /* NOTE: dst->data should be the number of times the signal occurred,
