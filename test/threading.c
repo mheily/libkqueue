@@ -1252,7 +1252,19 @@ test_kevent_threading_write_single_delivery(struct test_context *ctx)
 void
 test_threading(struct test_context *ctx)
 {
-#ifdef NATIVE_KQUEUE
+#if defined(NATIVE_KQUEUE) && !defined(__FreeBSD__)
+	/*
+	 * Skipped on FreeBSD: native kqueue doesn't unblock a kevent()
+	 * parked on a kq when another thread close()s that kq.  The
+	 * close caller waits for in-flight kevents to drain (kq_state
+	 * KQ_TASKDRAIN), the kevent caller waits for an event that
+	 * never arrives, and we deadlock.  libkqueue's Linux backend
+	 * has explicit close-wake plumbing that this test exercises;
+	 * macOS native kqueue happens to wake parked threads on close;
+	 * FreeBSD native kqueue does not.  No portable fix available
+	 * without a non-close wake mechanism, which would invalidate
+	 * what the test is checking.
+	 */
 	test(kevent_threading_close, ctx);
 #endif
 	test(kevent_threading_user_trigger_cross_thread, ctx);
