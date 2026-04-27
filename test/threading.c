@@ -564,6 +564,7 @@ test_kevent_threading_signal_delete_race(struct test_context *ctx)
     pthread_t                   waiters[N_WAITERS];
     struct multi_waiter_args    wargs[N_WAITERS];
     struct kevent               kev;
+    struct sigaction            old_sa, ign_sa;
     sem_t                      *ready;
     sigset_t                    mask;
     int                         kqfd;
@@ -571,8 +572,33 @@ test_kevent_threading_signal_delete_race(struct test_context *ctx)
 
     (void) ctx;
 
-    /* Block SIGUSR1 process-wide so signalfd, not the default
-     * handler, observes the delivery. */
+    /*
+     * Two layers of defence so SIGUSR1 can't terminate the test
+     * process during the churn:
+     *
+     *  1. Install SIG_IGN on SIGUSR1.  EVFILT_SIGNAL fires off the
+     *     kernel's signal-delivery path on Linux/macOS/FreeBSD
+     *     regardless of disposition, so SIG_IGN doesn't suppress
+     *     the kqueue notification - it just stops the default
+     *     terminate action if the mask below is somehow bypassed.
+     *
+     *  2. Block SIGUSR1 in this thread (and inherited by waiters
+     *     spawned after) so synchronous delivery becomes pending
+     *     on the process rather than running the (now no-op)
+     *     handler.
+     *
+     * Layer 1 alone is sufficient for the test to not die; we keep
+     * the mask too because that's the original intended path on
+     * Linux libkqueue.  An earlier mask-only version got the
+     * FreeBSD CI killed by SIGUSR1 mid-loop, presumably via a
+     * libc-internal thread that hadn't inherited the mask.
+     */
+    memset(&ign_sa, 0, sizeof(ign_sa));
+    ign_sa.sa_handler = SIG_IGN;
+    sigemptyset(&ign_sa.sa_mask);
+    if (sigaction(SIGUSR1, &ign_sa, &old_sa) != 0)
+        die("sigaction");
+
     sigemptyset(&mask);
     sigaddset(&mask, SIGUSR1);
     if (pthread_sigmask(SIG_BLOCK, &mask, NULL) != 0)
@@ -598,7 +624,7 @@ test_kevent_threading_signal_delete_race(struct test_context *ctx)
     if (close(kqfd) < 0) die("close");
     sem_close_anon(ready);
 
-    /* Drain any signal we left pending and restore the mask. */
+    /* Drain any signal we left pending and restore mask + handler. */
     {
         sigset_t pending;
         sigpending(&pending);
@@ -608,6 +634,7 @@ test_kevent_threading_signal_delete_race(struct test_context *ctx)
         }
     }
     pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
+    sigaction(SIGUSR1, &old_sa, NULL);
 }
 
 /*

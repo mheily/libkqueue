@@ -20,6 +20,8 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     name: "FreeBSD tests"
+    env:
+      KQUEUE_DEBUG: yes
     steps:
     - uses: actions/checkout@v5
       with:
@@ -32,6 +34,7 @@ jobs:
         sync: sshfs
         prepare: |
           pkg install -y cmake llvm
+        envs: 'KQUEUE_DEBUG'
         run: |
           freebsd-version
           cd libkqueue/test
