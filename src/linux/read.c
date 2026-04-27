@@ -28,6 +28,27 @@
 
 /*
  * Return the offset from the current position to end of file.
+ *
+ * lseek() and fstat() are not atomic, so curpos can legitimately
+ * exceed st_size in two cases:
+ *
+ *   1. The file was truncated/shrunk between the two calls.
+ *   2. The caller seeked past the existing EOF (sparse-file write
+ *      idiom; lseek() is allowed to return a position beyond the
+ *      current file size).
+ *
+ * Both cases used to underflow the signed subtraction and return
+ * a large negative intptr_t, which (a) lied to the caller and (b)
+ * caused the dst->data == 0 EOF-detection branch in
+ * evfilt_read_copyout() to miss, leaving a spinning knote
+ * registered.  Clamp to zero so EOF is reported correctly.
+ *
+ * fstat() failure path is left as-is (sb.st_size = 1) so the
+ * caller's next read() surfaces the real underlying errno rather
+ * than us silently masking it as EOF.
+ *
+ * struct kevent.data is intptr_t per the BSD spec, so the return
+ * type is correct on the wire; no widening to int64_t needed.
  */
 static intptr_t
 get_eof_offset(int fd)
@@ -46,7 +67,10 @@ get_eof_offset(int fd)
     }
 
     dbg_printf("curpos=%zu size=%zu", (size_t)curpos, (size_t)sb.st_size);
-    return (sb.st_size - curpos); //FIXME: can overflow
+    if (curpos >= sb.st_size)
+        return 0;
+
+    return (intptr_t) (sb.st_size - curpos);
 }
 
 int
