@@ -138,6 +138,12 @@ usage(void)
 int
 main(int argc, char **argv)
 {
+    /* Line-buffer stdout so a hung test in CI is visible in the live
+     * log, instead of having the last 4KB of output sit in a block
+     * buffer until the process exits (or aborts, which doesn't flush
+     * stdio). */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
     struct unit_test tests[MAX_TESTS] = {
         { .ut_name = "kqueue",
           .ut_enabled = 1,
