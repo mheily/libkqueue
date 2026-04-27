@@ -45,6 +45,13 @@ test_kevent_user_get(struct test_context *ctx)
     kevent_cmp(&kev, ret);
 
     test_no_kevents(ctx->kqfd);
+
+    /* Tear down so later tests that re-register ident=1 start from
+     * a clean slate.  BSD does not refresh the flag word on re-EV_ADD,
+     * so a residual EV_CLEAR knote leaking out of this test would
+     * mask EV_ONESHOT/EV_DISPATCH re-declarations in later tests. */
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
 }
 
 static void
@@ -68,6 +75,9 @@ test_kevent_user_get_hires(struct test_context *ctx)
     kevent_cmp(&kev, ret);
 
     test_no_kevents(ctx->kqfd);
+
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
 }
 
 static void
@@ -77,8 +87,14 @@ test_kevent_user_disable_and_enable(struct test_context *ctx)
 
     test_no_kevents(ctx->kqfd);
 
-    kevent_add(ctx->kqfd, &kev, 1, EVFILT_USER, EV_ADD, 0, 0, NULL);
-    kev.flags |= EV_CLEAR; /* set automatically by kqueue */
+    /*
+     * EV_CLEAR explicit.  An earlier comment claimed it was "set
+     * automatically by kqueue" but neither BSD nor libkqueue actually
+     * does that for EVFILT_USER - the test only passed because of
+     * residual EV_CLEAR state leaked from preceding tests in the same
+     * run.  Set it explicitly so the test stands alone.
+     */
+    kevent_add(ctx->kqfd, &kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
 
     kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_DISABLE, 0, 0, NULL);
 
@@ -120,6 +136,9 @@ test_kevent_user_oneshot(struct test_context *ctx)
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
     kevent_cmp(&kev, ret);
 
+    /* EV_ONESHOT auto-deletes on fire so no explicit cleanup needed,
+     * but assert we really did see it go.  test_no_kevents is the
+     * post-condition. */
     test_no_kevents(ctx->kqfd);
 }
 
@@ -141,6 +160,12 @@ test_kevent_user_multi_trigger_merged(struct test_context *ctx)
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
     kevent_cmp(&kev, ret);
 
+    test_no_kevents(ctx->kqfd);
+
+    /* Tear down: BSD does not refresh the flag word on re-EV_ADD, so
+     * leaving an EV_CLEAR knote behind would mask EV_ONESHOT in tests
+     * run after this one (e.g. across iterations under -n N). */
+    kevent_add(ctx->kqfd, &tmp, 2, EVFILT_USER, EV_DELETE, 0, 0, NULL);
     test_no_kevents(ctx->kqfd);
 }
 
