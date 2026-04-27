@@ -141,6 +141,13 @@ evfilt_timer_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
        timer has been trigered.
      */
     n = read(src->kn_timerfd, &expired, sizeof(expired));
+    if (n < 0 && errno == EAGAIN) {
+        /* Another waiter on the same kq already drained the
+         * timerfd; skip dispatch.  Without TFD_NONBLOCK + this
+         * short-circuit, the losing read would block forever in
+         * multi-waiter setups. */
+        return (0);
+    }
     if (n != sizeof(expired)) {
         dbg_puts("invalid read from timerfd");
         expired = 1;  /* Fail gracefully */
@@ -162,7 +169,14 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
 
     kn->kev.flags |= EV_CLEAR;
 
-    tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+    /*
+     * TFD_NONBLOCK so concurrent readers (multiple kevent() callers
+     * on the same kq racing for the same timer expiration) detect
+     * "another thread already drained me" via EAGAIN rather than
+     * blocking forever.  See evfilt_timer_copyout() for the consumer
+     * side.
+     */
+    tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
     if (tfd < 0) {
         if ((errno == EMFILE) || (errno == ENFILE)) {
             dbg_perror("timerfd_create(2) fd_used=%u fd_max=%u", get_fd_used(), get_fd_limit());

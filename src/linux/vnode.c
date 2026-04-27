@@ -64,6 +64,13 @@ inotify_event_dump(struct inotify_event *evt)
 #endif /* !NDEBUG */
 
 
+/*
+ * Returns:
+ *   1  successfully read one inotify event into dst
+ *   0  EAGAIN: another reader on the same inofd already drained
+ *      it; caller must skip dispatch for this wakeup
+ *  -1  read failed for some other reason
+ */
 int
 get_one_event(struct inotify_event *dst, size_t len, int inofd)
 {
@@ -95,6 +102,11 @@ get_one_event(struct inotify_event *dst, size_t len, int inofd)
 
             case EINTR:
                 continue;
+
+            case EAGAIN:
+                /* Another waiter on the same kq already consumed
+                 * the inotify event. */
+                return (0);
             }
 
             dbg_perror("read");
@@ -110,7 +122,7 @@ get_one_event(struct inotify_event *dst, size_t len, int inofd)
     if (evt->len > 0) evt->name[ev->len - 1] = '\0';
 #endif
 
-    return (0);
+    return (1);
 }
 
 static int
@@ -140,8 +152,14 @@ add_watch(struct filter *filt, struct knote *kn)
     if (kn->kev.flags & EV_ONESHOT)
         mask |= IN_ONESHOT;
 
-    /* Create an inotify descriptor */
-    ifd = inotify_init1(IN_CLOEXEC);
+    /*
+     * IN_NONBLOCK so concurrent readers (multiple kevent() callers
+     * on the same kq racing for the same inotify event) detect
+     * "another thread got there first" via EAGAIN rather than
+     * blocking forever.  See get_one_event() and
+     * evfilt_vnode_copyout() for the consumer side.
+     */
+    ifd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
     if (ifd < 0) {
         if ((errno == EMFILE) || (errno == ENFILE)) {
             dbg_perror("inotify_init(2) fd_used=%u fd_max=%u", get_fd_used(), get_fd_limit());
@@ -217,8 +235,14 @@ evfilt_vnode_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
     struct stat sb;
 
     evt = (struct inotify_event *)buf;
-    if (get_one_event(evt, sizeof(buf), src->kn_vnode.inotifyfd) < 0)
-        return (-1);
+    {
+        int rv = get_one_event(evt, sizeof(buf), src->kn_vnode.inotifyfd);
+        if (rv < 0) return (-1);
+        /* Another waiter drained the inotify fd before us; skip
+         * dispatch.  Without IN_NONBLOCK + this short-circuit, the
+         * losing read would block forever in multi-waiter setups. */
+        if (rv == 0) return (0);
+    }
 
     dbg_printf("inotify event: %s", inotify_event_dump(evt));
     if (evt->mask & IN_IGNORED) {
