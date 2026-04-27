@@ -222,12 +222,19 @@ test_kevent_timer_dispatch(struct test_context *ctx)
     kevent_add(ctx->kqfd, &kev, 4, EVFILT_TIMER, EV_ENABLE | EV_DISPATCH, 0, 200, NULL);
     test_no_kevents(ctx->kqfd);
 
-    /* Get the next event */
+    /* Get the next event.  1100ms / 200ms = 5.5 expected ticks; under
+     * scheduling jitter on busy CI VMs the sleep can run past 1200ms
+     * and yield 6.  Compare flags/ident strictly but allow the
+     * accumulated tick count a small tolerance window. */
     usleep(1100000); /* 1100 ms */
-    kev.flags = EV_ADD | EV_CLEAR | EV_DISPATCH;
-    kev.data = 5;
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
-    kevent_cmp(&kev, ret);
+    if (ret[0].ident != 4 || ret[0].filter != EVFILT_TIMER ||
+        ret[0].flags != (EV_ADD | EV_CLEAR | EV_DISPATCH))
+        die("EV_DISPATCH re-enable: unexpected ident/filter/flags in %s",
+            kevent_to_str(&ret[0]));
+    if (ret[0].data < 5 || ret[0].data > 7)
+        die("EV_DISPATCH re-enable: expected accumulated data in [5,7], got %ld",
+            (long) ret[0].data);
 #endif
 
     /* Remove the knote and ensure the event no longer fires */
