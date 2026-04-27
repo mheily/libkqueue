@@ -27,10 +27,16 @@ struct trigger_args {
 
 struct cross_trigger_args {
     int             kqfd;
+    sem_t          *ready;
     struct timespec elapsed;
     int             got_events;
     int             kevent_errno;
 };
+
+/* Forward decls so the helpers can be referenced before their
+ * definitions further down the file. */
+static sem_t *sem_open_anon(const char *tag);
+static void   sem_close_anon(sem_t *sem);
 
 static void *
 wait_for_user_trigger(void *arg)
@@ -50,6 +56,13 @@ wait_for_user_trigger(void *arg)
 
     if (clock_gettime(CLOCK_MONOTONIC, &start) < 0)
         die("clock_gettime");
+
+    /* Signal readiness immediately before the blocking kevent.
+     * There's an irreducible scheduling gap between the post and
+     * the syscall, but the trigger path is robust to it: an
+     * EVFILT_USER NOTE_TRIGGER landing before kevent() entry just
+     * leaves a ready event queued for the very next call. */
+    if (sem_post(a->ready) != 0) die("sem_post(ready)");
 
     a->got_events = kevent_get_timeout(ret, 1, a->kqfd, &timeout);
     a->kevent_errno = (a->got_events < 0) ? errno : 0;
@@ -96,7 +109,6 @@ test_kevent_threading_user_trigger_cross_thread(struct test_context *ctx)
     struct kevent               kev;
     pthread_t                   th;
     struct cross_trigger_args   args = { 0 };
-    struct timespec             warm_up = { 0, 100L * 1000L * 1000L };  /* 100ms */
     int                         kqfd;
 
     (void) ctx;
@@ -114,15 +126,13 @@ test_kevent_threading_user_trigger_cross_thread(struct test_context *ctx)
      */
     kevent_add(kqfd, &kev, 0, EVFILT_USER, EV_ADD | EV_DISPATCH, 0, 0, NULL);
 
+    args.ready = sem_open_anon("ready");
+
     if (pthread_create(&th, NULL, wait_for_user_trigger, &args) != 0)
         die("pthread_create");
 
-    /*
-     * Give the waiter time to enter kevent_wait.  100ms is way
-     * more than needed but harmless under load.
-     */
-    if (nanosleep(&warm_up, NULL) < 0)
-        die("nanosleep");
+    /* Wait for the waiter to be one syscall away from kevent(). */
+    if (sem_wait(args.ready) != 0) die("sem_wait(ready)");
 
     /* Cross-thread trigger from the parent thread. */
     kevent_add(kqfd, &kev, 0, EVFILT_USER, EV_ENABLE, NOTE_TRIGGER, 0, NULL);
@@ -144,17 +154,27 @@ test_kevent_threading_user_trigger_cross_thread(struct test_context *ctx)
 
     if (close(kqfd) < 0)
         die("close");
+
+    sem_close_anon(args.ready);
 }
+
+struct close_kqueue_args {
+    int     *kqfd;
+    sem_t   *ready;
+};
 
 static void *
 close_kqueue(void *arg)
 {
-	/* Sleep until we're fairly sure the other thread is waiting */
-	sleep(1);
+    struct close_kqueue_args *a = arg;
 
-    /* Close the waiting kqueue from this thread */
-    if (close(*((int *)arg)) != 0)
-		die("close failed");
+    /* Wait until main is one syscall away from the blocking kevent.
+     * Closing before or after entry both produce the EBADF the test
+     * expects, so the irreducible post-then-syscall gap is benign. */
+    if (sem_wait(a->ready) != 0) die("sem_wait(ready)");
+
+    if (close(*a->kqfd) != 0)
+        die("close failed");
 
     return NULL;
 }
@@ -164,13 +184,22 @@ test_kevent_threading_close(struct test_context *ctx)
 {
     struct kevent kev, ret[1];
     pthread_t th;
-	int kqfd = kqueue();
+    int kqfd = kqueue();
+    sem_t *ready;
+    struct close_kqueue_args ka;
 
     /* Add the event, then trigger it from another thread */
     kevent_add(kqfd, &kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
 
-    if (pthread_create(&th, NULL, close_kqueue, &kqfd) != 0)
+    ready = sem_open_anon("ready");
+    ka.kqfd  = &kqfd;
+    ka.ready = ready;
+
+    if (pthread_create(&th, NULL, close_kqueue, &ka) != 0)
         die("failed creating thread");
+
+    /* Tell the closer we're about to enter kevent. */
+    if (sem_post(ready) != 0) die("sem_post(ready)");
 
 	/* Wait for event (should be interrupted by close) */
 	if (kevent(kqfd, NULL, 0, ret, 1, NULL) == -1) {
@@ -190,6 +219,8 @@ test_kevent_threading_close(struct test_context *ctx)
 
     if (pthread_join(th, NULL) != 0)
         die("pthread_join failed");
+
+    sem_close_anon(ready);
 }
 
 /*
@@ -223,6 +254,7 @@ test_kevent_threading_close(struct test_context *ctx)
  */
 struct multi_waiter_args {
     int                 kqfd;
+    sem_t              *ready;
     atomic_int          stop;
     int                 received;
     int                 errors;
@@ -235,6 +267,11 @@ _multi_waiter(void *arg)
     struct kevent               ret[8];
     struct timespec             timeout = { 0, 50L * 1000L * 1000L };  /* 50ms */
     int                         n;
+
+    /* Tell the parent we're about to enter the kevent loop.  An event
+     * that arrives between this post and the syscall is queued by the
+     * kernel and picked up on the very next iteration. */
+    if (a->ready && sem_post(a->ready) != 0) die("sem_post(ready)");
 
     while (!a->stop) {
         n = kevent_get_timeout(ret, NUM_ELEMENTS(ret), a->kqfd, &timeout);
@@ -255,7 +292,7 @@ test_kevent_threading_multi_waiter_delete_race(struct test_context *ctx)
     pthread_t                   waiters[N_WAITERS];
     struct multi_waiter_args    wargs[N_WAITERS];
     struct kevent               kev[2];
-    struct timespec             warm_up = { 0, 50L * 1000L * 1000L };  /* 50ms */
+    sem_t                      *ready;
     int                         kqfd;
     int                         i;
 
@@ -265,8 +302,11 @@ test_kevent_threading_multi_waiter_delete_race(struct test_context *ctx)
     if (kqfd < 0)
         die("kqueue");
 
+    ready = sem_open_anon("ready");
+
     for (i = 0; i < N_WAITERS; i++) {
         wargs[i].kqfd = kqfd;
+        wargs[i].ready = ready;
         wargs[i].stop = 0;
         wargs[i].received = 0;
         wargs[i].errors = 0;
@@ -274,12 +314,9 @@ test_kevent_threading_multi_waiter_delete_race(struct test_context *ctx)
             die("pthread_create");
     }
 
-    /*
-     * Give waiters time to enter epoll_wait at least once so the
-     * first round of churn lands while all of them are sleeping.
-     */
-    if (nanosleep(&warm_up, NULL) < 0)
-        die("nanosleep");
+    /* Wait until every waiter has posted ready (about to enter kevent). */
+    for (i = 0; i < N_WAITERS; i++)
+        if (sem_wait(ready) != 0) die("sem_wait(ready)");
 
     for (i = 0; i < N_ITERATIONS; i++) {
         uintptr_t ident = (uintptr_t) (i + 1);
@@ -323,6 +360,8 @@ test_kevent_threading_multi_waiter_delete_race(struct test_context *ctx)
 
     if (close(kqfd) < 0)
         die("close");
+
+    sem_close_anon(ready);
 }
 
 /*
@@ -350,7 +389,7 @@ test_kevent_threading_multi_waiter_oneshot(struct test_context *ctx)
     pthread_t                   waiters[N_WAITERS];
     struct multi_waiter_args    wargs[N_WAITERS];
     struct kevent               kev[2];
-    struct timespec             warm_up = { 0, 50L * 1000L * 1000L };
+    sem_t                      *ready;
     int                         kqfd;
     int                         i;
 
@@ -360,8 +399,11 @@ test_kevent_threading_multi_waiter_oneshot(struct test_context *ctx)
     if (kqfd < 0)
         die("kqueue");
 
+    ready = sem_open_anon("ready");
+
     for (i = 0; i < N_WAITERS; i++) {
         wargs[i].kqfd = kqfd;
+        wargs[i].ready = ready;
         wargs[i].stop = 0;
         wargs[i].received = 0;
         wargs[i].errors = 0;
@@ -369,8 +411,8 @@ test_kevent_threading_multi_waiter_oneshot(struct test_context *ctx)
             die("pthread_create");
     }
 
-    if (nanosleep(&warm_up, NULL) < 0)
-        die("nanosleep");
+    for (i = 0; i < N_WAITERS; i++)
+        if (sem_wait(ready) != 0) die("sem_wait(ready)");
 
     for (i = 0; i < N_ITERATIONS; i++) {
         uintptr_t ident = (uintptr_t) (i + 1);
@@ -393,30 +435,41 @@ test_kevent_threading_multi_waiter_oneshot(struct test_context *ctx)
 
     if (close(kqfd) < 0)
         die("close");
+
+    sem_close_anon(ready);
 }
 
 /*
  * Common spawn / teardown for the per-filter delete-race tests.
  *
  * Each helper expects the caller to have created the kq and stored
- * its fd in `kqfd`.  After spawn_waiters returns, the caller waits
- * out a brief warm-up so every waiter is parked in epoll_wait, then
- * does its filter-specific churn, then calls stop_waiters before
- * close()ing the kq.
+ * its fd in `kqfd`.  spawn_waiters opens an anonymous `ready`
+ * semaphore, hands it to every waiter, and blocks until each waiter
+ * has posted - i.e. is one syscall away from kevent().  The caller
+ * then does its filter-specific churn and calls stop_waiters before
+ * close()ing the kq.  Caller is responsible for sem_close_anon on
+ * the returned semaphore.
  */
-static void
+static sem_t *
 spawn_waiters(int kqfd, pthread_t *waiters, struct multi_waiter_args *wargs, int n)
 {
+    sem_t *ready = sem_open_anon("ready");
     int i;
 
     for (i = 0; i < n; i++) {
         wargs[i].kqfd = kqfd;
+        wargs[i].ready = ready;
         wargs[i].stop = 0;
         wargs[i].received = 0;
         wargs[i].errors = 0;
         if (pthread_create(&waiters[i], NULL, _multi_waiter, &wargs[i]) != 0)
             die("pthread_create");
     }
+
+    for (i = 0; i < n; i++)
+        if (sem_wait(ready) != 0) die("sem_wait(ready)");
+
+    return ready;
 }
 
 static void
@@ -433,8 +486,6 @@ stop_waiters(pthread_t *waiters, struct multi_waiter_args *wargs, int n)
             die("waiter %d reported %d kevent errors", i, wargs[i].errors);
     }
 }
-
-#define WARM_UP_50MS  ((struct timespec){ 0, 50L * 1000L * 1000L })
 
 /*
  * Per-filter delete-race torture tests.
@@ -459,7 +510,7 @@ test_kevent_threading_timer_delete_race(struct test_context *ctx)
     pthread_t                   waiters[N_WAITERS];
     struct multi_waiter_args    wargs[N_WAITERS];
     struct kevent               kev;
-    struct timespec             warm_up = WARM_UP_50MS;
+    sem_t                      *ready;
     int                         kqfd;
     int                         i;
 
@@ -467,8 +518,7 @@ test_kevent_threading_timer_delete_race(struct test_context *ctx)
 
     kqfd = kqueue();
     if (kqfd < 0) die("kqueue");
-    spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
-    if (nanosleep(&warm_up, NULL) < 0) die("nanosleep");
+    ready = spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
 
     for (i = 0; i < N_ITERATIONS; i++) {
         uintptr_t ident = (uintptr_t) (i + 1);
@@ -493,6 +543,7 @@ test_kevent_threading_timer_delete_race(struct test_context *ctx)
 
     stop_waiters(waiters, wargs, N_WAITERS);
     if (close(kqfd) < 0) die("close");
+    sem_close_anon(ready);
 }
 
 /*
@@ -513,7 +564,7 @@ test_kevent_threading_signal_delete_race(struct test_context *ctx)
     pthread_t                   waiters[N_WAITERS];
     struct multi_waiter_args    wargs[N_WAITERS];
     struct kevent               kev;
-    struct timespec             warm_up = WARM_UP_50MS;
+    sem_t                      *ready;
     sigset_t                    mask;
     int                         kqfd;
     int                         i;
@@ -529,8 +580,7 @@ test_kevent_threading_signal_delete_race(struct test_context *ctx)
 
     kqfd = kqueue();
     if (kqfd < 0) die("kqueue");
-    spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
-    if (nanosleep(&warm_up, NULL) < 0) die("nanosleep");
+    ready = spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
 
     for (i = 0; i < N_ITERATIONS; i++) {
         EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
@@ -546,6 +596,7 @@ test_kevent_threading_signal_delete_race(struct test_context *ctx)
 
     stop_waiters(waiters, wargs, N_WAITERS);
     if (close(kqfd) < 0) die("close");
+    sem_close_anon(ready);
 
     /* Drain any signal we left pending and restore the mask. */
     {
@@ -571,7 +622,7 @@ test_kevent_threading_vnode_delete_race(struct test_context *ctx)
     pthread_t                   waiters[N_WAITERS];
     struct multi_waiter_args    wargs[N_WAITERS];
     struct kevent               kev;
-    struct timespec             warm_up = WARM_UP_50MS;
+    sem_t                      *ready;
     char                        path[1024];
     int                         kqfd, fd;
     int                         i;
@@ -584,8 +635,7 @@ test_kevent_threading_vnode_delete_race(struct test_context *ctx)
 
     kqfd = kqueue();
     if (kqfd < 0) die("kqueue");
-    spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
-    if (nanosleep(&warm_up, NULL) < 0) die("nanosleep");
+    ready = spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
 
     for (i = 0; i < N_ITERATIONS; i++) {
         EV_SET(&kev, fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
@@ -605,6 +655,7 @@ test_kevent_threading_vnode_delete_race(struct test_context *ctx)
     if (close(kqfd) < 0) die("close kqfd");
     if (close(fd) < 0) die("close fd");
     unlink(path);
+    sem_close_anon(ready);
 }
 
 /*
@@ -618,7 +669,7 @@ test_kevent_threading_proc_delete_race(struct test_context *ctx)
     pthread_t                   waiters[N_WAITERS];
     struct multi_waiter_args    wargs[N_WAITERS];
     struct kevent               kev;
-    struct timespec             warm_up = WARM_UP_50MS;
+    sem_t                      *ready;
     int                         kqfd;
     int                         i;
 
@@ -626,8 +677,7 @@ test_kevent_threading_proc_delete_race(struct test_context *ctx)
 
     kqfd = kqueue();
     if (kqfd < 0) die("kqueue");
-    spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
-    if (nanosleep(&warm_up, NULL) < 0) die("nanosleep");
+    ready = spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
 
     for (i = 0; i < N_ITERATIONS; i++) {
         pid_t pid = fork();
@@ -652,6 +702,7 @@ test_kevent_threading_proc_delete_race(struct test_context *ctx)
 
     stop_waiters(waiters, wargs, N_WAITERS);
     if (close(kqfd) < 0) die("close");
+    sem_close_anon(ready);
 }
 
 /*
@@ -668,7 +719,7 @@ test_kevent_threading_read_delete_race(struct test_context *ctx)
     pthread_t                   waiters[N_WAITERS];
     struct multi_waiter_args    wargs[N_WAITERS];
     struct kevent               kev;
-    struct timespec             warm_up = WARM_UP_50MS;
+    sem_t                      *ready;
     int                         kqfd;
     int                         pipefd[2];
     int                         i;
@@ -679,8 +730,7 @@ test_kevent_threading_read_delete_race(struct test_context *ctx)
 
     kqfd = kqueue();
     if (kqfd < 0) die("kqueue");
-    spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
-    if (nanosleep(&warm_up, NULL) < 0) die("nanosleep");
+    ready = spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
 
     for (i = 0; i < N_ITERATIONS; i++) {
         EV_SET(&kev, pipefd[0], EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
@@ -705,6 +755,7 @@ test_kevent_threading_read_delete_race(struct test_context *ctx)
     if (close(kqfd) < 0) die("close kqfd");
     if (close(pipefd[0]) < 0) die("close pipe[0]");
     if (close(pipefd[1]) < 0) die("close pipe[1]");
+    sem_close_anon(ready);
 }
 
 static void
@@ -714,7 +765,7 @@ test_kevent_threading_write_delete_race(struct test_context *ctx)
     pthread_t                   waiters[N_WAITERS];
     struct multi_waiter_args    wargs[N_WAITERS];
     struct kevent               kev;
-    struct timespec             warm_up = WARM_UP_50MS;
+    sem_t                      *ready;
     int                         kqfd;
     int                         pipefd[2];
     int                         i;
@@ -725,8 +776,7 @@ test_kevent_threading_write_delete_race(struct test_context *ctx)
 
     kqfd = kqueue();
     if (kqfd < 0) die("kqueue");
-    spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
-    if (nanosleep(&warm_up, NULL) < 0) die("nanosleep");
+    ready = spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
 
     for (i = 0; i < N_ITERATIONS; i++) {
         /* Write side starts writable; kernel will fire immediately. */
@@ -743,6 +793,7 @@ test_kevent_threading_write_delete_race(struct test_context *ctx)
     if (close(kqfd) < 0) die("close kqfd");
     if (close(pipefd[0]) < 0) die("close pipe[0]");
     if (close(pipefd[1]) < 0) die("close pipe[1]");
+    sem_close_anon(ready);
 }
 
 /*

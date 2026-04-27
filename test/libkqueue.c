@@ -14,6 +14,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 #include "common.h"
+#include <semaphore.h>
 #include <time.h>
 
 #ifdef EVFILT_LIBKQUEUE
@@ -53,11 +54,23 @@ test_libkqueue_version_str(struct test_context *ctx)
     }
 }
 
+struct fork_no_hang_args {
+    struct test_context *ctx;
+    sem_t               *ready;
+};
+
 static void *
 test_libkqueue_fork_no_hang_thread(void *arg)
 {
-    struct test_context *ctx = arg;
+    struct fork_no_hang_args *fa = arg;
+    struct test_context *ctx = fa->ctx;
     struct kevent receipt;
+
+    /* Tell the parent we're one syscall away from kevent.  The parent
+     * will pthread_cancel us; kevent() is a cancellation point and
+     * cancellation is delivered whether we're inside the syscall or
+     * about to enter it. */
+    if (sem_post(fa->ready) != 0) die("sem_post(ready)");
 
     /*
      *  We shouldn't ever wait for 10 seconds...
@@ -80,23 +93,30 @@ test_libkqueue_fork_no_hang(struct test_context *ctx)
     pthread_t thread;
     time_t start, end;
     pid_t child;
+    sem_t *ready;
+    struct fork_no_hang_args fa;
+    char ready_name[64];
 
     start = time(NULL);
+
+    snprintf(ready_name, sizeof(ready_name), "/libkqueue-fnh-%d", (int) getpid());
+    ready = sem_open(ready_name, O_CREAT | O_EXCL, 0600, 0);
+    if (ready == SEM_FAILED) die("sem_open");
+    if (sem_unlink(ready_name) != 0) die("sem_unlink");
+
+    fa.ctx   = ctx;
+    fa.ready = ready;
 
     /*
      *  Create a new thread
      */
-    if (pthread_create(&thread, NULL, test_libkqueue_fork_no_hang_thread, ctx) < 0)
+    if (pthread_create(&thread, NULL, test_libkqueue_fork_no_hang_thread, &fa) < 0)
         die("kevent");
 
     printf("Created test_libkqueue_fork_no_hang_thread [%u]\n", (unsigned int)thread);
 
-    /*
-     *  We don't know when the thread will start
-     *  listening on the kqueue, so we just
-     *  deschedule ourselves for 10ms and hope...
-     */
-    nanosleep(&(struct timespec){ .tv_nsec = 10000000}, NULL);
+    /* Wait for the listener to be one syscall away from kevent. */
+    if (sem_wait(ready) != 0) die("sem_wait(ready)");
 
     /*
      *  Test that we can fork... The child exits
@@ -124,6 +144,8 @@ test_libkqueue_fork_no_hang(struct test_context *ctx)
         printf("Thread hung instead of being cancelled");
         die("kevent");
     }
+
+    if (sem_close(ready) != 0) die("sem_close");
 }
 
 void

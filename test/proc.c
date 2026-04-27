@@ -96,6 +96,8 @@ test_kevent_proc_exit_status_ok(struct test_context *ctx)
 {
     struct kevent kev, buf[2];
     int fflags;
+    int sync_pipe[2];
+    char go = 'g';
 
     /*
      *  macOS requires NOTE_EXITSTATUS to get the
@@ -108,18 +110,29 @@ test_kevent_proc_exit_status_ok(struct test_context *ctx)
     fflags = NOTE_EXIT;
 #endif
 
-    /* Create a child that waits to be killed and then exits */
+    /* Pipe-gate the child's exit on the parent's kevent_add. */
+    if (pipe(sync_pipe) < 0)
+        die("pipe");
+
     pid = fork();
     if (pid == 0) {
-        usleep(100000);
-        printf(" -- child done sleeping, exiting (0)\n");
+        char buf2;
+        close(sync_pipe[1]);
+        if (read(sync_pipe[0], &buf2, 1) != 1)
+            _exit(127);
+        printf(" -- child got go-ahead, exiting (0)\n");
         testing_end_quiet();
         exit(0);
     }
+    close(sync_pipe[0]);
     printf(" -- child created (pid %d)\n", (int) pid);
 
     test_no_kevents(ctx->kqfd);
     kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
+
+    if (write(sync_pipe[1], &go, 1) != 1)
+        die("write(sync_pipe)");
+    close(sync_pipe[1]);
 
     kevent_get(buf, NUM_ELEMENTS(buf), ctx->kqfd, 1);
 
@@ -135,6 +148,8 @@ test_kevent_proc_exit_status_error(struct test_context *ctx)
 {
     struct kevent kev, buf[2];
     int fflags;
+    int sync_pipe[2];
+    char go = 'g';
 
     /*
      *  macOS requires NOTE_EXITSTATUS to get the
@@ -147,18 +162,28 @@ test_kevent_proc_exit_status_error(struct test_context *ctx)
     fflags = NOTE_EXIT;
 #endif
 
-    /* Create a child that waits to be killed and then exits */
+    if (pipe(sync_pipe) < 0)
+        die("pipe");
+
     pid = fork();
     if (pid == 0) {
-        usleep(100000);
-        printf(" -- child done sleeping, exiting (64)\n");
+        char buf2;
+        close(sync_pipe[1]);
+        if (read(sync_pipe[0], &buf2, 1) != 1)
+            _exit(127);
+        printf(" -- child got go-ahead, exiting (64)\n");
         testing_end_quiet();
         exit(64);
     }
+    close(sync_pipe[0]);
     printf(" -- child created (pid %d)\n", (int) pid);
 
     test_no_kevents(ctx->kqfd);
     kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
+
+    if (write(sync_pipe[1], &go, 1) != 1)
+        die("write(sync_pipe)");
+    close(sync_pipe[1]);
 
     kevent_get(buf, NUM_ELEMENTS(buf), ctx->kqfd, 1);
 
@@ -175,6 +200,8 @@ test_kevent_proc_multiple_kqueue(struct test_context *ctx)
     struct kevent kev, buf_a[2], buf_b[2];
     int fflags;
     int kq_b;
+    int sync_pipe[2];
+    char go = 'g';
 
     /*
      *  macOS requires NOTE_EXITSTATUS to get the
@@ -191,14 +218,28 @@ test_kevent_proc_multiple_kqueue(struct test_context *ctx)
     if (kq_b < 0)
         die("kqueue");
 
-    /* Create a child that waits to be killed and then exits */
+    /*
+     * Use a pipe to gate the child's exit on the parent finishing
+     * both EVFILT_PROC registrations.  EVFILT_PROC | NOTE_EXIT only
+     * fires once per process (the kernel's exit1() calls KNOTE on
+     * p->p_klist exactly once before detaching), so any kqueue not
+     * yet attached when the child exits will block forever.  The
+     * earlier 100ms sleep raced with kevent_add on slow VMs.
+     */
+    if (pipe(sync_pipe) < 0)
+        die("pipe");
+
     pid = fork();
     if (pid == 0) {
-        usleep(100000);
-        printf(" -- child done sleeping, exiting (64)\n");
+        char buf;
+        close(sync_pipe[1]);
+        if (read(sync_pipe[0], &buf, 1) != 1)
+            _exit(127);  /* parent died before signalling */
+        printf(" -- child got go-ahead, exiting (64)\n");
         testing_end_quiet();
         exit(64);
     }
+    close(sync_pipe[0]);
     printf(" -- child created (pid %d)\n", (int) pid);
 
     test_no_kevents(ctx->kqfd);
@@ -207,8 +248,19 @@ test_kevent_proc_multiple_kqueue(struct test_context *ctx)
     kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
     kevent_add(kq_b, &kev, pid, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
 
-    kevent_get(buf_a, NUM_ELEMENTS(buf_a), ctx->kqfd, 1);
-    kevent_get(buf_b, NUM_ELEMENTS(buf_b), kq_b, 1);
+    /* Both kqueues are now attached to p_klist - release the child. */
+    if (write(sync_pipe[1], &go, 1) != 1)
+        die("write(sync_pipe)");
+    close(sync_pipe[1]);
+
+    {
+        struct timespec ts = { 5, 0 };  /* fail fast instead of CI-timeout */
+        if (kevent_get_timeout(buf_a, NUM_ELEMENTS(buf_a), ctx->kqfd, &ts) != 1)
+            die("test_kevent_proc_multiple_kqueue: timeout waiting for NOTE_EXIT on ctx->kqfd");
+        ts.tv_sec = 5; ts.tv_nsec = 0;
+        if (kevent_get_timeout(buf_b, NUM_ELEMENTS(buf_b), kq_b, &ts) != 1)
+            die("test_kevent_proc_multiple_kqueue: timeout waiting for NOTE_EXIT on kq_b");
+    }
 
     kev.data = 64 << 8; /* What we expected the process exit code to be */
     kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF;
