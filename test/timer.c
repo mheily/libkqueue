@@ -125,8 +125,16 @@ test_kevent_timer_periodic_modify(struct test_context *ctx)
     usleep(1200 * 1000);  /* 1200ms - 2 full periods + slack */
 
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    /*
+     * Native FreeBSD kqueue returns the event without EV_ADD set;
+     * Linux libkqueue and macOS native echo EV_ADD back.  Don't pin
+     * the EV_ADD bit here - the kevent_cmp helper has a FreeBSD-
+     * specific workaround for this elsewhere, but we're doing a
+     * direct compare to widen the data tolerance.  Just verify the
+     * sticky EV_CLEAR survived, which is what the test cares about.
+     */
     if (ret[0].ident != 3 || ret[0].filter != EVFILT_TIMER ||
-        ret[0].flags != (EV_ADD | EV_CLEAR))
+        !(ret[0].flags & EV_CLEAR))
         die("periodic_modify: unexpected ident/filter/flags in %s",
             kevent_to_str(&ret[0]));
     if (ret[0].data < 2 || ret[0].data > 4)
