@@ -26,7 +26,7 @@ env:
 
 jobs:
   windows-build:
-    timeout-minutes: 5
+    timeout-minutes: 10
     runs-on: windows-2022
     name: CI-windows (build)
     strategy:

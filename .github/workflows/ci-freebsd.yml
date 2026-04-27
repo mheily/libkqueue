@@ -17,7 +17,7 @@ on:
 jobs:
   freebsd-tests:
 # virtualbox takes a long time to start
-    timeout-minutes: 15
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     name: "FreeBSD tests"
     env:
