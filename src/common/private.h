@@ -43,6 +43,7 @@ struct knote;
 struct map;
 struct eventfd;
 struct evfilt_data;
+struct kqueue_kevent_state;
 
 #if defined(_WIN32)
 # include "../windows/platform.h"
@@ -58,6 +59,20 @@ struct evfilt_data;
 # include "../posix/platform.h"
 #else
 # error Unknown platform
+#endif
+
+/*
+ * Platforms that don't use the Linux deferred-udata-free machinery
+ * get an empty struct + no-op hooks so the common kevent() entry
+ * path can stack-allocate a state object and call the hooks
+ * unconditionally.  The compiler inlines both away.
+ */
+#if !defined(__linux__)
+struct kqueue_kevent_state {
+    char _unused;
+};
+#define kqueue_kevent_enter(_kq, _state) ((void)(_state))
+#define kqueue_kevent_exit(_kq, _state)  ((void)(_state))
 #endif
 
 /** Additional macro to check if an item is in a doubly linked list

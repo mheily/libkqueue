@@ -134,9 +134,17 @@ evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
     kn->kev.flags |= EV_ONESHOT;
     kn->kev.flags |= EV_CLEAR;
 
-    KN_UDATA(kn);   /* populate this knote's kn_udata field */
+    KN_UDATA_ALLOC(kn);   /* populate this knote's kn_udata field */
 
-    return evfilt_proc_knote_enable(filt, kn);
+    {
+        int rv = evfilt_proc_knote_enable(filt, kn);
+        if (rv < 0) {
+            /* enable's epoll_ctl(EPOLL_CTL_ADD) failed.  Kernel
+             * never saw the udata, free direct. */
+            KN_UDATA_FREE(kn);
+        }
+        return rv;
+    }
 }
 
 int
@@ -158,6 +166,8 @@ evfilt_proc_knote_delete(struct filter *filt, struct knote *kn)
 
     /* If it's enabled, we need to remove the pidfd from epoll */
     if (KNOTE_ENABLED(kn) && (evfilt_proc_knote_disable(filt, kn) < 0)) rv = -1;
+
+    KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
 
     dbg_printf("closed pidfd=%i", kn->kn_procfd);
     if (close(kn->kn_procfd) < 0) rv = -1;

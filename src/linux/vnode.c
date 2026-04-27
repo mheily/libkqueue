@@ -161,7 +161,7 @@ add_watch(struct filter *filt, struct knote *kn)
     }
 
     /* Add the inotify fd to the epoll set */
-    KN_UDATA(kn);   /* populate this knote's kn_udata field */
+    KN_UDATA_ALLOC(kn);   /* populate this knote's kn_udata field */
     if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_ADD, ifd, EPOLL_EV_KN(EPOLLIN, kn)) < 0) {
         dbg_perror("epoll_ctl(2)");
         goto errout;
@@ -175,6 +175,11 @@ errout:
     inotify_rm_watch(ifd, kn->kev.data);
     kn->kn_vnode.inotifyfd = -1;
     (void) close(ifd);
+    /* If we reached here from the post-KN_UDATA epoll_ctl failure,
+     * the kernel never accepted the udata - free direct.  If we came
+     * from the pre-KN_UDATA inotify_add_watch failure, kn_udata is
+     * still NULL and KN_UDATA_FREE is a no-op. */
+    KN_UDATA_FREE(kn);
     return (-1);
 }
 
@@ -189,6 +194,14 @@ delete_watch(struct filter *filt, struct knote *kn)
         dbg_perror("epoll_ctl(2)");
         return (-1);
     }
+
+    /*
+     * Tear down the udata too: a re-enable will allocate a fresh
+     * one in add_watch().  Doing it here keeps the disable->enable
+     * cycle leak-free.
+     */
+    KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
+
     (void) close(ifd);
     kn->kn_vnode.inotifyfd = -1;
 
@@ -295,6 +308,12 @@ evfilt_vnode_knote_modify(struct filter *filt, struct knote *kn,
 int
 evfilt_vnode_knote_delete(struct filter *filt, struct knote *kn)
 {
+    /*
+     * delete_watch handles the udata teardown: when ifd >= 0 it
+     * defer-frees and nulls kn_udata; when ifd < 0 the knote was
+     * already disabled (which goes through delete_watch too), so
+     * kn_udata is already NULL.
+     */
     return delete_watch(filt, kn);
 }
 

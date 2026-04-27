@@ -186,10 +186,12 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
     if (kn->kev.flags & (EV_ONESHOT | EV_DISPATCH))
         events |= EPOLLONESHOT;
 
-    KN_UDATA(kn);   /* populate this knote's kn_udata field */
+    KN_UDATA_ALLOC(kn);   /* populate this knote's kn_udata field */
     if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_ADD, tfd, EPOLL_EV_KN(events, kn)) < 0) {
         dbg_printf("epoll_ctl(2): %d", errno);
         close(tfd);
+        /* Kernel never accepted the registration; safe to free direct. */
+        KN_UDATA_FREE(kn);
         return (-1);
     }
 
@@ -233,6 +235,8 @@ evfilt_timer_knote_delete(struct filter *filt, struct knote *kn)
         dbg_printf("epoll_ctl(2): %s", strerror(errno));
         rv = -1;
     }
+
+    KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
 
     dbg_printf("timer_fd=%i - closed", kn->kn_timerfd);
     if (close(kn->kn_timerfd) < 0) {

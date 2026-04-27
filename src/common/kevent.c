@@ -387,6 +387,16 @@ kevent_release_kq_mutex(void *arg)
     struct kqueue *kq = arg;
     dbg_printf("Unlocking kq=%p due to cancellation", kq);
     kqueue_unlock(kq);
+    /*
+     * NOTE: if a kevent() call is cancelled after kevent_enter has
+     * run, this cleanup handler does not call kevent_exit, leaving
+     * the in-flight tracking entry in the kq_inflight list and
+     * permanently blocking deferred-free sweeps on this kq.
+     * Callers should avoid enabling thread cancellation around
+     * kevent().  (Pre-existing limitation - see also the lock-state
+     * mismatch where this handler may run with kq_mtx already
+     * dropped if cancellation fires during epoll_wait.)
+     */
 }
 #endif
 
@@ -398,6 +408,7 @@ kevent(int kqfd,
 {
     struct kqueue *kq;
     struct kevent *el_p, *el_end;
+    struct kqueue_kevent_state state = { 0 };
     int rv = 0;
 #ifndef _WIN32
     int prev_cancel_state;
@@ -461,6 +472,17 @@ kevent(int kqfd,
         dbg_printf("--- START kevent %u --- (nchanges = %d nevents = %d)", myid, nchanges, nevents);
     }
 #endif
+
+    /*
+     * Platform hook: register this caller as in-flight before we run
+     * any copyin work.  EV_DELETE in our own changelist may need to
+     * see this caller's epoch in the in-flight set so the deferred
+     * udata it queues is not freed before our copyout completes.
+     *
+     * On platforms that don't need this (everything but Linux), the
+     * macro expands to a no-op.
+     */
+    kqueue_kevent_enter(kq, &state);
 
     /*
      * Process each kevent on the changelist.
@@ -566,6 +588,14 @@ out:
 #ifndef _WIN32
     pthread_cleanup_pop(0);
 #endif
+
+    /*
+     * Pair with kevent_enter above.  Removes us from the in-flight
+     * set and runs the deferred-free sweep so any udata whose
+     * boundary epoch is now strictly less than the lowest still-
+     * in-flight epoch can be reclaimed.  No-op on non-Linux.
+     */
+    kqueue_kevent_exit(kq, &state);
 
     kqueue_unlock(kq);
     dbg_printf("--- END kevent %u ret %d ---", myid, rv);

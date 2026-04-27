@@ -127,10 +127,17 @@ linux_evfilt_user_knote_create(struct filter *filt, struct knote *kn)
 
     dbg_printf("event_fd=%i - created", evfd);
     kn->kn_eventfd = evfd;
-    KN_UDATA(kn);   /* populate this knote's kn_udata field */
+    KN_UDATA_ALLOC(kn);   /* populate this knote's kn_udata field */
 
-    if (KNOTE_ENABLED(kn))
-        return linux_evfilt_user_knote_enable(filt, kn);
+    if (KNOTE_ENABLED(kn)) {
+        int rv = linux_evfilt_user_knote_enable(filt, kn);
+        if (rv < 0) {
+            /* enable's epoll_ctl(EPOLL_CTL_ADD) failed.  Kernel
+             * never saw the udata, free direct. */
+            KN_UDATA_FREE(kn);
+        }
+        return rv;
+    }
 
     return (0);
 }
@@ -181,6 +188,8 @@ linux_evfilt_user_knote_delete(struct filter *filt, struct knote *kn)
 
     if (KNOTE_ENABLED(kn))
         linux_evfilt_user_knote_disable(filt, kn);
+
+    KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
 
     dbg_printf("event_fd=%i - closed", kn->kn_eventfd);
     if (close(kn->kn_eventfd) < 0) {

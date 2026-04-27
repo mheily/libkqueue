@@ -122,28 +122,97 @@ enum epoll_udata_type {
     EPOLL_UDATA_EVENT_FD             //!< Udata is a pointer to an eventfd.
 };
 
-/** Macro for populating the kn_udata structure
- *
- * We set the udata for the epoll event so we can retrieve the knote associated
- * with the event when the event occurs.
- *
- * This should be called before adding a new epoll event associated with a knote.
- *
- * @param[in] _kn            to populate.
- */
-#define KN_UDATA(_kn)        ((_kn)->kn_udata = (struct epoll_udata){ .ud_type = EPOLL_UDATA_KNOTE, .ud_kn = _kn })
+struct epoll_udata;
 
-/** Macro for populating the fds udata structure
- *
- * @param[in] _fds           to populate.
- */
-#define FDS_UDATA(_fds)      ((_fds)->fds_udata = (struct epoll_udata){ .ud_type = EPOLL_UDATA_FD_STATE, .ud_fds = _fds })
+struct epoll_udata *epoll_udata_alloc(enum epoll_udata_type type, void *back);
+void                epoll_udata_defer_free(struct kqueue *kq, struct epoll_udata *u);
 
-/* Macro for populating an eventfd udata structure
+/** Allocate the kn_udata for a knote
  *
- * @param[in] _efd           to populate.
+ * The udata is heap-allocated so the udata's lifetime can outlive the
+ * knote across the kevent_wait window.  See @ref epoll_udata for the
+ * full lifetime model.
+ *
+ * @param[in] _kn            knote to populate kn_udata on.
  */
-#define EVENTFD_UDATA(_efd)  ((_efd)->efd_udata = (struct epoll_udata){ .ud_type = EPOLL_UDATA_EVENT_FD, .ud_efd = _efd })
+#define KN_UDATA_ALLOC(_kn)        ((_kn)->kn_udata = epoll_udata_alloc(EPOLL_UDATA_KNOTE, _kn))
+
+/** Allocate the fds_udata for an fd_state
+ *
+ * @param[in] _fds           fd_state to populate fds_udata on.
+ */
+#define FDS_UDATA_ALLOC(_fds)      ((_fds)->fds_udata = epoll_udata_alloc(EPOLL_UDATA_FD_STATE, _fds))
+
+/** Allocate the efd_udata for an eventfd
+ *
+ * @param[in] _efd           eventfd to populate efd_udata on.
+ */
+#define EVENTFD_UDATA_ALLOC(_efd)  ((_efd)->efd_udata = epoll_udata_alloc(EPOLL_UDATA_EVENT_FD, _efd))
+
+/** Immediately free a knote's udata and null the field
+ *
+ * Use only on paths where the udata was allocated but never
+ * successfully registered with the kernel (e.g. kn_create failure
+ * after KN_UDATA_ALLOC but before/at a failing epoll_ctl(EPOLL_CTL_ADD)).
+ * For the normal teardown path (kn_delete after a live registration)
+ * use `KN_UDATA_DEFER_FREE` instead so any in-flight epoll_wait
+ * results pointing at the freed udata remain safe to dereference.
+ *
+ * @param[in] _kn            knote whose udata should be freed.
+ *                           kn_udata is set to NULL on return.
+ */
+#define KN_UDATA_FREE(_kn)        do { \
+    free((_kn)->kn_udata); \
+    (_kn)->kn_udata = NULL; \
+} while (0)
+
+/** Immediately free an eventfd's udata and null the field.  See KN_UDATA_FREE.
+ *
+ * @param[in] _efd           eventfd whose efd_udata should be freed.
+ */
+#define EVENTFD_UDATA_FREE(_efd)  do { \
+    free((_efd)->efd_udata); \
+    (_efd)->efd_udata = NULL; \
+} while (0)
+
+/** Defer-free a knote's udata and null the field
+ *
+ * Use on the normal teardown path (kn_delete after a live
+ * EPOLL_CTL_ADD).  Queues the udata on the kqueue's deferred-free
+ * list so that any concurrent epoll_wait whose TLS buffer still
+ * carries the udata's address as data.ptr can safely dereference
+ * the udata for the duration of the concurrent kevent() call.  The
+ * actual free runs from the matching kevent_exit's sweep once no
+ * in-flight caller could still observe the udata.
+ *
+ * @param[in] _kq            kqueue (used to find the deferred list).
+ * @param[in] _kn            knote whose udata should be deferred.
+ *                           kn_udata is set to NULL on return.
+ */
+#define KN_UDATA_DEFER_FREE(_kq, _kn) do { \
+    epoll_udata_defer_free((_kq), (_kn)->kn_udata); \
+    (_kn)->kn_udata = NULL; \
+} while (0)
+
+/** Defer-free an fd_state's udata and null the field.  See KN_UDATA_DEFER_FREE.
+ *
+ * @param[in] _kq            kqueue.
+ * @param[in] _fds           fd_state whose fds_udata should be deferred.
+ */
+#define FDS_UDATA_DEFER_FREE(_kq, _fds) do { \
+    epoll_udata_defer_free((_kq), (_fds)->fds_udata); \
+    (_fds)->fds_udata = NULL; \
+} while (0)
+
+/** Defer-free an eventfd's udata and null the field.  See KN_UDATA_DEFER_FREE.
+ *
+ * @param[in] _kq            kqueue.
+ * @param[in] _efd           eventfd whose efd_udata should be deferred.
+ */
+#define EVENTFD_UDATA_DEFER_FREE(_kq, _efd) do { \
+    epoll_udata_defer_free((_kq), (_efd)->efd_udata); \
+    (_efd)->efd_udata = NULL; \
+} while (0)
 
 /** Macro for building a temporary kn epoll_event
  *
@@ -152,7 +221,7 @@ enum epoll_udata_type {
  *                           determine the correct filter to notify
  *                           if the event fires.
  */
-#define EPOLL_EV_KN(_events, _kn) &(struct epoll_event){ .events = _events, .data = { .ptr = &(_kn)->kn_udata }}
+#define EPOLL_EV_KN(_events, _kn) &(struct epoll_event){ .events = _events, .data = { .ptr = (_kn)->kn_udata }}
 
 /** Macro for building a temporary fds epoll_event
  *
@@ -161,14 +230,14 @@ enum epoll_udata_type {
  *                           event. Is used during event demuxing to inform
  *                           multiple filters of read/write events on the fd.
  */
-#define EPOLL_EV_FDS(_events, _fds) &(struct epoll_event){ .events = _events, .data = { .ptr = &(_fds)->fds_udata }}
+#define EPOLL_EV_FDS(_events, _fds) &(struct epoll_event){ .events = _events, .data = { .ptr = (_fds)->fds_udata }}
 
 /** Macro for building a temporary eventfd epoll_event
  *
  * @param[in] _events        One or more event flags EPOLLIN, EPOLLOUT etc...
  * @param[in] _efd           eventfd to build event for.
  */
-#define EPOLL_EV_EVENTFD(_events, _efd) &(struct epoll_event){ .events = _events, .data = { .ptr = &(_efd)->efd_udata }}
+#define EPOLL_EV_EVENTFD(_events, _efd) &(struct epoll_event){ .events = _events, .data = { .ptr = (_efd)->efd_udata }}
 
 /** Macro for building a temporary epoll_event
  *
@@ -176,14 +245,28 @@ enum epoll_udata_type {
  */
 #define EPOLL_EV(_events) &(struct epoll_event){ .events = _events }
 
-/** Common structure that's provided as the epoll data.ptr
+/** Common structure passed as the epoll data.ptr
  *
- * Where an epoll event is associated with a single filter we pass in
- * a knote.  When the epoll event is associated with multiple filters
- * we pass in an fd_state struct.
+ * The kernel returns the udata pointer via `epoll_event::data.ptr`
+ * whenever an associated registration becomes ready.  The udata is
+ * heap-allocated independently of the containing knote / fd_state /
+ * eventfd so the udata's lifetime can outlive the containing object
+ * across the kevent_wait window: a thread may hold a stale data.ptr
+ * in the thread's TLS `epoll_events[]` buffer between epoll_wait
+ * returning and kevent_copyout running, even after another thread
+ * has run EV_DELETE on the registration and freed the knote.
  *
- * This structure is common to both, and allows us to determine the
- * type of structure associated with the epoll event.
+ * Once EV_DELETE runs, epoll_ctl(EPOLL_CTL_DEL) stops the kernel
+ * queuing new events for the udata, but pre-existing ready events
+ * may still surface in some other thread's TLS buffer.  EV_DELETE
+ * marks the udata stale, queues the udata on the kqueue's deferred-
+ * free list with the current epoch as the boundary, and the deferred
+ * udata is reclaimed only once every kevent() caller that could
+ * have observed the udata (every caller whose entry epoch is <= the
+ * boundary) has exited.
+ *
+ * Copyout always checks ud_stale before dereferencing ud_kn /
+ * ud_fds / ud_efd - the back-pointers are dangling once stale is set.
  */
 struct epoll_udata {
     union {
@@ -191,8 +274,34 @@ struct epoll_udata {
         struct fd_state     *ud_fds;    //!< Pointer back to the containing fd_state.
         struct eventfd      *ud_efd;    //!< Pointer back to the containing eventfd.
     };
-    enum epoll_udata_type   ud_type;    //!< Which union member to use.
+    enum epoll_udata_type   ud_type;    //!< Which union member is live.
+    bool                    ud_stale;   //!< Set true under kq_mtx by EV_DELETE.
+                                        ///< Once ud_stale is set, the back-pointer is
+                                        ///< dangling and copyout must skip dispatch.
+    uint64_t                ud_boundary_epoch; //!< Highest kevent() entry epoch that could
+                                        ///< have observed the udata in its TLS buffer.
+                                        ///< Free is gated on every in-flight caller with
+                                        ///< epoch <= ud_boundary_epoch having exited.
+    TAILQ_ENTRY(epoll_udata) ud_deferred_entry; //!< Entry in kq->ud_deferred_free.
+                                        ///< Only valid once ud_stale is set.
 };
+
+TAILQ_HEAD(epoll_udata_head, epoll_udata);
+
+/** Per-kevent() in-flight tracking
+ *
+ * Stack-allocated in the common kevent() entry path; linked into the
+ * kqueue's kq_inflight list under kq_mtx for the duration of the
+ * kevent() call.  The recorded epoch lets the deferred-free sweep
+ * tell whether the caller could still hold a stale udata pointer in
+ * the caller's TLS epoll_events buffer.
+ */
+struct kqueue_kevent_state {
+    TAILQ_ENTRY(kqueue_kevent_state) entry; //!< Entry in kq->kq_inflight.
+    uint64_t                         epoch; //!< Assigned at kevent_enter time.
+};
+
+TAILQ_HEAD(kqueue_kevent_state_head, kqueue_kevent_state);
 
 /** Holds cross-filter information for file descriptors
  *
@@ -215,14 +324,16 @@ struct fd_state {
     int                   fds_fd;         //!< File descriptor this entry relates to.
     struct knote          *fds_read;      //!< Knote that should be informed of read events.
     struct knote          *fds_write;     //!< Knote that should be informed of write events.
-    struct epoll_udata    fds_udata;      //!< Common struct passed to epoll
+    struct epoll_udata    *fds_udata;     //!< Heap-allocated demux header registered with
+                                          ///< epoll via data.ptr.  Lifecycled separately from
+                                          ///< the fd_state itself.
 };
 
 /** Additional members of struct eventfd
  *
  */
 #define EVENTFD_PLATFORM_SPECIFIC \
-    struct epoll_udata    efd_udata
+    struct epoll_udata    *efd_udata
 
 /** Additional members of struct knote
  *
@@ -243,7 +354,9 @@ struct fd_state {
         } kn_vnode; \
         KNOTE_PROC_PLATFORM_SPECIFIC; \
     }; \
-    struct epoll_udata    kn_udata       /* Common struct passed to epoll */
+    struct epoll_udata    *kn_udata      /* Heap-allocated demux header.  The udata's lifecycle
+                                            is independent of the knote so the udata can outlive
+                                            EV_DELETE across the kevent_wait window. */
 
 /** Additional members of struct filter
  *
@@ -253,15 +366,32 @@ struct fd_state {
 
 /** Additional members of struct kqueue
  *
+ * kq_next_epoch + kq_inflight + ud_deferred_free implement the
+ * deferred-free scheme that keeps an epoll_udata alive across the
+ * kevent_wait window.  See @ref epoll_udata for the full protocol.
  */
 #define KQUEUE_PLATFORM_SPECIFIC \
     int epollfd;                          /* Main epoll FD */ \
     int pipefd[2];                        /* FD for pipe that catches close */ \
     RB_HEAD(fd_st, fd_state) kq_fd_st;    /* EVFILT_READ/EVFILT_WRITE fd state */ \
     struct epoll_event kq_plist[MAX_KEVENT]; \
-    size_t kq_nplist
+    size_t kq_nplist; \
+    uint64_t kq_next_epoch;               /* Monotonic counter; incremented on every kevent() entry. */ \
+                                          /* Rebased toward 0 by linux_kqueue_epoch_rebase if it */ \
+                                          /* approaches UINT64_MAX (centuries away in practice). */ \
+    struct kqueue_kevent_state_head kq_inflight; /* Callers currently inside kevent().  Tail-inserted, */ \
+                                          /* so head = oldest = lowest still-active epoch. */ \
+    struct epoll_udata_head ud_deferred_free /* Stale udatas waiting for safe reclamation.  Tail- */ \
+                                          /* inserted, so head = smallest boundary epoch. */
 
 int     linux_knote_copyout(struct kevent *, struct knote *);
+
+void    linux_kevent_enter(struct kqueue *kq, struct kqueue_kevent_state *state);
+void    linux_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state);
+
+/* Common-code-callable wrappers, consumed by common/kevent.c */
+#define kqueue_kevent_enter(_kq, _state) linux_kevent_enter((_kq), (_state))
+#define kqueue_kevent_exit(_kq, _state)  linux_kevent_exit((_kq), (_state))
 
 /* utility functions */
 

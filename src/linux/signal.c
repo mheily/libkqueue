@@ -67,10 +67,13 @@ signalfd_add(int epoll_fd, int sigfd, struct knote *kn)
     int rv;
 
     /* Add the signalfd to the kqueue's epoll descriptor set */
-    KN_UDATA(kn);   /* populate this knote's kn_udata field */
+    KN_UDATA_ALLOC(kn);   /* populate this knote's kn_udata field */
     rv = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, sigfd, EPOLL_EV_KN(EPOLLIN, kn));
     if (rv < 0) {
         dbg_perror("epoll_ctl(2)");
+        /* Kernel never accepted the registration, so no concurrent
+         * epoll_wait can be holding a stale data.ptr.  Free direct. */
+        KN_UDATA_FREE(kn);
         return (-1);
     }
 
@@ -185,6 +188,14 @@ evfilt_signal_knote_delete(struct filter *filt, struct knote *kn)
     } else {
         dbg_printf("sig_fd=%i - removed from epoll_fd=%i", sigfd, filter_epoll_fd(filt));
     }
+
+    /*
+     * The kernel will not deliver new events for sigfd, but events
+     * already queued by the time of the EPOLL_CTL_DEL above may
+     * still surface in another thread's TLS buffer.  Defer the free
+     * via the kqueue's epoch-tracked reclamation list.
+     */
+    KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
 
     dbg_printf("sig_fd=%d - closed", sigfd);
     if (close(sigfd) < 0) {

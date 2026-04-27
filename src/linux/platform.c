@@ -475,6 +475,10 @@ linux_kqueue_init(struct kqueue *kq)
 {
     struct f_owner_ex sig_owner;
 
+    kq->kq_next_epoch = 0;
+    TAILQ_INIT(&kq->kq_inflight);
+    TAILQ_INIT(&kq->ud_deferred_free);
+
     kq->epollfd = epoll_create1(EPOLL_CLOEXEC);
     if (kq->epollfd < 0) {
         dbg_perror("epoll_create(2)");
@@ -634,6 +638,211 @@ linux_kqueue_free(struct kqueue *kq)
         }
         kq->pipefd[0] = -1;
     }
+
+    /*
+     * Drop any udatas still pending deferred reclamation.  By the
+     * time linux_kqueue_free runs, no kevent() callers can be in
+     * flight on this kq (the close-on-pipe wakeup is what triggered
+     * us).  So no one is left who could be holding a stale data.ptr
+     * into one of these udatas - free unconditionally.
+     */
+    assert(TAILQ_EMPTY(&kq->kq_inflight));
+    {
+        struct epoll_udata *u;
+
+        while ((u = TAILQ_FIRST(&kq->ud_deferred_free))) {
+            TAILQ_REMOVE(&kq->ud_deferred_free, u, ud_deferred_entry);
+            free(u);
+        }
+    }
+}
+
+/** Allocate a fresh epoll_udata
+ *
+ * The udata is heap-allocated so the udata's lifetime is independent
+ * of the containing knote / fd_state / eventfd: when EV_DELETE frees
+ * the containing object, the udata can linger on the kqueue's
+ * deferred-free list until every kevent() caller that could have
+ * observed the udata via a TLS `epoll_events[]` slot has exited.
+ *
+ * @param[in] type      What field in the udata union will be used.
+ *                      There are different flavours of udata for
+ *                      different knotes.
+ * @param[in] parent    Pointer to the containing knote / fd_state /
+ *                      eventfd.  Aliases ud_kn / ud_fds / ud_efd via
+ *                      the union; the caller must pass a `type` that
+ *                      matches the kind of pointer being passed.
+ * @return the new udata, or NULL on allocation failure.
+ */
+struct epoll_udata *
+epoll_udata_alloc(enum epoll_udata_type type, void *parent)
+{
+    struct epoll_udata *u = calloc(1, sizeof(*u));
+
+    if (u == NULL) return NULL;
+
+    u->ud_type = type;
+    u->ud_kn = parent;
+
+    return u;
+}
+
+/** Mark a udata as stale and queue the udata for deferred reclamation
+ *
+ * Called under kq_mtx by EV_DELETE (or any other path that's about
+ * to free the udata's containing object).  After epoll_udata_defer_free
+ * returns, the caller can safely free the containing object - copyout
+ * will see `ud_stale == true` and skip dispatch without attempting to
+ * dereference the knote.
+ *
+ * @param[in] kq        kqueue the udata belongs to.
+ * @param[in] u         udata to defer-free.  Must not already be on
+ *                      kq->ud_deferred_free.
+ */
+void
+epoll_udata_defer_free(struct kqueue *kq, struct epoll_udata *u)
+{
+    kqueue_mutex_assert(kq, MTX_LOCKED);
+
+    if (u == NULL) return;
+    assert(!u->ud_stale);
+
+    /*
+     * Insert into the deferred free list with an epoch value
+     * greater than all the kevent() entries currently in flight.
+     *
+     * When those kevent() calls all complete, we guarantee nothing
+     * references the udata, and we can free it.
+     */
+    u->ud_stale = true;
+    u->ud_boundary_epoch = kq->kq_next_epoch;
+    TAILQ_INSERT_TAIL(&kq->ud_deferred_free, u, ud_deferred_entry);
+
+    dbg_printf("kq=%p udata=%p - deferred free, boundary_epoch=%" PRIu64,
+               kq, u, u->ud_boundary_epoch);
+}
+
+/** Sweep the deferred-free list, reclaiming eligible udatas
+ *
+ * A deferred udata is eligible for free once every still-in-flight
+ * kevent() caller has an entry epoch strictly greater than the
+ * udata's epoch.
+ *
+ * Both kq_inflight and ud_deferred_free are TAIL-inserted, and
+ * kq_next_epoch is incremented only by linux_kevent_enter, so each
+ * list is naturally sorted by insertion epoch.  The head of
+ * kq_inflight is therefore the lowest still-active entry epoch,
+ * and the head of ud_deferred_free is the smallest boundary epoch
+ * awaiting reclamation.  The sweep stop at the first udata with
+ * an epoch greater than the oldest in-flight kevent() call.
+ *
+ * When kq_inflight is empty every deferred udata is reclaimed
+ * immediately.
+ *
+ * @param[in] kq        kqueue to sweep.
+ */
+static void
+linux_kqueue_sweep_deferred(struct kqueue *kq)
+{
+    struct epoll_udata             *ud;
+    struct kqueue_kevent_state     *oldest;
+
+    kqueue_mutex_assert(kq, MTX_LOCKED);
+
+    oldest = TAILQ_FIRST(&kq->kq_inflight);
+    if (!oldest) {
+        /* No in-flight callers - every deferred udata is safe to free. */
+        while ((ud = TAILQ_FIRST(&kq->ud_deferred_free))) {
+            dbg_printf("kq=%p udata=%p - reclaiming, no callers in flight", kq, ud);
+            TAILQ_REMOVE(&kq->ud_deferred_free, ud, ud_deferred_entry);
+            free(ud);
+        }
+        return;
+    }
+
+    while ((ud = TAILQ_FIRST(&kq->ud_deferred_free)) && (ud->ud_boundary_epoch < oldest->epoch)) {
+        dbg_printf("kq=%p udata=%p - reclaiming, boundary=%" PRIu64 " min_inflight=%" PRIu64,
+                   kq, ud, ud->ud_boundary_epoch, oldest->epoch);
+        TAILQ_REMOVE(&kq->ud_deferred_free, ud, ud_deferred_entry);
+        free(ud);
+    }
+}
+
+/** Rebase the epoch counter to head off uint64 wrap
+ *
+ * Both kq_inflight and ud_deferred_free use epoch values for ordering
+ * comparisons only - the absolute values don't matter, just the
+ * differences.  When kq_next_epoch nears UINT64_MAX, subtract the
+ * lowest still-live epoch from every entry on both lists, then
+ * rebase kq_next_epoch by the same amount.  Comparisons remain
+ * correct because every value moves by the same delta.
+ *
+ * In practice this never runs - 2^64 increments at 1B kevent()/sec
+ * is centuries.  The function exists so the invariant holds even
+ * under contrived test conditions that drive kq_next_epoch near the
+ * limit directly.
+ */
+static void
+linux_kqueue_epoch_rebase(struct kqueue *kq)
+{
+    struct kqueue_kevent_state *s;
+    struct epoll_udata         *u;
+    uint64_t                    base;
+
+    kqueue_mutex_assert(kq, MTX_LOCKED);
+
+    s = TAILQ_FIRST(&kq->kq_inflight);
+    base = s ? (s->epoch - 1) : kq->kq_next_epoch;
+
+    dbg_printf("kq=%p - epoch rebase, subtracting %" PRIu64 " from all live epochs", kq, base);
+
+    TAILQ_FOREACH(s, &kq->kq_inflight, entry) {
+        s->epoch -= base;
+    }
+    TAILQ_FOREACH(u, &kq->ud_deferred_free, ud_deferred_entry) {
+        u->ud_boundary_epoch -= base;
+    }
+    kq->kq_next_epoch -= base;
+}
+
+/** kevent() entry hook
+ *
+ * Assigns the caller a monotonic epoch and links the caller's
+ * kqueue_kevent_state into kq_inflight under kq_mtx.  linux_kevent_enter
+ * runs before any copyin work, so an EV_DELETE issued by the caller's
+ * own changelist will see the caller's epoch in the in-flight set when
+ * EV_DELETE captures ud_boundary_epoch.
+ */
+void
+linux_kevent_enter(struct kqueue *kq, struct kqueue_kevent_state *state)
+{
+    kqueue_mutex_assert(kq, MTX_LOCKED);
+
+    if (unlikely(kq->kq_next_epoch == UINT64_MAX)) linux_kqueue_epoch_rebase(kq);
+
+    state->epoch = ++kq->kq_next_epoch;
+    TAILQ_INSERT_TAIL(&kq->kq_inflight, state, entry);
+
+    dbg_printf("kq=%p - kevent_enter epoch=%" PRIu64, kq, state->epoch);
+}
+
+/** kevent() exit hook
+ *
+ * Unlinks the caller's kqueue_kevent_state from kq_inflight and runs
+ * the deferred-free sweep.  Removing the caller may lower the head
+ * of kq_inflight (the lowest still-active epoch), which in turn may
+ * permit deferred udatas with smaller boundary epochs to be
+ * reclaimed by the sweep.
+ */
+void
+linux_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state)
+{
+    kqueue_mutex_assert(kq, MTX_LOCKED);
+
+    TAILQ_REMOVE(&kq->kq_inflight, state, entry);
+    dbg_printf("kq=%p - kevent_exit epoch=%" PRIu64, kq, state->epoch);
+
+    linux_kqueue_sweep_deferred(kq);
 }
 
 static int
@@ -850,7 +1059,22 @@ linux_kevent_copyout(struct kqueue *kq, int nready, struct kevent *el, int neven
         int                   rv;
 
         if (!epoll_udata) {
-            dbg_puts("event has no knote, skipping..."); /* Forgot to call KN_UDATA()? */
+            dbg_puts("event has no knote, skipping..."); /* Forgot to call KN_UDATA_ALLOC()? */
+            continue;
+        }
+
+        /*
+         * The udata may have been queued for deferred free by an
+         * EV_DELETE that ran while we were inside epoll_wait.  In
+         * that case the back-pointer (ud_kn / ud_fds / ud_efd) is
+         * dangling: the knote / fd_state / eventfd has already been
+         * freed.  The udata itself is still alive (the kq_inflight
+         * tracking we added to kevent_enter ensures it can't be
+         * reclaimed before our matching kevent_exit) but we must
+         * skip dispatch.
+         */
+        if (epoll_udata->ud_stale) {
+            dbg_printf("[%i] udata=%p stale, skipping dispatch", i, epoll_udata);
             continue;
         }
 
@@ -950,10 +1174,12 @@ done:
 int
 linux_eventfd_register(struct kqueue *kq, struct eventfd *efd)
 {
-    EVENTFD_UDATA(efd); /* setup udata for the efd */
+    EVENTFD_UDATA_ALLOC(efd); /* setup udata for the efd */
 
     if (epoll_ctl(kq->epollfd, EPOLL_CTL_ADD, kqops.eventfd_descriptor(efd), EPOLL_EV_EVENTFD(EPOLLIN, efd)) < 0) {
         dbg_perror("epoll_ctl(2) - register epoll_fd=%i eventfd=%i", kq->epollfd, kqops.eventfd_descriptor(efd));
+        /* Kernel never accepted the registration; free direct. */
+        EVENTFD_UDATA_FREE(efd);
         return (-1);
     }
 
@@ -965,6 +1191,8 @@ linux_eventfd_unregister(struct kqueue *kq, struct eventfd *efd)
 {
     if (epoll_ctl(kq->epollfd, EPOLL_CTL_DEL, kqops.eventfd_descriptor(efd), NULL) < 0)
         dbg_perror("epoll_ctl(2) - unregister epoll_fd=%i eventfd=%i", kq->epollfd, kqops.eventfd_descriptor(efd));
+
+    EVENTFD_UDATA_DEFER_FREE(kq, efd);
 }
 
 static int
@@ -1336,7 +1564,7 @@ int epoll_fd_state_mod(struct fd_state **fds_p, struct knote *kn, int ev)
             if (!fds) return (-1);
 
             *fds = query;
-            FDS_UDATA(fds);    /* Prepare for insertion into epoll */
+            FDS_UDATA_ALLOC(fds);    /* Prepare for insertion into epoll */
             RB_INSERT(fd_st, &kq->kq_fd_st, fds);
 
         } else {
@@ -1395,6 +1623,15 @@ void epoll_fd_state_del(struct fd_state **fds_p, struct knote *kn, int ev)
     if (!fds->fds_read && !fds->fds_write) {
         dbg_printf("fd_state: rm fd=%i", fds->fds_fd);
         RB_REMOVE(fd_st, &kq->kq_fd_st, fds);
+
+        /*
+         * Defer-free the fds_udata: a concurrent epoll_wait may have
+         * already pulled an event referencing it into another
+         * thread's TLS buffer.  fds itself can be freed inline since
+         * nothing in the kernel or other threads holds a pointer to
+         * it directly - all references are via the udata.
+         */
+        FDS_UDATA_DEFER_FREE(kq, fds);
         free(fds);
         *fds_p = NULL;
     } else {
