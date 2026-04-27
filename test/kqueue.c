@@ -20,6 +20,12 @@
 #include <sys/resource.h>
 #endif
 
+#if defined(__linux__)
+/* libkqueue-internal sync helper exposed for tests; see
+ * src/linux/platform.c for the definition and rationale. */
+void libkqueue_drain_pending_close(void);
+#endif
+
 /*
  * Test the method for detecting when one end of a socketpair
  * has been closed. This technique is used in kqueue_validate()
@@ -249,6 +255,64 @@ test_kqueue_descriptor_is_pollable(void *unused)
 }
 #endif
 
+#if defined(__linux__)
+/*
+ * close(kqfd) with active knotes must reclaim every kqueue-side
+ * allocation, even without explicit EV_DELETEs.
+ *
+ * Linux libkqueue's close-cleanup is asynchronous: the kernel
+ * signals the monitoring thread when the close-detect pipe sees
+ * its write end go away, and the monitoring thread runs
+ * kqueue_free.  A test that closes and exits immediately can race
+ * past LSAN's leak check before the cleanup signal lands, surfacing
+ * spurious "leaks" on every iteration.
+ *
+ * libkqueue_drain_pending_close() is the synchronous escape hatch:
+ * it walks kq_list under kq_mtx and forcibly frees any kq whose
+ * user-facing fd is no longer valid.  This test exercises a
+ * representative selection of filters - one that uses kn_udata
+ * directly (EVFILT_TIMER), one that exercises the shared fd_state
+ * machinery (EVFILT_READ on a pipe), and EVFILT_USER for the
+ * eventfd path - then closes the kq without any EV_DELETEs and
+ * drains.  LSAN at process exit catches any allocation that
+ * escaped the close+drain path.
+ */
+static void
+test_close_cleans_up_active_knotes(void *unused)
+{
+    struct kevent kev;
+    int           kqfd;
+    int           pipefd[2];
+
+    (void) unused;
+
+    if (pipe(pipefd) < 0) die("pipe");
+
+    kqfd = kqueue();
+    if (kqfd < 0) die("kqueue");
+
+    EV_SET(&kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent (user add)");
+
+    EV_SET(&kev, 2, EVFILT_TIMER, EV_ADD, 0, 1000, NULL);
+    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent (timer add)");
+
+    EV_SET(&kev, pipefd[0], EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent (read add)");
+
+    /* Close without any EV_DELETE. */
+    if (close(kqfd) < 0) die("close kqfd");
+
+    /* Force the monitoring thread's cleanup path to run synchronously
+     * before any new fds get allocated that could collide with the
+     * just-closed kq_id. */
+    libkqueue_drain_pending_close();
+
+    if (close(pipefd[0]) < 0) die("close pipe[0]");
+    if (close(pipefd[1]) < 0) die("close pipe[1]");
+}
+#endif
+
 void
 test_kqueue(struct test_context *ctx)
 {
@@ -259,6 +323,7 @@ test_kqueue(struct test_context *ctx)
 
 #if defined(__linux__)
     test(cleanup, ctx);
+    test(close_cleans_up_active_knotes, ctx);
 
     /*
      * Only run the fork test if we can do TSAN

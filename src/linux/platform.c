@@ -470,6 +470,64 @@ linux_libkqueue_free(void)
         tracing_mutex_unlock(&kq_mtx);
 }
 
+/** Block until the monitoring thread has processed any pending close signals
+ *
+ * The normal close-cleanup path is asynchronous: close(kqfd) closes
+ * the write end of the close-detect pipe, the kernel signals the
+ * monitoring thread via SIGRTMIN+1, and the monitoring thread
+ * eventually runs `monitoring_thread_kqueue_cleanup` to free the
+ * kqueue.  Tests that close kqs and exit immediately can race the
+ * monitoring thread - the process exits before the signal has been
+ * delivered, leaving allocations associated with the kq unfreed
+ * when LSAN runs at process teardown.
+ *
+ * libkqueue_drain_pending_close polls kq_list under kq_mtx,
+ * yielding until every kq whose user-facing fd is closed has been
+ * removed by the monitoring thread.  Polling rather than forcibly
+ * freeing avoids the assertion in monitoring_thread_kqueue_cleanup
+ * that would fire if both the drainer and the monitoring thread
+ * tried to claim the same kq.
+ *
+ * Caveats:
+ *   - Uses fcntl(F_GETFD) to detect "fd is closed".  If the kq's
+ *     fd has been reused by a new allocation between close() and
+ *     this call, the heuristic falsely concludes the kq is live
+ *     and the drain may spin forever (bounded by the iteration
+ *     cap below).  Callers must drain BEFORE allocating any new
+ *     fds.
+ *   - The monitoring thread must be running.  If not, the drain
+ *     no-ops once it observes no closed-fd kqs (which is the
+ *     correct behaviour for that case).
+ *
+ * Intended for tests that need deterministic teardown.
+ */
+void VISIBLE
+libkqueue_drain_pending_close(void)
+{
+    /* Bounded so a stuck monitoring thread doesn't hang the test
+     * suite indefinitely.  In practice the cleanup runs in
+     * microseconds; this cap is millions of yields, plenty. */
+    enum { MAX_SPIN = 1000000 };
+    int            spin;
+    struct kqueue *kq;
+    bool           any_closed;
+
+    for (spin = 0; spin < MAX_SPIN; spin++) {
+        any_closed = false;
+        tracing_mutex_lock(&kq_mtx);
+        LIST_FOREACH(kq, &kq_list, kq_entry) {
+            if (fcntl(kq->kq_id, F_GETFD) < 0) {
+                any_closed = true;
+                break;
+            }
+        }
+        tracing_mutex_unlock(&kq_mtx);
+        if (!any_closed) return;
+        sched_yield();
+    }
+    dbg_puts("libkqueue_drain_pending_close: timeout waiting for monitoring thread");
+}
+
 static int
 linux_kqueue_init(struct kqueue *kq)
 {
