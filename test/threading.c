@@ -1308,15 +1308,18 @@ test_threading(struct test_context *ctx)
 	test(kevent_threading_signal_delete_race, ctx);
 #ifndef __sun
 	/*
-	 * EVFILT_VNODE delete race exercises concurrent
-	 * port_associate/port_dissociate of PORT_SOURCE_FILE without
-	 * the UAF-safe portev_user wrapper this backend doesn't yet
-	 * have.  Gated until the backend grows knote refcounting
-	 * around port retrievals.
+	 * Concurrent delete-race tests exercise EV_ADD/EV_DELETE
+	 * against another thread parked in kevent_wait.  Solaris
+	 * holds the kq lock across port_getn (no KEVENT_WAIT_DROP_LOCK)
+	 * AND lacks UAF-safe portev_user wrappers around port_event
+	 * retrieval, so these races deadlock or trip EFAULT.  Gated
+	 * until the backend grows knote refcounting + lock-drop.
 	 */
 	test(kevent_threading_vnode_delete_race, ctx);
-#endif
 	test(kevent_threading_proc_delete_race, ctx);
+#else
+	(void) 0;
+#endif
 	test(kevent_threading_read_delete_race, ctx);
 	test(kevent_threading_write_delete_race, ctx);
 	test(kevent_threading_user_single_delivery, ctx);
