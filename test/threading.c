@@ -1293,7 +1293,15 @@ test_threading(struct test_context *ctx)
 	 */
 	test(kevent_threading_close, ctx);
 #endif
+#ifdef TEST_DROP_LOCK_WAKE
+	/*
+	 * Requires the backend to drop the kq lock across kevent_wait
+	 * (KEVENT_WAIT_DROP_LOCK).  Backends that hold the lock through
+	 * the wait can't deliver a cross-thread EVFILT_USER trigger
+	 * until the waiter returns for some other reason.
+	 */
 	test(kevent_threading_user_trigger_cross_thread, ctx);
+#endif
 	test(kevent_threading_multi_waiter_delete_race, ctx);
 	test(kevent_threading_multi_waiter_oneshot, ctx);
 	test(kevent_threading_timer_delete_race, ctx);

@@ -44,6 +44,14 @@ target_include_directories(libkqueue-test
                            PRIVATE
                              "${CMAKE_SOURCE_DIR}"
                              "${CMAKE_SOURCE_DIR}/include")
+if(NOT "${CMAKE_SYSTEM_NAME}" MATCHES "(Solaris|SunOS)")
+  # Backends that drop the kq mutex across kevent_wait can be exercised
+  # by the cross-thread EVFILT_USER trigger test.  Solaris doesn't
+  # currently opt into KEVENT_WAIT_DROP_LOCK (would need a UAF-safe
+  # portev_user wrapper or non-coalescing dispatcher signal), so skip.
+  target_compile_definitions(libkqueue-test PRIVATE TEST_DROP_LOCK_WAKE)
+endif()
+
 if("${CMAKE_SYSTEM_NAME}" MATCHES "(Solaris|SunOS)")
   # Solaris/illumos ships sigwait() with both the historical 1-arg
   # signature (default) and the 2-arg POSIX one (gated behind
