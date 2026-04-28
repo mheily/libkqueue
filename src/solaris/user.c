@@ -20,30 +20,25 @@ int
 evfilt_user_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
     struct knote *src, void *ptr UNUSED)
 {
-    //port_event_t *pe = (port_event_t *) ptr;
+    /*
+     * Drain the per-knote trigger counter atomically.  Coalesces
+     * concurrent NOTE_TRIGGERs the same way Linux's per-knote
+     * eventfd does: producers fetch_add+conditionally-port_send
+     * on the 0->1 transition, the consumer xchg-to-zero here
+     * picks up everything accumulated since the last drain.
+     *
+     * Zero means a spurious wake (another consumer thread already
+     * drained, or the port_event arrived after the producer's
+     * accumulated triggers were folded into a previous emit).
+     */
+    if (atomic_exchange(&src->kn_user_ctr, 0) == 0)
+        return (0);
 
     memcpy(dst, &src->kev, sizeof(*dst));
-    dst->fflags &= ~NOTE_FFCTRLMASK;     //FIXME: Not sure if needed
+    dst->fflags &= ~NOTE_FFCTRLMASK;
     dst->fflags &= ~NOTE_TRIGGER;
-    if (src->kev.flags & EV_ADD) {
-        /* NOTE: True on FreeBSD but not consistent behavior with
-           other filters. */
-        dst->flags &= ~EV_ADD;
-    }
     if (src->kev.flags & EV_CLEAR)
         src->kev.fflags &= ~NOTE_TRIGGER;
-    /* FIXME: This shouldn't be necessary in Solaris...
-       if (src->kev.flags & (EV_DISPATCH | EV_CLEAR | EV_ONESHOT))
-       eventfd_lower(filt->kf_efd);
-     */
-    /* FIXME: should move to kqops.copyout()
-    if (src->kev.flags & EV_DISPATCH) {
-            KNOTE_DISABLE(src);
-            src->kev.fflags &= ~NOTE_TRIGGER;
-        } else if (src->kev.flags & EV_ONESHOT) {
-            knote_delete(filt, src);
-        }
-     */
 
     if (knote_copyout_flag_actions(filt, src) < 0) return -1;
 
@@ -98,11 +93,25 @@ evfilt_user_knote_modify(struct filter *filt, struct knote *kn,
             break;
     }
 
-    if ((!(kn->kev.flags & EV_DISABLE)) && kev->fflags & NOTE_TRIGGER) {
-        kn->kev.fflags |= NOTE_TRIGGER;
-        return (port_send(filter_epoll_fd(filt), X_PORT_SOURCE_USER, kn));
-    }
+    if ((kn->kev.flags & EV_DISABLE) || !(kev->fflags & NOTE_TRIGGER))
+        return (0);
 
+    kn->kev.fflags |= NOTE_TRIGGER;
+
+    /*
+     * Bump the per-knote counter unconditionally and only port_send
+     * on the 0->1 transition.  fetch_add (vs CAS-on-flag) so a
+     * producer that observes a non-zero counter still leaves its
+     * increment visible to whichever consumer drains next - a CAS
+     * racing the consumer's exchange-to-zero would silently drop
+     * the trigger.
+     *
+     * portev_events carries the filter id; the platform copyout
+     * dispatcher uses it to filter_lookup back to EVFILT_USER.
+     * portev_user is the triggering knote.
+     */
+    if (atomic_fetch_add(&kn->kn_user_ctr, 1) == 0)
+        return (port_send(filter_epoll_fd(filt), filt->kf_id, kn));
     return (0);
 }
 

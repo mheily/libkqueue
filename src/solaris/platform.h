@@ -102,6 +102,10 @@ struct event_buf {
 
 #define KNOTE_PLATFORM_SPECIFIC \
     timer_t         kn_timerid; \
+    atomic_uint     kn_user_ctr;     /* EVFILT_USER trigger counter; \
+                                      * 0->1 transitions port_send.  \
+                                      * fetch_add by producer, \
+                                      * exchange-to-zero by copyout. */ \
     union { \
         POSIX_KNOTE_PROC_PLATFORM_SPECIFIC; \
         SOLARIS_KNOTE_VNODE_PLATFORM_SPECIFIC; \
