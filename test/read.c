@@ -159,12 +159,13 @@ test_kevent_socket_clear(struct test_context *ctx)
      */
     kevent_socket_fill(ctx, 2);
 
-/* Solaris does not offer a way to get the amount of data pending */
-#if defined(__sun__)
-    kev.data = 1;
-#else
+    /*
+     * Modern Solaris/illumos reports the actual pending byte
+     * count via ioctl(FIONREAD) on sockets, same as Linux/BSD,
+     * so we expect 2 everywhere.  An older comment claimed
+     * Solaris couldn't report this; that's no longer true.
+     */
     kev.data = 2;
-#endif
 
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1); /* data is pending, so we should get an event */
     kevent_cmp(&kev, ret);
