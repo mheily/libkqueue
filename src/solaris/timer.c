@@ -77,16 +77,22 @@ evfilt_timer_destroy(struct filter *filt UNUSED)
 
 int
 evfilt_timer_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
-    struct knote *src, void *ptr UNUSED)
+    struct knote *src, void *ptr)
 {
-    /* port_event_t *pe = (port_event_t *) ptr; */
+    port_event_t *pe = (port_event_t *) ptr;
 
     memcpy(dst, &src->kev, sizeof(*dst));
     //TODO:
     //if (ev->events & EPOLLERR)
     //    dst->fflags = 1; /* FIXME: Return the actual timer error */
 
-    dst->data = timer_getoverrun(src->kn_timerid) + 1;
+    /*
+     * Solaris collapses repeated SIGEV_PORT timer firings into a
+     * single port_event_t whose portev_events field carries the
+     * total number of expirations since the last delivery (a
+     * single tick reports 1, two ticks 2, etc.).
+     */
+    dst->data = (int) pe->portev_events;
 
 #if FIXME
     timerid = src->kn_timerid;
@@ -138,13 +144,25 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
 }
 
 int
-evfilt_timer_knote_modify(struct filter *filt, struct knote *kn,
+evfilt_timer_knote_modify(struct filter *filt UNUSED, struct knote *kn,
         const struct kevent *kev)
 {
-    (void)filt;
-    (void)kn;
-    (void)kev;
-    return (-1); /* STUB */
+    struct itimerspec ts;
+
+    /*
+     * Reprogram the existing timer in place via timer_settime
+     * rather than deleting + recreating - this preserves any
+     * already-overrun count that hasn't been delivered yet.
+     * Read the new period/oneshot flag from the incoming kevent;
+     * common code merges into kn->kev only AFTER kn_modify returns,
+     * so kn->kev still reflects the old values here.
+     */
+    convert_msec_to_itimerspec(&ts, kev->data, kev->flags & EV_ONESHOT);
+    if (timer_settime(kn->kn_timerid, 0, &ts, NULL) < 0) {
+        dbg_perror("timer_settime(2)");
+        return (-1);
+    }
+    return (0);
 }
 
 int
