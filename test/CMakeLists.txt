@@ -44,6 +44,22 @@ target_include_directories(libkqueue-test
                            PRIVATE
                              "${CMAKE_SOURCE_DIR}"
                              "${CMAKE_SOURCE_DIR}/include")
+if("${CMAKE_SYSTEM_NAME}" MATCHES "(Solaris|SunOS)")
+  # Solaris/illumos ships sigwait() with both the historical 1-arg
+  # signature (default) and the 2-arg POSIX one (gated behind
+  # _POSIX_PTHREAD_SEMANTICS or __EXTENSIONS__).  Same applies to
+  # several other thread/signal calls.  Enable the POSIX namespace
+  # so the tests get the standard signatures.
+  target_compile_definitions(libkqueue-test
+                             PRIVATE
+                               __EXTENSIONS__
+                               _POSIX_PTHREAD_SEMANTICS)
+  # BSD socket symbols (socket, bind, recv, send, accept, listen,
+  # connect, shutdown, getsockname, setsockopt, socketpair) live in
+  # libsocket and libnsl on Solaris/illumos, not libc.
+  target_link_libraries(libkqueue-test PRIVATE socket nsl)
+endif()
+
 if(WIN32)
   target_compile_definitions(libkqueue-test
                              PRIVATE

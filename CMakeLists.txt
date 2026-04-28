@@ -199,14 +199,16 @@ if(CMAKE_SYSTEM_NAME MATCHES Windows)
        )
 elseif(CMAKE_SYSTEM_NAME MATCHES "(Solaris|SunOS)")
   list(APPEND LIBKQUEUE_SOURCES
-       src/posix/eventfd.c
-       src/posix/eventfd.h
+       src/posix/proc.c
+       src/posix/signal.c
+       src/solaris/eventfd.c
+       src/solaris/eventfd.h
        src/solaris/platform.c
        src/solaris/platform.h
-       src/solaris/signal.c
        src/solaris/socket.c
        src/solaris/timer.c
        src/solaris/user.c
+       src/solaris/vnode.c
        )
 elseif(CMAKE_SYSTEM_NAME STREQUAL Linux)
   check_include_files(linux/limits.h HAVE_LINUX_LIMITS_H)
@@ -288,6 +290,13 @@ if(WIN32)
 else()
   include(StdAtomicCheck)
   target_compile_definitions(objlib PRIVATE _XOPEN_SOURCE=600)
+  if(CMAKE_SYSTEM_NAME MATCHES "(Solaris|SunOS)")
+    # Solaris/illumos hides various pthread/signal POSIX prototypes
+    # (sigwait 2-arg, etc.) and the rlimit/event-port headers behind
+    # __EXTENSIONS__ + _POSIX_PTHREAD_SEMANTICS.  Without these,
+    # _XOPEN_SOURCE alone is not enough to build the platform code.
+    target_compile_definitions(objlib PRIVATE __EXTENSIONS__ _POSIX_PTHREAD_SEMANTICS)
+  endif()
 endif()
 
 target_include_directories(objlib PRIVATE include)

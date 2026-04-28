@@ -1,0 +1,72 @@
+name: CI tests Solaris (OmniOS)
+
+on:
+  push:
+    branches:
+      - master
+      - solaris-ci
+    paths:
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'config.h.in'
+      - 'include/**'
+      - 'src/common/**'
+      - 'src/posix/**'
+      - 'src/solaris/**'
+      - 'test/**'
+      - '.github/workflows/ci-solaris.yml'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'config.h.in'
+      - 'include/**'
+      - 'src/common/**'
+      - 'src/posix/**'
+      - 'src/solaris/**'
+      - 'test/**'
+      - '.github/workflows/ci-solaris.yml'
+
+jobs:
+  omnios-tests:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    name: "OmniOS tests"
+    env:
+      KQUEUE_DEBUG: yes
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        path: libkqueue
+
+    - name: libkqueue build + test suite
+      uses: vmactions/omnios-vm@v1
+      with:
+        usesh: true
+        envs: 'KQUEUE_DEBUG'
+        prepare: |
+          echo "=== prepare: installing build deps ==="
+          pkg install -q cmake gcc14 git developer/build/gnu-make || true
+          echo "=== prepare: done ==="
+        run: |
+          set -ex
+          echo "=== run: VM is up ==="
+          uname -a
+          echo "=== run: configure ==="
+          cd libkqueue
+          rm -rf build-omnios
+          mkdir build-omnios
+          cd build-omnios
+          cmake -DCMAKE_BUILD_TYPE=Debug -DENABLE_TESTING=YES ..
+          echo "=== run: build ==="
+          make -j 2
+          echo "=== run: tests ==="
+          # Skip ctest - it buffers test stdout and only shows it on
+          # failure-with-exit, so a hung test produces no visible
+          # output until the runner-level timeout kills the job.
+          # Run the test binary directly so KQUEUE_DEBUG output and
+          # per-test progress markers stream live.
+          ./test/libkqueue-test
+          echo "=== run: done ==="
