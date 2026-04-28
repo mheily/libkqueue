@@ -17,7 +17,9 @@
 #include <err.h>
 #include <signal.h>
 #include <inttypes.h>
-#include <sys/prctl.h>
+#ifdef __linux__
+#  include <sys/prctl.h>
+#endif
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -155,8 +157,7 @@ waiter_siginfo_to_status(siginfo_t *info)
         break;
 
     case CLD_DUMPED:    /* WIFSIGNALED/WCOREDUMP - Core flag set - Low 7 bits contains fatal signal */
-        status |= 0x80; /* core flag */
-        status = info->si_status & 0x7f;
+        status = (info->si_status & 0x7f) | 0x80;
         dbg_printf("pid=%u dumped, status %u", (unsigned int)info->si_pid, status);
         break;
 
@@ -616,7 +617,18 @@ evfilt_proc_knote_copyout(struct kevent *dst, int nevents, struct filter *filt,
      * notifications, so no deadlock can occur.
      */
     tracing_mutex_lock(&proc_pid_index_mtx);
-    assert(!LIST_EMPTY(&filt->kf_ready));
+    /*
+     * Tolerate spurious wakes: an eventfd backend that doesn't
+     * keep the wake-pending flag and the port queue / counter
+     * perfectly in sync may deliver two wakes for one waiter
+     * notification, the second of which finds kf_ready already
+     * drained.  Return 0 so the kqueue waiter just sees no events
+     * for this slot.
+     */
+    if (LIST_EMPTY(&filt->kf_ready)) {
+        tracing_mutex_unlock(&proc_pid_index_mtx);
+        return (0);
+    }
 
     /*
      * kn arg is always NULL here, so we just reuse it
