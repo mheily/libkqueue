@@ -30,10 +30,22 @@ struct filter;
 #include <sys/resource.h>
 #include <sys/time.h>
 
-#include "../posix/eventfd.h"
 #include "../posix/platform_ext.h"
 
-#define EVENTFD_PLATFORM_SPECIFIC	POSIX_EVENTFD_PLATFORM_SPECIFIC
+#include "eventfd.h"
+
+/*
+ * Solaris/illumos eventfd struct extras.
+ *
+ * On illumos there is no eventfd(2).  We model "wake the kqueue
+ * waiter" as a port_send(3C) into the kqueue's event port, which
+ * unblocks port_getn(3C).  efd_events carries the port-source
+ * discriminator (see X_PORT_SOURCE_*) so the platform copyout
+ * dispatcher can route the wakeup to the right filter.
+ */
+#define EVENTFD_PLATFORM_SPECIFIC \
+    int          efd_events; \
+    atomic_uint  efd_raised   /* 0/1; coalesces multiple raises into one wake */
 
 /*
  * C11 atomic operations
@@ -51,9 +63,13 @@ struct filter;
  * Event ports
  */
 #include <port.h>
-/* Used to set portev_events for PORT_SOURCE_USER */
-#define X_PORT_SOURCE_SIGNAL  101
-#define X_PORT_SOURCE_USER    102
+
+/*
+ * For PORT_SOURCE_USER wakeups (signal + user filter), portev_events
+ * carries the originating filter id (EVFILT_*).  solaris_kevent_copyout
+ * does filter_lookup(kq, evt->portev_events) to dispatch.  No parallel
+ * X_PORT_SOURCE_* constant set required.
+ */
 
 /* Convenience macros to access the event port descriptor for the kqueue */
 #define kqueue_epoll_fd(kq)     ((kq)->kq_id)
@@ -70,10 +86,30 @@ struct event_buf {
     TAILQ_ENTRY(event_buf) entries;
 };
 
+/*
+ * Per-(knote, EVFILT_VNODE) state for the PORT_SOURCE_FILE watcher.
+ * The fobj.fo_name pointer references kn_vnode_path, which is
+ * heap-allocated and owned by the knote for the lifetime of the
+ * association; we cache the FILE_* mask in kn_vnode_events for
+ * re-arm after the kernel auto-dissociates on event delivery.
+ */
+#define SOLARIS_KNOTE_VNODE_PLATFORM_SPECIFIC \
+    struct { \
+        struct file_obj kn_vnode_fobj; \
+        char           *kn_vnode_path; \
+        unsigned int    kn_vnode_events; \
+    }
+
 #define KNOTE_PLATFORM_SPECIFIC \
-    timer_t         kn_timerid
+    timer_t         kn_timerid; \
+    union { \
+        POSIX_KNOTE_PROC_PLATFORM_SPECIFIC; \
+        SOLARIS_KNOTE_VNODE_PLATFORM_SPECIFIC; \
+    }
 
 #define FILTER_PLATFORM_SPECIFIC \
-    int             kf_pfd
+    int             kf_pfd; \
+    void           *kf_signal_state; /* posix/signal.c per-filter heap state */ \
+    POSIX_FILTER_PROC_PLATFORM_SPECIFIC
 
 #endif  /* ! _KQUEUE_SOLARIS_PLATFORM_H */
