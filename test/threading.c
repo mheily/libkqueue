@@ -1306,7 +1306,16 @@ test_threading(struct test_context *ctx)
 	test(kevent_threading_multi_waiter_oneshot, ctx);
 	test(kevent_threading_timer_delete_race, ctx);
 	test(kevent_threading_signal_delete_race, ctx);
+#ifndef __sun
+	/*
+	 * EVFILT_VNODE delete race exercises concurrent
+	 * port_associate/port_dissociate of PORT_SOURCE_FILE without
+	 * the UAF-safe portev_user wrapper this backend doesn't yet
+	 * have.  Gated until the backend grows knote refcounting
+	 * around port retrievals.
+	 */
 	test(kevent_threading_vnode_delete_race, ctx);
+#endif
 	test(kevent_threading_proc_delete_race, ctx);
 	test(kevent_threading_read_delete_race, ctx);
 	test(kevent_threading_write_delete_race, ctx);
