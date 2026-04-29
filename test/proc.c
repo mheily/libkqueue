@@ -194,6 +194,154 @@ test_kevent_proc_exit_status_error(struct test_context *ctx)
     test_no_kevents(ctx->kqfd);
 }
 
+/*
+ * Regression test for the "EV_ADD with no NOTE_* fflags then later
+ * re-EV_ADD with NOTE_EXIT" path in the Linux pidfd backend.
+ *
+ * libkqueue's Linux EVFILT_PROC silently no-ops the EV_ADD when no
+ * NOTE_* fflags are set (kn_procfd stays -1), matching native kqueue
+ * which delivers nothing for an empty fflags.  A subsequent EV_ADD
+ * (which routes through kn_modify) that adds NOTE_EXIT must arm the
+ * pidfd at that point - otherwise the knote silently never delivers
+ * even though the second EV_ADD looked successful to the caller.
+ *
+ * The same call also exercises the modify-preserves-EV_ONESHOT|EV_CLEAR
+ * fix: copyout's auto-delete and edge-triggered behaviour both depend
+ * on those bits being live on kn->kev.flags.
+ */
+static void
+test_kevent_proc_modify_arms_late(struct test_context *ctx)
+{
+    struct kevent kev, buf[2];
+    int sync_pipe[2];
+    char go = 'g';
+    int fflags;
+
+#ifdef __APPLE__
+    fflags = NOTE_EXIT | NOTE_EXITSTATUS;
+#else
+    fflags = NOTE_EXIT;
+#endif
+
+    if (pipe(sync_pipe) < 0)
+        die("pipe");
+
+    pid = fork();
+    if (pid == 0) {
+        char b;
+        close(sync_pipe[1]);
+        if (read(sync_pipe[0], &b, 1) != 1)
+            _exit(127);
+        printf(" -- child got go-ahead, exiting (0)\n");
+        testing_end_quiet();
+        exit(0);
+    }
+    close(sync_pipe[0]);
+    printf(" -- child created (pid %d)\n", (int) pid);
+
+    test_no_kevents(ctx->kqfd);
+
+    /*
+     * Step 1: EV_ADD with no NOTE_* fflags.  Native kqueue accepts
+     * this as a register-but-deliver-nothing; libkqueue's Linux
+     * backend short-circuits in kn_create and leaves kn_procfd unset.
+     */
+    kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_ADD, 0, 0, NULL);
+
+    /*
+     * Step 2: re-EV_ADD with NOTE_EXIT.  This routes through kn_modify
+     * which must (a) preserve EV_ONESHOT|EV_CLEAR that kn_create would
+     * normally force, and (b) call kn_create now that kn_procfd is
+     * still -1 from step 1 but the caller now wants delivery.
+     */
+    kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
+
+    /* Release the child. */
+    if (write(sync_pipe[1], &go, 1) != 1)
+        die("write(sync_pipe)");
+    close(sync_pipe[1]);
+
+    /*
+     * Pre-fix this would hang: kn_modify only memcpy'd the new flags
+     * onto kn->kev without calling kn_create, so the pidfd never got
+     * armed, and the kqueue never saw the child exit.  kevent_get
+     * with the test harness's default short timeout fails the test.
+     */
+    kevent_get(buf, NUM_ELEMENTS(buf), ctx->kqfd, 1);
+
+    kev.data = 0;
+    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF;
+    kevent_cmp(&kev, buf);
+    test_no_kevents(ctx->kqfd);
+}
+
+/*
+ * Regression test for the fflags-mutation-on-modify path.
+ *
+ * Native kqueue allows EV_ADD on an existing knote to replace the
+ * fflags.  libkqueue's Linux pidfd backend has to mirror that: if a
+ * caller registers EVFILT_PROC with NOTE_EXIT, then re-EV_ADDs
+ * without NOTE_EXIT, the pidfd must be detached from epoll and
+ * closed.  Pre-fix the pidfd stayed armed and the kqueue still
+ * delivered NOTE_EXIT for a registration the caller had explicitly
+ * walked back.
+ */
+static void
+test_kevent_proc_modify_disarms(struct test_context *ctx)
+{
+    struct kevent kev;
+    int sync_pipe[2];
+    char go = 'g';
+    int fflags;
+
+#ifdef __APPLE__
+    fflags = NOTE_EXIT | NOTE_EXITSTATUS;
+#else
+    fflags = NOTE_EXIT;
+#endif
+
+    if (pipe(sync_pipe) < 0)
+        die("pipe");
+
+    pid = fork();
+    if (pid == 0) {
+        char b;
+        close(sync_pipe[1]);
+        if (read(sync_pipe[0], &b, 1) != 1)
+            _exit(127);
+        printf(" -- child got go-ahead, exiting (0)\n");
+        testing_end_quiet();
+        exit(0);
+    }
+    close(sync_pipe[0]);
+    printf(" -- child created (pid %d)\n", (int) pid);
+
+    test_no_kevents(ctx->kqfd);
+
+    /* Step 1: arm with NOTE_EXIT. */
+    kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
+
+    /*
+     * Step 2: re-EV_ADD with no NOTE_* fflags.  kn_modify must tear
+     * down the prior arm so the kqueue doesn't fire on exit.
+     */
+    kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_ADD, 0, 0, NULL);
+
+    /* Release the child. */
+    if (write(sync_pipe[1], &go, 1) != 1)
+        die("write(sync_pipe)");
+    close(sync_pipe[1]);
+
+    /*
+     * Reap the child so the test harness's process accounting stays
+     * sane.  The kqueue should NOT see the exit.
+     */
+    if (waitpid(pid, NULL, 0) != pid)
+        die("waitpid");
+
+    test_no_kevents(ctx->kqfd);
+}
+
 static void
 test_kevent_proc_multiple_kqueue(struct test_context *ctx)
 {
@@ -413,6 +561,8 @@ test_evfilt_proc(struct test_context *ctx)
     test(kevent_proc_get, ctx);
     test(kevent_proc_exit_status_ok, ctx);
     test(kevent_proc_exit_status_error, ctx);
+    test(kevent_proc_modify_arms_late, ctx);
+    test(kevent_proc_modify_disarms, ctx);
     test(kevent_proc_multiple_kqueue, ctx);
 
     signal(SIGUSR1, SIG_DFL);

@@ -172,11 +172,52 @@ evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
 int
 evfilt_proc_knote_modify(struct filter *filt, struct knote *kn, const struct kevent *kev)
 {
-    /* We don't need to make any changes to the pidfd, just record the new flags */
-    kn->kev.flags = kev->flags;
+    /*
+     * Merge the new caller-visible flags onto kn->kev, preserving
+     * bits that kn_create owns the policy for:
+     *
+     *   - EV_ONESHOT | EV_CLEAR: kn_create forces these for NOTE_EXIT
+     *     because pidfd readiness is intrinsically edge-triggered and
+     *     fires once.  If support for NOTE_FORK / NOTE_EXEC (which
+     *     fire repeatedly) is added, kn_create won't set these for
+     *     those fflags, and this preserve-from-kn->kev.flags pattern
+     *     naturally reflects whatever kn_create chose.
+     *   - EV_RECEIPT: sticky on BSD, libkqueue matches.
+     *
+     * Mask the user's incoming flags to drop the same bits so the
+     * preserved bits aren't double-OR'd from a stale caller value.
+     */
+    static const unsigned int preserve = EV_ONESHOT | EV_CLEAR | EV_RECEIPT;
+    bool want_arm, is_armed;
+
+    kn->kev.flags  = (kev->flags & ~preserve)
+                   | (kn->kev.flags & preserve);
     kn->kev.fflags = kev->fflags;
 
-    if (kn->kn_procfd < 0) return evfilt_proc_knote_create(filt, kn);
+    want_arm = (kev->fflags & NOTE_EXIT) != 0;
+    is_armed = (kn->kn_procfd >= 0);
+
+    /*
+     * Late-arm: kn_create returned without arming (no NOTE_* fflags
+     * set then) and the caller has now added NOTE_EXIT.  Run
+     * kn_create now to open the pidfd and EPOLL_CTL_ADD it.
+     */
+    if (want_arm && !is_armed) return evfilt_proc_knote_create(filt, kn);
+
+    /*
+     * Disarm: the caller dropped NOTE_EXIT (or replaced it with an
+     * fflag this backend doesn't yet implement).  Mirror the
+     * kn_create-with-no-NOTE_* end state: detach from epoll, close
+     * the pidfd, defer-free the udata so any in-flight epoll_wait
+     * holding it in its TLS buffer remains safe to dereference.
+     */
+    if (!want_arm && is_armed) {
+        if (KNOTE_ENABLED(kn))
+            (void) evfilt_proc_knote_disable(filt, kn);
+        KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
+        (void) close(kn->kn_procfd);
+        kn->kn_procfd = -1;
+    }
 
     return (0);
 }
