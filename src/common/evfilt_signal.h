@@ -432,8 +432,27 @@ evfilt_signal_knote_create(struct filter *filt, struct knote *kn)
     if (sig <= 0 || sig >= SIGNAL_MAX) {
         dbg_printf("unsupported signal number %u",
                    (unsigned int) kn->kev.ident);
+        errno = EINVAL;
         return (-1);
     }
+
+    /*
+     * SIGCHLD is owned by the POSIX EVFILT_PROC waiter thread on
+     * platforms that don't have pidfd (illumos, Emscripten,
+     * pre-5.3 Linux).  The proc waiter sigwaitinfo's SIGCHLD on
+     * its own thread; allowing EVFILT_SIGNAL to also watch it
+     * would race the two consumers (only one wins per fire) and
+     * leave EVFILT_PROC waiters blind to child exits.  Reject the
+     * registration cleanly with EINVAL.  Linux+pidfd uses pidfd
+     * for proc notifications, no SIGCHLD constraint there.
+     */
+#if !HAVE_SYS_PIDFD_OPEN
+    if (sig == SIGCHLD) {
+        dbg_printf("SIGCHLD is reserved by the POSIX EVFILT_PROC waiter");
+        errno = EINVAL;
+        return (-1);
+    }
+#endif
 
     kn->kev.flags |= EV_CLEAR;
     sfs = filt->kf_signal_state;

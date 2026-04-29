@@ -67,6 +67,14 @@
     pending queue where the dispatcher sees them normally.  Native BSD/macOS
     kqueue is in-kernel and observes both.
 
+ * `EVFILT_SIGNAL` on `SIGCHLD` is rejected with `EINVAL` on platforms that
+    use the POSIX `EVFILT_PROC` waiter (illumos, Emscripten, Linux without
+    `pidfd_open(2)`).  The waiter thread `sigwaitinfo`s `SIGCHLD` to detect
+    child exits; permitting `EVFILT_SIGNAL` to also watch it would have the
+    two consumers race for each fire, with the loser observing nothing.
+    Linux builds with `pidfd_open(2)` available use the pidfd-based
+    EVFILT_PROC backend instead, where this constraint doesn't apply.
+
  ## Linux
 
  * If a file descriptor outside of kqueue is closed, the internal kqueue
