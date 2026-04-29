@@ -308,10 +308,25 @@ test_kevent_signal_rt_late_register(struct test_context *ctx)
 {
     struct kevent kev;
     union sigval sv;
+    sigset_t mask;
     int kqfd2;
     int sig = SIGRTMIN + 4;
 
     memset(&sv, 0, sizeof(sv));
+
+    /*
+     * Block the signal process-wide.  libkqueue's signalfd backend
+     * already does this via catch_signal, but native BSD/macOS
+     * EVFILT_SIGNAL fires the kqueue knote alongside normal signal
+     * delivery - which for an RT signal with no handler installed
+     * runs the default action (terminate the process) before the
+     * test can read the kevent.  Blocking keeps the signal pending
+     * so EVFILT_SIGNAL can fire without the disposition running.
+     */
+    sigemptyset(&mask);
+    sigaddset(&mask, sig);
+    if (sigprocmask(SIG_BLOCK, &mask, NULL) != 0)
+        die("sigprocmask");
 
     if ((kqfd2 = kqueue()) < 0)
         die("kqueue");
