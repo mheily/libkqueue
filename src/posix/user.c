@@ -48,7 +48,6 @@ posix_evfilt_user_copyout(struct kevent *dst, UNUSED int nevents, struct filter 
     struct knote *src, void *ptr UNUSED)
 {
     memcpy(dst, &src->kev, sizeof(*dst));
-    struct knote *kn;
 
     dst->fflags &= ~NOTE_FFCTRLMASK;     //FIXME: Not sure if needed
     dst->fflags &= ~NOTE_TRIGGER;

@@ -24,7 +24,10 @@ on:
   workflow_dispatch:
 
 env:
-  ASAN_OPTIONS: symbolize=1 detect_leaks=1 detect_stack_use_after_return=1
+  # detect_leaks is Linux-only; setting it on macOS makes ASAN
+  # abort on startup.  Per-job env below appends the leak knob
+  # only when the runner can support it.
+  ASAN_OPTIONS: symbolize=1 detect_stack_use_after_return=1
   LSAN_OPTIONS: fast_unwind_on_malloc=0:malloc_context_size=50
 
 jobs:
