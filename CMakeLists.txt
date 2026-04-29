@@ -199,8 +199,9 @@ if(CMAKE_SYSTEM_NAME MATCHES Windows)
        )
 elseif(CMAKE_SYSTEM_NAME MATCHES "(Solaris|SunOS)")
   list(APPEND LIBKQUEUE_SOURCES
+       src/common/evfilt_signal.h
+       src/common/evfilt_signalfd.c
        src/posix/proc.c
-       src/posix/signal.c
        src/solaris/eventfd.c
        src/solaris/eventfd.h
        src/solaris/platform.c
@@ -223,10 +224,11 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL Linux)
     set (CMAKE_INSTALL_PREFIX "/usr" CACHE PATH "default install path" FORCE )
   endif()
   list(APPEND LIBKQUEUE_SOURCES
+       src/common/evfilt_signal.h
+       src/common/evfilt_signalfd.c
        src/linux/platform.c
        src/linux/platform.h
        src/linux/read.c
-       src/linux/signal.c
        src/linux/timer.c
        src/linux/user.c
        src/linux/vnode.c

@@ -356,7 +356,6 @@ struct fd_state {
     int epoll_events;                     /* Which events this file descriptor is registered for */ \
     union { \
         int kn_timerfd; \
-        int kn_signalfd; \
         int kn_eventfd; \
         struct { \
             nlink_t         nlink;  \
@@ -373,6 +372,7 @@ struct fd_state {
  *
  */
 #define FILTER_PLATFORM_SPECIFIC \
+    void           *kf_signal_state; /* signal.h per-filter heap state */ \
     FILTER_PROC_PLATFORM_SPECIFIC
 
 /** Additional members of struct kqueue

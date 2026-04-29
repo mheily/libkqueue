@@ -44,6 +44,29 @@
     ready lists of individual kqueues share the same mutex.  This may cause
     performance issues where large numbers of processes are monitored.
 
+ * `EVFILT_SIGNAL` - On the signalfd-backed implementation (Linux/illumos)
+    a signal must be blocked on every thread that could otherwise take
+    delivery, otherwise the kernel runs the disposition before the signal
+    lands in the pending queue that signalfd reads from.  POSIX has no
+    process-wide block primitive: `pthread_sigmask(2)` (and `sigprocmask(2)`,
+    whose behaviour is undefined in multithreaded programs) only sets the
+    mask on the calling thread.  When the first knote for a signal is
+    registered, libkqueue blocks that signal on the registering thread;
+    threads spawned afterwards inherit the mask, but pre-existing threads
+    are unaffected.  Applications that register `EVFILT_SIGNAL` after
+    spawning worker threads must `pthread_sigmask(SIG_BLOCK, ...)` the
+    monitored signals on those threads themselves.  Same constraint the
+    POSIX `EVFILT_PROC` waiter has for `SIGCHLD`.
+
+ * `EVFILT_SIGNAL` - On the signalfd-backed implementation, thread-targeted
+    signals (`pthread_kill`, `tgkill`) sent to a thread other than libkqueue's
+    internal signal dispatch thread will NOT be observed via kqueue.  The
+    kernel routes thread-targeted signals into the target thread's per-thread
+    pending queue, which only that thread's signalfd reader can drain.
+    Process-targeted signals (`kill(getpid(), ...)`) land in the per-process
+    pending queue where the dispatcher sees them normally.  Native BSD/macOS
+    kqueue is in-kernel and observes both.
+
  ## Linux
 
  * If a file descriptor outside of kqueue is closed, the internal kqueue

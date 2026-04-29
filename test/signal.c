@@ -14,6 +14,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <time.h>
+
 #include "common.h"
 
 void
@@ -81,11 +83,7 @@ test_kevent_signal_enable(struct test_context *ctx)
         die("kill");
 
     kev.flags = EV_ADD | EV_CLEAR;
-#if LIBKQUEUE
-    kev.data = 1; /* WORKAROUND */
-#else
-    kev.data = 2; // one extra time from test_kevent_signal_disable()
-#endif
+    kev.data = 2; /* one extra time from test_kevent_signal_disable() */
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
     kevent_cmp(&kev, ret);
 
@@ -192,6 +190,163 @@ test_kevent_signal_dispatch(struct test_context *ctx)
 }
 #endif  /* EV_DISPATCH */
 
+/*
+ * Distinct signums on a single kqueue.  Each kill should fire
+ * only the matching knote.  Catches dispatcher fan-out bugs that
+ * cross-wire signum routing via the wrong sig_link.
+ */
+void
+test_kevent_signal_multi_signum(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+
+    signal(SIGUSR2, SIG_IGN);
+
+    kevent_add(ctx->kqfd, &kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    kevent_add(ctx->kqfd, &kev, SIGUSR2, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+
+    /* kill SIGUSR1 -> only the SIGUSR1 knote should fire */
+    if (kill(getpid(), SIGUSR1) < 0)
+        die("kill");
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD | EV_CLEAR, 0, 1, NULL);
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    kevent_cmp(&kev, ret);
+    test_no_kevents(ctx->kqfd);
+
+    /* kill SIGUSR2 -> only the SIGUSR2 knote should fire */
+    if (kill(getpid(), SIGUSR2) < 0)
+        die("kill");
+    EV_SET(&kev, SIGUSR2, EVFILT_SIGNAL, EV_ADD | EV_CLEAR, 0, 1, NULL);
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    kevent_cmp(&kev, ret);
+    test_no_kevents(ctx->kqfd);
+
+    /* clean up both */
+    kev.flags = EV_DELETE;
+    kev.ident = SIGUSR1;
+    kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
+    kev.ident = SIGUSR2;
+    kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
+}
+
+/*
+ * Two kqueues each watching the same signum.  A single kill must
+ * be observed by both - on libkqueue's signalfd backend this
+ * exercises the global-dispatcher fan-out that replaced the old
+ * per-knote signalfd model (where two signalfds would race for
+ * the kernel's dequeue_signal and the loser saw nothing).
+ */
+void
+test_kevent_signal_multi_kqueue(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    int kqfd2;
+
+    if ((kqfd2 = kqueue()) < 0)
+        die("kqueue");
+
+    kevent_add(ctx->kqfd, &kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    kevent_add(kqfd2,     &kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+
+    if (kill(getpid(), SIGUSR1) < 0)
+        die("kill");
+
+    kev.flags |= EV_CLEAR;
+    kev.data = 1;
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    kevent_cmp(&kev, ret);
+    kevent_get(ret, NUM_ELEMENTS(ret), kqfd2, 1);
+    kevent_cmp(&kev, ret);
+
+    kev.flags = EV_DELETE;
+    kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
+    kevent_rv_cmp(0, kevent(kqfd2,     &kev, 1, NULL, 0, NULL));
+    close(kqfd2);
+}
+
+/*
+ * RT signals queue per-fire (vs the per-process pending-bit
+ * coalescing for non-RT), so kev.data should reflect actual
+ * delivery counts once the dispatcher has drained.
+ *
+ * Late-register variant: register kqueue A, queue one fire,
+ * register kqueue B, queue another fire.  A should observe
+ * both fires (count=2 across one or more events); B should
+ * observe only the second fire (count=1).  Confirms that B
+ * doesn't retroactively see fires that landed before its
+ * registration was visible to the dispatcher.
+ *
+ * The dispatcher races our kevent_get(), so a single fire may
+ * arrive split across multiple events - drain in a loop until
+ * the running total hits the expected count.
+ */
+#ifdef SIGRTMIN
+static void
+rt_drain(int kqfd, int sig, int expected)
+{
+    struct kevent ret[1];
+    struct timespec ts = { 2, 0 };
+    int total = 0;
+
+    while (total < expected) {
+        int rv = kevent_get_timeout(ret, 1, kqfd, &ts);
+        if (rv <= 0)
+            break;
+        if (ret[0].ident != (uintptr_t) sig || ret[0].filter != EVFILT_SIGNAL)
+            errx(1, "unexpected event: ident=%lu filter=%d",
+                 (unsigned long) ret[0].ident, ret[0].filter);
+        total += ret[0].data;
+    }
+
+    if (total != expected)
+        errx(1, "kqfd=%d signal=%d expected %d fires, got %d",
+             kqfd, sig, expected, total);
+}
+
+void
+test_kevent_signal_rt_late_register(struct test_context *ctx)
+{
+    struct kevent kev;
+    union sigval sv;
+    int kqfd2;
+    int sig = SIGRTMIN + 4;
+
+    memset(&sv, 0, sizeof(sv));
+
+    if ((kqfd2 = kqueue()) < 0)
+        die("kqueue");
+
+    /* A registers, then fire 1 lands.  Drain A to confirm fire 1
+     * was observed - this also synchronizes us with the dispatcher,
+     * since kevent_get blocks until the dispatcher has fanned the
+     * fire onto A's pending list.  Without this drain, kn_create
+     * for B and sig_dispatch_handle for fire 1 could win the
+     * sigtbl_mtx race in either order, and B might see fire 1. */
+    kevent_add(ctx->kqfd, &kev, sig, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (sigqueue(getpid(), sig, sv) < 0)
+        die("sigqueue");
+    rt_drain(ctx->kqfd, sig, 1);
+
+    /* Now register B with fire 1 already drained, then fire 2. */
+    kevent_add(kqfd2, &kev, sig, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (sigqueue(getpid(), sig, sv) < 0)
+        die("sigqueue");
+
+    /* A sees fire 2, B sees fire 2.  Cumulatively across the test
+     * A observed 2 fires and B observed 1, with B never having
+     * seen fire 1. */
+    rt_drain(ctx->kqfd, sig, 1);
+    rt_drain(kqfd2,     sig, 1);
+
+    kev.ident  = sig;
+    kev.filter = EVFILT_SIGNAL;
+    kev.flags  = EV_DELETE;
+    kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
+    kevent_rv_cmp(0, kevent(kqfd2,     &kev, 1, NULL, 0, NULL));
+    close(kqfd2);
+}
+#endif
+
 void
 test_evfilt_signal(struct test_context *ctx)
 {
@@ -207,5 +362,10 @@ test_evfilt_signal(struct test_context *ctx)
     test(kevent_signal_modify, ctx);
 #ifdef EV_DISPATCH
     test(kevent_signal_dispatch, ctx);
+#endif
+    test(kevent_signal_multi_kqueue, ctx);
+    test(kevent_signal_multi_signum, ctx);
+#ifdef SIGRTMIN
+    test(kevent_signal_rt_late_register, ctx);
 #endif
 }

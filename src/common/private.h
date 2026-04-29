@@ -230,6 +230,19 @@ struct knote {
                                                ///< ready for copyout.  This isn't used for all
                                                ///< filters.
 
+    LIST_ENTRY(knote)      kn_signal_entry;     //!< Entry in the per-(filter, signum) sl_enabled
+                                               ///< or sl_disabled list (posix/signal.c).
+    LIST_ENTRY(knote)      kn_signal_pending;   //!< Entry in the per-filter pending list
+                                               ///< (posix/signal.c).  Triggered+enabled knotes
+                                               ///< sit on this list and are emitted in copyout.
+    unsigned int           kn_signal_count;     //!< Fire count since last delivery.  Bumped per
+                                               ///< signalfd_siginfo / pipe-byte the dispatcher
+                                               ///< sees, reset to 0 in copyout.  RT signals
+                                               ///< queue per-fire so this is an accurate count;
+                                               ///< non-RT signals coalesce in the kernel
+                                               ///< pending bitmask, so multiple back-to-back
+                                               ///< kills before a drain surface as one bump.
+
 #if defined(KNOTE_PLATFORM_SPECIFIC)
     KNOTE_PLATFORM_SPECIFIC;
 #endif

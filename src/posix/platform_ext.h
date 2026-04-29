@@ -17,6 +17,17 @@
 #ifndef  _KQUEUE_POSIX_PLATFORM_EXT_H
 #define  _KQUEUE_POSIX_PLATFORM_EXT_H
 
+#include <signal.h>
+
+/* Highest signum (exclusive) for posix/signal.c sentries. */
+#ifndef POSIX_SIGNAL_MAX
+#  ifdef NSIG
+#    define POSIX_SIGNAL_MAX NSIG
+#  else
+#    define POSIX_SIGNAL_MAX 64
+#  endif
+#endif
+
 /** Additional members of 'struct eventfd'
  *
  * These should be included in the platform's EVENTFD_PLATFORM_SPECIFIC
@@ -55,7 +66,8 @@
 #define POSIX_FILTER_PLATFORM_SPECIFIC \
     int             kf_pfd; /* fd to poll(2) for readiness */ \
     int             kf_wfd; \
-    POSIX_FILTER_PROC_PLATFORM_SPECIFIC
+    POSIX_FILTER_PROC_PLATFORM_SPECIFIC; \
+    void           *kf_signal_state /* posix/signal.c per-filter heap state */
 
 /** Additional members of 'struct kqueue'
  *
