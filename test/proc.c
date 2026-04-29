@@ -195,6 +195,90 @@ test_kevent_proc_exit_status_error(struct test_context *ctx)
 }
 
 /*
+ * Regression test for EV_DISABLE suppressing pending deliveries.
+ *
+ * BSD semantics: EV_DISABLE means "don't deliver" - including
+ * events that have already been queued internally but haven't
+ * yet been copyout'd to the caller.  Pre-fix:
+ *
+ *   - POSIX backend: kn_disable removed the knote from the waiter
+ *     list but left it on kf_ready if the wait thread had already
+ *     linked it there.  copyout would still emit it.
+ *
+ *   - Linux pidfd backend: KEVENT_WAIT_DROP_LOCK lets another
+ *     thread call EV_DISABLE between epoll_wait fetching the
+ *     ready event into our TLS evbuf and us getting to copyout;
+ *     the disabled knote would be dispatched anyway.
+ *
+ * This test does the disable-after-trigger-before-drain dance and
+ * asserts no event is delivered.
+ */
+static void
+test_kevent_proc_disable_drains(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    int sync_pipe[2];
+    char go = 'g';
+    int fflags;
+    /* Short timeout - we expect zero events. */
+    struct timespec timeout = { 0, 100L * 1000L * 1000L }; /* 100ms */
+    int got;
+
+#ifdef __APPLE__
+    fflags = NOTE_EXIT | NOTE_EXITSTATUS;
+#else
+    fflags = NOTE_EXIT;
+#endif
+
+    if (pipe(sync_pipe) < 0)
+        die("pipe");
+
+    pid = fork();
+    if (pid == 0) {
+        char b;
+        close(sync_pipe[1]);
+        if (read(sync_pipe[0], &b, 1) != 1)
+            _exit(127);
+        printf(" -- child got go-ahead, exiting (0)\n");
+        testing_end_quiet();
+        exit(0);
+    }
+    close(sync_pipe[0]);
+    printf(" -- child created (pid %d)\n", (int) pid);
+
+    test_no_kevents(ctx->kqfd);
+
+    /* Arm. */
+    kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
+
+    /* Release child - it exits, queueing the event internally. */
+    if (write(sync_pipe[1], &go, 1) != 1)
+        die("write(sync_pipe)");
+    close(sync_pipe[1]);
+
+    /* Reap so the next test isn't tripped by the zombie. */
+    if (waitpid(pid, NULL, 0) != pid)
+        die("waitpid");
+
+    /*
+     * Now disable BEFORE draining.  On the POSIX backend the wait
+     * thread may already have linked the knote into kf_ready; on
+     * Linux a previous epoll_wait may already have the pidfd's
+     * ready event in its TLS buffer.  Either way, EV_DISABLE must
+     * suppress the pending delivery.
+     */
+    kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_DISABLE, fflags, 0, NULL);
+
+    /* Expect no event within the timeout. */
+    got = kevent_get_timeout(ret, NUM_ELEMENTS(ret), ctx->kqfd, &timeout);
+    if (got != 0)
+        die("expected 0 events after EV_DISABLE, got %d", got);
+
+    /* Clean up. */
+    kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_DELETE, fflags, 0, NULL);
+}
+
+/*
  * Regression test for the "EV_ADD with no NOTE_* fflags then later
  * re-EV_ADD with NOTE_EXIT" path in the Linux pidfd backend.
  *
@@ -630,6 +714,7 @@ test_evfilt_proc(struct test_context *ctx)
     test(kevent_proc_exit_status_error, ctx);
     test(kevent_proc_modify_arms_late, ctx);
     test(kevent_proc_modify_disarms, ctx);
+    test(kevent_proc_disable_drains, ctx);
     test(kevent_proc_already_exited, ctx);
     test(kevent_proc_multiple_kqueue, ctx);
 

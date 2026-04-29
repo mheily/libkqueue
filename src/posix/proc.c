@@ -679,20 +679,22 @@ evfilt_proc_knote_delete(UNUSED struct filter *filt, struct knote *kn)
 }
 
 int
-evfilt_proc_knote_disable(UNUSED struct filter *filt, struct knote *kn)
+evfilt_proc_knote_disable(struct filter *filt, struct knote *kn)
 {
     /*
-     * Remove the knote from the waiter list but
-     * don't free the waiter list itself.
-     *
-     * If two knotes are waiting on a PID and one
-     * is disabled and the other is deleted,
-     * then the `struct proc_pid` will be freed,
-     * which is why we need to run the same logic
-     * as knote_create when re-enabling.
+     * Remove the knote from the waiter list but don't free the
+     * waiter list itself - re-enable will need it.  Also drop
+     * any already-pending delivery from kf_ready: BSD semantics
+     * say EV_DISABLE suppresses pending events, not just future
+     * ones.  Lower the eventfd if kf_ready becomes empty so the
+     * next kevent_wait doesn't fire on a stale level-triggered
+     * raise.
      */
     tracing_mutex_lock(&proc_pid_index_mtx);
     if (LIST_INSERTED(kn, kn_proc_waiter)) LIST_REMOVE_ZERO(kn, kn_proc_waiter);
+    if (LIST_INSERTED(kn, kn_ready))       LIST_REMOVE_ZERO(kn, kn_ready);
+    if (LIST_EMPTY(&filt->kf_ready))
+        kqops.eventfd_lower(&filt->kf_proc_eventfd);
     tracing_mutex_unlock(&proc_pid_index_mtx);
 
     return (0);
@@ -750,13 +752,12 @@ evfilt_proc_knote_copyout(struct kevent *dst, int nevents, struct filter *filt,
         if (dst_p >= dst_end)
             break;
 
+        LIST_REMOVE_ZERO(kn, kn_ready); /* knote_copyout_flag_actions may free the knote */
         kevent_dump(&kn->kev);
         memcpy(dst_p, &kn->kev, sizeof(*dst));
         dst_p->fflags = NOTE_EXIT;
         dst_p->flags |= EV_EOF;
         dst_p->data = kn->kn_proc_status;
-
-        LIST_REMOVE_ZERO(kn, kn_ready); /* knote_copyout_flag_actions may free the knote */
 
         if (knote_copyout_flag_actions(filt, kn) < 0) {
             LIST_INSERT_HEAD(&filt->kf_ready, kn, kn_ready);
