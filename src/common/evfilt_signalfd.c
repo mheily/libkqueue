@@ -88,12 +88,26 @@ static int
 sig_platform_add(int sig)
 {
     sigset_t s;
+    siginfo_t info;
+    struct timespec zero = { 0, 0 };
 
     sigemptyset(&s);
     sigaddset(&s, sig);
     if (pthread_sigmask(SIG_BLOCK, &s, NULL) != 0) {
         dbg_printf("pthread_sigmask(BLOCK %d): %s", sig, strerror(errno));
         return (-1);
+    }
+
+    /*
+     * Drain any siginfos for this signum that accumulated in the
+     * per-process pending queue while we weren't watching.  Without
+     * this, an EV_DELETE -> kill() -> re-EV_ADD sequence would let
+     * the queued signal land in the new knote's count once the
+     * signum is added back to the signalfd mask below, falsely
+     * reporting an extra fire to the new caller.
+     */
+    while (sigtimedwait(&s, &info, &zero) > 0) {
+        dbg_printf("drained pre-existing siginfo for signal %d", sig);
     }
 
     sigaddset(&sig_active_set, sig);

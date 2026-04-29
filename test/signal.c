@@ -76,19 +76,36 @@ void
 test_kevent_signal_enable(struct test_context *ctx)
 {
     struct kevent kev, ret[1];
+    struct timespec ts = { 2, 0 };
+    int total = 0;
 
     kevent_add(ctx->kqfd, &kev, SIGUSR1, EVFILT_SIGNAL, EV_ENABLE, 0, 0, NULL);
 
     if (kill(getpid(), SIGUSR1) < 0)
         die("kill");
 
-    kev.flags = EV_ADD | EV_CLEAR;
-    kev.data = 2; /* one extra time from test_kevent_signal_disable() */
-    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
-    kevent_cmp(&kev, ret);
+    /*
+     * Expect 2 fires: one carried over from test_kevent_signal_disable,
+     * one from the kill() above.  Native BSD/macOS atomically reports
+     * both in a single event with data=2.  libkqueue's dispatcher
+     * thread races kevent_get(): the disable-window fire may already
+     * have raised the eventfd, causing kevent_get to return data=1
+     * before the second fire is dispatched.  Drain in a loop until
+     * the running total hits 2.
+     */
+    while (total < 2) {
+        int rv = kevent_get_timeout(ret, 1, ctx->kqfd, &ts);
+        if (rv <= 0)
+            break;
+        total += ret[0].data;
+    }
+    if (total != 2)
+        errx(1, "expected total=2 fires, got %d", total);
 
     /* Delete the watch */
-    kev.flags = EV_DELETE;
+    kev.ident  = SIGUSR1;
+    kev.filter = EVFILT_SIGNAL;
+    kev.flags  = EV_DELETE;
     kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
 }
 
