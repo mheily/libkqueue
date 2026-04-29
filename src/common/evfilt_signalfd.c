@@ -60,7 +60,7 @@ sig_platform_init(void)
 
     sigemptyset(&empty);
     sigemptyset(&sig_active_set);
-    sig_signalfd = signalfd(-1, &empty, 0);
+    sig_signalfd = signalfd(-1, &empty, SFD_NONBLOCK | SFD_CLOEXEC);
     if (sig_signalfd < 0) {
         dbg_perror("signalfd(2)");
         return (-1);
@@ -138,7 +138,15 @@ sig_platform_remove(int sig)
     return (0);
 }
 
-static int
+/*
+ * TSAN_IGNORE: TSAN tracks per-fd state and flags read(sig_signalfd)
+ * here as racing with the signalfd(sig_signalfd, &mask, 0) mask
+ * update in sig_platform_add.  The kernel serialises both syscalls
+ * atomically per fd; there's no user-visible state to protect.
+ * Suppressing the false positive is cheaper than introducing a
+ * lock around the read just to satisfy TSAN.
+ */
+TSAN_IGNORE static int
 sig_platform_wait_dispatch(void)
 {
     struct signalfd_siginfo si[64];

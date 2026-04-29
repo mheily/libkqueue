@@ -301,9 +301,9 @@ monitoring_thread_loop(UNUSED void *arg)
     sigemptyset(&monitoring_sig_set);
     sigaddset(&monitoring_sig_set, MONITORING_THREAD_SIGNAL);
 
-    monitoring_tid = syscall(SYS_gettid);
+    pid_t my_tid = syscall(SYS_gettid);
 
-    dbg_printf("tid=%u - monitoring thread started", monitoring_tid);
+    dbg_printf("tid=%u - monitoring thread started", my_tid);
 
     fd_map = calloc(nb_max_fd, sizeof(int));
     if (fd_map == NULL) {
@@ -318,9 +318,15 @@ monitoring_thread_loop(UNUSED void *arg)
     }
 
     /*
-     * Now that thread is initialized, let kqueue init resume
+     * Publish monitoring_tid and let kqueue init resume.  Writing
+     * the global under the same mutex the parent reads it under
+     * (start_thread's cond_wait predicate) gives TSAN the
+     * happens-before edge it needs - without it the early
+     * write-then-much-later-lock pattern leaves the parent's
+     * initial monitoring_tid read unsynchronised with this write.
      */
     pthread_mutex_lock(&monitoring_thread_mtx);    /* Must try to lock to ensure parent is waiting on signal */
+    monitoring_tid = my_tid;
     pthread_cond_signal(&monitoring_thread_cond);
     (void) pthread_mutex_unlock(&monitoring_thread_mtx);
 
