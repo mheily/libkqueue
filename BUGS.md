@@ -5,24 +5,9 @@
 
  ## Common
 
- * Some functions should crash instead of silently printing a debug
-   message.. for example, `note_release()`.
-
- * There are a number of stub functions that silently fail or succeed.
-   These need to be cleaned up; at a minimum, they should emit very loud
-   debugging output saying "FIXME -- UNIMPLEMENTED".
-   ```
-   $ grep STUB src/*/*.c
-   src/linux/read.c:    return (-1); /* STUB */
-   src/linux/timer.c:    return (0); /* STUB */
-   src/linux/vnode.c:    return (-1); /* FIXME - STUB */
-   src/linux/write.c:    return (-1); /* STUB */
-   src/posix/timer.c:    return (-1); /* STUB */
-   src/solaris/socket.c:    return (-1); /* STUB */
-   src/solaris/timer.c:    return (-1); /* STUB */
-   src/windows/read.c:    return (-1); /* STUB */
-   src/windows/timer.c:    return (0); /* STUB */
-   ```
+ * A handful of stub functions still silently fail or succeed instead of
+   emitting `FIXME -- UNIMPLEMENTED`.  Run `grep STUB src/*/*.c` for the
+   current list.
 
  ## POSIX
 
@@ -44,44 +29,44 @@
     ready lists of individual kqueues share the same mutex.  This may cause
     performance issues where large numbers of processes are monitored.
 
- * `EVFILT_SIGNAL` - On the signalfd-backed implementation (Linux/illumos)
-    a signal must be blocked on every thread that could otherwise take
-    delivery, otherwise the kernel runs the disposition before the signal
-    lands in the pending queue that signalfd reads from.  POSIX has no
-    process-wide block primitive: `pthread_sigmask(2)` (and `sigprocmask(2)`,
-    whose behaviour is undefined in multithreaded programs) only sets the
-    mask on the calling thread.  When the first knote for a signal is
-    registered, libkqueue blocks that signal on the registering thread;
-    threads spawned afterwards inherit the mask, but pre-existing threads
-    are unaffected.  Applications that register `EVFILT_SIGNAL` after
-    spawning worker threads must `pthread_sigmask(SIG_BLOCK, ...)` the
-    monitored signals on those threads themselves.  Same constraint the
-    POSIX `EVFILT_PROC` waiter has for `SIGCHLD`.
+ ## Linux
 
- * `EVFILT_SIGNAL` - On the signalfd-backed implementation, thread-targeted
-    signals (`pthread_kill`, `tgkill`) sent to a thread other than libkqueue's
-    internal signal dispatch thread will NOT be observed via kqueue.  The
-    kernel routes thread-targeted signals into the target thread's per-thread
-    pending queue, which only that thread's signalfd reader can drain.
-    Process-targeted signals (`kill(getpid(), ...)`) land in the per-process
-    pending queue where the dispatcher sees them normally.  Native BSD/macOS
-    kqueue is in-kernel and observes both.
+ * `EVFILT_SIGNAL` - The signalfd-backed implementation requires a signal to
+    be blocked on every thread that could otherwise take delivery, otherwise
+    the kernel runs the disposition before the signal lands in the pending
+    queue that signalfd reads from.  POSIX has no process-wide block
+    primitive: `pthread_sigmask(2)` (and `sigprocmask(2)`, whose behaviour
+    is undefined in multithreaded programs) only sets the mask on the
+    calling thread.  When the first knote for a signal is registered,
+    libkqueue blocks that signal on the registering thread; threads spawned
+    afterwards inherit the mask, but pre-existing threads are unaffected.
+    Applications that register `EVFILT_SIGNAL` after spawning worker
+    threads must `pthread_sigmask(SIG_BLOCK, ...)` the monitored signals
+    on those threads themselves.
 
- * `EVFILT_SIGNAL` on `SIGCHLD` is rejected with `EINVAL` on platforms that
-    use the POSIX `EVFILT_PROC` waiter (illumos, Emscripten, Linux without
-    `pidfd_open(2)`).  The waiter thread `sigwaitinfo`s `SIGCHLD` to detect
-    child exits; permitting `EVFILT_SIGNAL` to also watch it would have the
-    two consumers race for each fire, with the loser observing nothing.
-    Linux builds with `pidfd_open(2)` available use the pidfd-based
-    EVFILT_PROC backend instead, where this constraint doesn't apply.
+ * `EVFILT_SIGNAL` - Thread-targeted signals (`pthread_kill`, `tgkill`)
+    sent to a thread other than libkqueue's internal signal dispatch thread
+    will NOT be observed via kqueue.  The kernel routes thread-targeted
+    signals into the target thread's per-thread pending queue, which only
+    that thread's signalfd reader can drain.  Process-targeted signals
+    (`kill(getpid(), ...)`) land in the per-process pending queue where
+    the dispatcher sees them normally.  Native BSD/macOS kqueue is
+    in-kernel and observes both.
 
- * `EVFILT_SIGNAL` on `SIGRTMIN+1` is rejected with `EINVAL` on Linux.  The
+ * `EVFILT_SIGNAL` on `SIGCHLD` is rejected with `EINVAL` when libkqueue
+    is built without `pidfd_open(2)` (kernels < 5.3, or builds where the
+    syscall is unavailable).  In that configuration the POSIX `EVFILT_PROC`
+    waiter `sigwaitinfo`s `SIGCHLD` to detect child exits; permitting
+    `EVFILT_SIGNAL` to also watch it would race the two consumers for each
+    fire, with the loser observing nothing.  Builds with `pidfd_open(2)`
+    use the pidfd-based `EVFILT_PROC` backend, where this constraint
+    doesn't apply.
+
+ * `EVFILT_SIGNAL` on `SIGRTMIN+1` is rejected with `EINVAL`.  The
     monitoring thread `sigwaitinfo`s this signal to detect kqueue fd
     closures (set per-pipefd via `fcntl(F_SETSIG)`); a parallel
     `EVFILT_SIGNAL` reader would race it and leave kqueue cleanup blind
     to closures.
-
- ## Linux
 
  * If a file descriptor outside of kqueue is closed, the internal kqueue
    state is not cleaned up.  On Linux this is pretty much impossible to
@@ -103,28 +88,38 @@
 
  ## Solaris
 
- * Solaris unit test failure.
-   ```
-   LD_LIBRARY_PATH="..:/usr/sfw/lib/64" ./kqtest
-   1: test_peer_close_detection()
-   2: test_kqueue()
-   3: test_kevent_socket_add()
-   4: test_kevent_socket_del()
-   5: test_kevent_socket_add_without_ev_add()
-   6: test_kevent_socket_get()
+ * `EVFILT_SIGNAL` - The signalfd-backed implementation requires a signal to
+    be blocked on every thread that could otherwise take delivery, otherwise
+    the kernel runs the disposition before the signal lands in the pending
+    queue that signalfd reads from.  POSIX has no process-wide block
+    primitive: `pthread_sigmask(2)` (and `sigprocmask(2)`, whose behaviour
+    is undefined in multithreaded programs) only sets the mask on the
+    calling thread.  When the first knote for a signal is registered,
+    libkqueue blocks that signal on the registering thread; threads spawned
+    afterwards inherit the mask, but pre-existing threads are unaffected.
+    Applications that register `EVFILT_SIGNAL` after spawning worker
+    threads must `pthread_sigmask(SIG_BLOCK, ...)` the monitored signals
+    on those threads themselves.
 
-   [read.c:84]: Unexpected event:_test_no_kevents(): [ident=7, filter=-1, flags = 1 (EV_ADD), fflags = 0, data=0, udata=fffffd7fff08c6b4]: Error 0
-   ```
-  * If a file descriptor outside of kqueue is closed, the internal kqueue
+ * `EVFILT_SIGNAL` - Thread-targeted signals (`pthread_kill`, `tgkill`)
+    sent to a thread other than libkqueue's internal signal dispatch thread
+    will NOT be observed via kqueue.  The kernel routes thread-targeted
+    signals into the target thread's per-thread pending queue, which only
+    that thread's signalfd reader can drain.  Process-targeted signals
+    (`kill(getpid(), ...)`) land in the per-process pending queue where
+    the dispatcher sees them normally.  Native BSD/macOS kqueue is
+    in-kernel and observes both.
+
+ * `EVFILT_SIGNAL` on `SIGCHLD` is rejected with `EINVAL`.  illumos has no
+    `pidfd_open(2)` equivalent so the POSIX `EVFILT_PROC` waiter
+    `sigwaitinfo`s `SIGCHLD` to detect child exits; permitting
+    `EVFILT_SIGNAL` to also watch it would race the two consumers for each
+    fire, with the loser observing nothing.
+
+ * If a file descriptor outside of kqueue is closed, the internal kqueue
    state is not cleaned up.
    Applications should ensure that file descriptors are removed from
    the kqueue before they are closed.
-
- * We need to uninitialize library after `fork()` `using pthread_atfork()`.
-   BSD kqueue file descriptors are not inherited by the fork copy and
-   will be closed automatically in the fork.  With libkqueue, because
-   we don't unitialize the library, kqueue file descriptors will persist
-   in the fork.
 
  ## Windows
  
