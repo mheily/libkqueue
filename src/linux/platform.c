@@ -471,7 +471,7 @@ linux_libkqueue_fork(void)
 static void
 linux_libkqueue_free(void)
 {
-    pid_t tid;
+    UNUSED pid_t tid;
 
     /*
      * Use monitoring_thread_created (set after pthread_create) to
@@ -497,7 +497,7 @@ linux_libkqueue_free(void)
 
         dbg_printf("tid=%u - cancelling", tid);
         ret = pthread_cancel(monitoring_thread);
-        if (ret != 0 && ret != ESRCH)
+        if (ret != 0)
            dbg_printf("tid=%u - cancel failed: %s", tid, strerror(ret));
 
         ret = pthread_join(monitoring_thread, &retval);
