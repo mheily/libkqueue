@@ -77,6 +77,27 @@ sig_platform_destroy(void)
     }
 }
 
+/** Close the inherited signalfd in a forked child.
+ *
+ * fork() dups the fd into the child's table; close() in the child
+ * just drops the child's reference - the parent's signalfd object
+ * is unaffected (refcount > 1 across fork).  The dispatcher thread
+ * that was using this fd is gone in the child anyway, so closing
+ * is both correct and frees the descriptor for reuse.
+ *
+ * sig_active_set is plain memory the child has its own copy of;
+ * no action needed.  The child's next sig_platform_init will open
+ * a fresh signalfd from scratch.
+ */
+static void
+sig_platform_reset_after_fork(void)
+{
+    if (sig_signalfd >= 0) {
+        (void) close(sig_signalfd);
+        sig_signalfd = -1;
+    }
+}
+
 /*
  * sigtbl_mtx held by caller.  Both update sig_active_set and push
  * the new mask into the kernel via signalfd().  We also block the
@@ -209,13 +230,14 @@ sig_platform_wait_dispatch(void)
 }
 
 const struct filter evfilt_signal = {
-    .kf_id      = EVFILT_SIGNAL,
-    .kf_init    = evfilt_signal_init,
-    .kf_destroy = evfilt_signal_destroy,
-    .kf_copyout = evfilt_signal_copyout,
-    .kn_create  = evfilt_signal_knote_create,
-    .kn_modify  = evfilt_signal_knote_modify,
-    .kn_delete  = evfilt_signal_knote_delete,
-    .kn_enable  = evfilt_signal_knote_enable,
-    .kn_disable = evfilt_signal_knote_disable,
+    .kf_id            = EVFILT_SIGNAL,
+    .libkqueue_fork   = evfilt_signal_reset_after_fork,
+    .kf_init          = evfilt_signal_init,
+    .kf_destroy       = evfilt_signal_destroy,
+    .kf_copyout       = evfilt_signal_copyout,
+    .kn_create        = evfilt_signal_knote_create,
+    .kn_modify        = evfilt_signal_knote_modify,
+    .kn_delete        = evfilt_signal_knote_delete,
+    .kn_enable        = evfilt_signal_knote_enable,
+    .kn_disable       = evfilt_signal_knote_disable,
 };

@@ -9,6 +9,21 @@
    emitting `FIXME -- UNIMPLEMENTED`.  Run `grep STUB src/*/*.c` for the
    current list.
 
+ * `fork(2)` without a subsequent `exec(3)` leaks libkqueue's internal
+   heap allocations in the child.  POSIX restricts `pthread_atfork`
+   child handlers to async-signal-safe functions, and `free(3)` is not
+   AS-safe, so the child handler can only `close(2)` inherited file
+   descriptors (kqueue's `epollfd` on Linux, `pipefd[0..1]`,
+   `signalfd` for EVFILT_SIGNAL, etc.) but cannot release the
+   per-knote / per-filter heap state.  Per-knote `pidfd`s and per-
+   filter `eventfd`s are similarly orphaned because walking the
+   knote tree to close them would require malloc-protected lock
+   acquisitions.
+   The accepted contract is: a forked child must `exec()` (which
+   replaces the address space) or `_exit()` shortly afterward.  This
+   matches FreeBSD native kqueue behaviour.  Running libkqueue in a
+   long-lived forked child without `exec()` is unsupported.
+
  ## POSIX
 
  * `EVFILT_PROC` - The POSIX implmentation requires that `SIGCHLD`

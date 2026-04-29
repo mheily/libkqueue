@@ -50,6 +50,17 @@ sig_platform_destroy(void)
 {
 }
 
+/** No platform fds owned globally on this backend.
+ *
+ * The sigaction state is per-process and inherited by the child;
+ * sig_active_set is plain memory; sig_pipe[] is reset by the
+ * caller in evfilt_signal_reset_after_fork.  Nothing left to do.
+ */
+static void
+sig_platform_reset_after_fork(void)
+{
+}
+
 /*
  * AS-safe handler.  One byte to the self-pipe == one fire.  EAGAIN
  * on a full pipe drops the fire (POSIX coalesces signals anyway).
@@ -134,13 +145,14 @@ sig_platform_wait_dispatch(void)
  * the top of this file.
  */
 const struct filter evfilt_signal = {
-    .kf_id      = EVFILT_SIGNAL,
-    .kf_init    = evfilt_signal_init,
-    .kf_destroy = evfilt_signal_destroy,
-    .kf_copyout = evfilt_signal_copyout,
-    .kn_create  = evfilt_signal_knote_create,
-    .kn_modify  = evfilt_signal_knote_modify,
-    .kn_delete  = evfilt_signal_knote_delete,
-    .kn_enable  = evfilt_signal_knote_enable,
-    .kn_disable = evfilt_signal_knote_disable,
+    .kf_id            = EVFILT_SIGNAL,
+    .libkqueue_fork   = evfilt_signal_reset_after_fork,
+    .kf_init          = evfilt_signal_init,
+    .kf_destroy       = evfilt_signal_destroy,
+    .kf_copyout       = evfilt_signal_copyout,
+    .kn_create        = evfilt_signal_knote_create,
+    .kn_modify        = evfilt_signal_knote_modify,
+    .kn_delete        = evfilt_signal_knote_delete,
+    .kn_enable        = evfilt_signal_knote_enable,
+    .kn_disable       = evfilt_signal_knote_disable,
 };

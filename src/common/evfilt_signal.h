@@ -104,6 +104,14 @@ static struct sentry   sigtbl[SIGNAL_MAX] UNUSED;
 static pthread_mutex_t sig_init_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int             sig_filter_count = 0;
 static pthread_t       sig_dispatch_thread;
+static bool            sig_dispatch_thread_created;
+                                          /* Set true after pthread_create succeeds; reset
+                                           * after pthread_join in sig_dispatch_stop.
+                                           * Protected by sig_init_mtx.  Distinguishes
+                                           * "thread alive, needs join" from "never started"
+                                           * so destroy doesn't pthread_join garbage and
+                                           * fork-child can clear without leaving stale
+                                           * state. */
 static bool            sig_dispatch_started;       /* protected by sig_dispatch_thread_mtx */
 
 /*
@@ -173,6 +181,17 @@ static int  sig_platform_remove(int sig);
  *         -1 on unrecoverable error.
  */
 static int  sig_platform_wait_dispatch(void);
+
+/** Reset platform-layer state in the forked child.
+ *
+ * The child inherits any fds the parent opened (signalfd, etc.)
+ * but the parent's dispatch thread is gone, so those fds are
+ * orphaned in the child.  Implementations should close inherited
+ * fds and reset internal state so the child's next sig_platform_init
+ * starts from scratch.  Called from the libkqueue_fork hook
+ * BEFORE the child's first evfilt_signal_init runs.
+ */
+static void sig_platform_reset_after_fork(void);
 
 /** @} */
 
@@ -288,6 +307,13 @@ sig_dispatch_start(void)
         sig_pipe[0] = sig_pipe[1] = -1;
         return (-1);
     }
+    /*
+     * Mark thread as created so sig_dispatch_stop's pthread_join
+     * is gated on pthread_create having actually succeeded - and
+     * so the libkqueue_fork hook can clear it post-fork to
+     * prevent the child from joining the parent's stale pthread_t.
+     */
+    sig_dispatch_thread_created = true;
     while (!sig_dispatch_started)
         pthread_cond_wait(&sig_dispatch_thread_cond, &sig_dispatch_thread_mtx);
     pthread_mutex_unlock(&sig_dispatch_thread_mtx);
@@ -314,21 +340,30 @@ sig_dispatch_stop(void)
     }
 
     /*
-     * Snapshot sig_dispatch_thread under sig_dispatch_thread_mtx
-     * to satisfy a happens-before w.r.t. the matching write in
-     * sig_dispatch_start.  In practice sig_init_mtx serializes
-     * start/stop so there's no real concurrency, but Coverity
-     * (correctly) flags the unsynchronised read.
+     * Only join if pthread_create actually succeeded AND we're not
+     * in a forked child (where the dispatch thread doesn't exist
+     * post-fork).  The libkqueue_fork hook resets the flag.
      */
-    pthread_mutex_lock(&sig_dispatch_thread_mtx);
-    thread = sig_dispatch_thread;
-    pthread_mutex_unlock(&sig_dispatch_thread_mtx);
+    if (sig_dispatch_thread_created) {
+        /*
+         * Snapshot sig_dispatch_thread under sig_dispatch_thread_mtx
+         * to satisfy a happens-before w.r.t. the matching write in
+         * sig_dispatch_start.  In practice sig_init_mtx serializes
+         * start/stop so there's no real concurrency, but Coverity
+         * (correctly) flags the unsynchronised read.
+         */
+        pthread_mutex_lock(&sig_dispatch_thread_mtx);
+        thread = sig_dispatch_thread;
+        pthread_mutex_unlock(&sig_dispatch_thread_mtx);
 
-    ret = pthread_join(thread, &retval);
-    if (ret != 0)
-        dbg_printf("pthread_join: %s", strerror(ret));
-    else
-        dbg_printf("dispatch thread joined");
+        ret = pthread_join(thread, &retval);
+        if (ret != 0)
+            dbg_printf("pthread_join: %s", strerror(ret));
+        else
+            dbg_printf("dispatch thread joined");
+
+        sig_dispatch_thread_created = false;
+    }
 
     if (sig_pipe[0] >= 0) {
         close(sig_pipe[0]);
@@ -350,6 +385,30 @@ static int
 sl_has_no_knotes(struct sig_link *sl)
 {
     return LIST_EMPTY(&sl->kn_enabled) && LIST_EMPTY(&sl->kn_disabled);
+}
+
+/** libkqueue_fork hook: invoked in the child after fork().
+ *
+ * The dispatch thread isn't duplicated by fork, so the child
+ * inherits stale globals (sig_filter_count, sig_dispatch_thread,
+ * sig_dispatch_thread_created).  If a child later destroys
+ * filters, the count would decrement to 0 and sig_dispatch_stop
+ * would pthread_join the parent's stale pthread_t.  Reset
+ * everything to the never-started state so destroy's gate
+ * (sig_dispatch_thread_created) fails.
+ *
+ * Pipe and signalfd state is reset by sig_dispatch_stop's normal
+ * cleanup path; we only zero what would otherwise mislead it
+ * into joining a non-existent thread.
+ */
+static void
+evfilt_signal_reset_after_fork(void)
+{
+    sig_platform_reset_after_fork();
+    sig_dispatch_thread_created = false;
+    sig_dispatch_started        = false;
+    sig_filter_count            = 0;
+    sig_pipe[0] = sig_pipe[1]   = -1;
 }
 
 static int

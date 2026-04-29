@@ -427,11 +427,13 @@ evfilt_proc_libkqueue_fork(void)
      * The wait thread isn't duplicated in the forked copy of the
      * process, and we need to prevent a cancellation/join request
      * being sent to it when all the knotes are freed.  Clear the
-     * created flag so destroy's gate fails; proc_wait_tid is
-     * cleared too for debug-print accuracy.
+     * created flag so destroy's gate fails.  proc_count is reset
+     * so the child's first init re-creates the dispatch thread
+     * cleanly; proc_wait_tid is cleared for debug-print accuracy.
      */
     proc_wait_thread_created = false;
     proc_wait_tid = 0;
+    proc_count = 0;
 }
 
 static int
