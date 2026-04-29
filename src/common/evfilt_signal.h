@@ -54,7 +54,17 @@
  * uniformly anyway via the BUGS.md doc).
  */
 
-#define SIGNAL_MAX POSIX_SIGNAL_MAX
+/*
+ * Highest signum (exclusive) for the surrogate table.  Falls back
+ * to 64 on platforms that don't expose NSIG (e.g., minimal libc).
+ */
+#ifndef SIGNAL_MAX
+#  ifdef NSIG
+#    define SIGNAL_MAX NSIG
+#  else
+#    define SIGNAL_MAX 64
+#  endif
+#endif
 
 /*
  * Per-(filter, signum) surrogate.  Holds enabled/disabled knote
@@ -84,7 +94,12 @@ struct sentry {
 };
 
 static pthread_mutex_t sigtbl_mtx = PTHREAD_MUTEX_INITIALIZER;
-static struct sentry   sigtbl[SIGNAL_MAX];
+/*
+ * UNUSED suppresses a spurious -Wunused-variable from musl-gcc;
+ * sigtbl is referenced through sig_dispatch_handle which the
+ * compiler doesn't always see through the static-function chain.
+ */
+static struct sentry   sigtbl[SIGNAL_MAX] UNUSED;
 
 static pthread_mutex_t sig_init_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int             sig_filter_count = 0;
@@ -486,9 +501,8 @@ evfilt_signal_knote_delete(struct filter *filt, struct knote *kn)
 static int
 evfilt_signal_knote_enable(struct filter *filt, struct knote *kn)
 {
-    int sig = (int) kn->kev.ident;
     struct sig_filter_state *sfs = filt->kf_signal_state;
-    struct sig_link *sl = &sfs->sfs_links[sig];
+    struct sig_link *sl = &sfs->sfs_links[(int) kn->kev.ident];
     int wake = 0;
 
     pthread_mutex_lock(&sigtbl_mtx);
@@ -515,9 +529,8 @@ evfilt_signal_knote_enable(struct filter *filt, struct knote *kn)
 static int
 evfilt_signal_knote_disable(struct filter *filt, struct knote *kn)
 {
-    int sig = (int) kn->kev.ident;
     struct sig_filter_state *sfs = filt->kf_signal_state;
-    struct sig_link *sl = &sfs->sfs_links[sig];
+    struct sig_link *sl = &sfs->sfs_links[(int) kn->kev.ident];
 
     (void) filt;
 
