@@ -265,6 +265,27 @@ solaris_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state)
     solaris_kqueue_sweep_deferred(kq);
 }
 
+/** Wake every thread parked in port_getn on this kqueue.
+ *
+ * port_alert(3C) with PORT_ALERT_SET puts the port into alert mode:
+ * every current and subsequent port_getn returns immediately with a
+ * PORT_SOURCE_ALERT event in evbuf.  We don't bother clearing the
+ * alert (PORT_ALERT_UPDATE 0) because by the time this is called the
+ * kqueue is already unreachable - new kevent() callers fail at
+ * kqueue_lookup with ENOENT, so future port_getn calls on this fd
+ * shouldn't happen.  In-flight callers exit, the last one out runs
+ * kqueue_complete_deferred_free, and the port fd is closed by the
+ * user (or leaked to process exit, the same as today).
+ */
+static void
+solaris_kqueue_interrupt(struct kqueue *kq)
+{
+    if (port_alert(kq->kq_id, PORT_ALERT_SET, 0, NULL) < 0)
+        dbg_perror("port_alert(PORT_ALERT_SET)");
+    else
+        dbg_printf("kq=%p - port_alert raised", kq);
+}
+
 int
 solaris_kevent_wait(
         struct kqueue *kq,
@@ -357,6 +378,17 @@ solaris_kevent_copyout(struct kqueue *kq, int nready,
          */
         ud = NULL;
         kn = NULL;
+        /*
+         * PORT_SOURCE_ALERT events are raised by solaris_kqueue_interrupt
+         * to wake parked waiters when a deferred kqueue_free is pending.
+         * The portev_user field is whatever we passed to port_alert
+         * (NULL); skip the slot silently and let the caller exit so
+         * the deferred free can complete.
+         */
+        if (evt->portev_source == PORT_SOURCE_ALERT) {
+            dbg_printf("kq=%p - PORT_SOURCE_ALERT, skipping", kq);
+            continue;
+        }
         if (evt->portev_source != PORT_SOURCE_USER ||
             evt->portev_events == EVFILT_USER) {
             ud = (struct port_udata *) evt->portev_user;
@@ -554,6 +586,7 @@ const struct kqueue_vtable kqops =
 {
     .kqueue_init        = solaris_kqueue_init,
     .kqueue_free        = solaris_kqueue_free,
+    .kqueue_interrupt   = solaris_kqueue_interrupt,
     .kevent_wait        = solaris_kevent_wait,
     .kevent_copyout     = solaris_kevent_copyout,
     .eventfd_init       = solaris_eventfd_init,

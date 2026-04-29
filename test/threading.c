@@ -1383,7 +1383,7 @@ test_kevent_threading_write_single_delivery(struct test_context *ctx)
 void
 test_threading(struct test_context *ctx)
 {
-#if defined(NATIVE_KQUEUE) && !defined(__FreeBSD__)
+#if !defined(__FreeBSD__)
 	/*
 	 * Skipped on FreeBSD: native kqueue doesn't unblock a kevent()
 	 * parked on a kq when another thread close()s that kq.  The

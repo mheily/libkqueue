@@ -617,6 +617,24 @@ struct kqueue_vtable {
      */
     void   (*kqueue_free)(struct kqueue *kq);
 
+    /** Wake every thread currently parked in this kq's wait syscall
+     *
+     * Optional.  Called from kqueue_free's deferred-free path
+     * (KEVENT_WAIT_DROP_LOCK platforms only) when in-flight callers
+     * exist and we want them to exit kevent() promptly so the
+     * deferred destruction can complete.  Without an interrupt hook,
+     * a kevent() caller blocked on an empty queue with no timeout
+     * will never return and the kqueue leaks until process exit.
+     *
+     * The hook should return as soon as the wake mechanism is
+     * armed; the actual exit happens via the per-platform wait
+     * returning -1 (or a benign zero) with the rest of common
+     * kevent() running its exit path normally.
+     *
+     * @param[in] kq    The kqueue whose waiters should be woken.
+     */
+    void   (*kqueue_interrupt)(struct kqueue *kq);
+
     /** Wait on this platform's eventing system to produce events
      *
      * ...or return if there are no events within the timeout period.

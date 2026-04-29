@@ -652,6 +652,37 @@ linux_kqueue_init(struct kqueue *kq)
         goto error;
     }
 
+    /*
+     * Register pipefd[0] in the kq's epoll set.  When the user
+     * closes pipefd[1] (= kq_id), the kernel marks pipefd[0] as
+     * "no writers" and every epoll_wait that has it registered
+     * returns with EPOLLHUP.  That gives us a wake mechanism for
+     * parked waiters when kqueue_free defers behind in-flight
+     * callers - without it, a thread blocked on an empty queue
+     * with no timeout would stay parked forever and the kq
+     * would leak until process exit.
+     *
+     * Copyout sees EPOLL_UDATA_KQ_WAKE and skips the slot so the
+     * fake "ready" event isn't surfaced to the application.  The
+     * existing F_SETSIG path that triggers the monitoring thread
+     * is unaffected; both wake mechanisms coexist.
+     */
+    kq->kq_wake_udata = epoll_udata_alloc(EPOLL_UDATA_KQ_WAKE, kq);
+    if (kq->kq_wake_udata == NULL) {
+        dbg_perror("epoll_udata_alloc(EPOLL_UDATA_KQ_WAKE)");
+        goto error;
+    }
+    {
+        struct epoll_event ev = { .events = EPOLLIN | EPOLLHUP,
+                                  .data = { .ptr = kq->kq_wake_udata } };
+        if (epoll_ctl(kq->epollfd, EPOLL_CTL_ADD, kq->pipefd[0], &ev) < 0) {
+            dbg_perror("epoll_ctl(ADD pipefd[0])");
+            free(kq->kq_wake_udata);
+            kq->kq_wake_udata = NULL;
+            goto error;
+        }
+    }
+
     /* Start monitoring thread during first initialization */
     if (monitoring_tid == 0) {
         if (linux_kqueue_start_thread() < 0)
@@ -756,6 +787,18 @@ linux_kqueue_free(struct kqueue *kq)
             TAILQ_REMOVE(&kq->ud_deferred_free, u, ud_deferred_entry);
             free(u);
         }
+    }
+
+    /*
+     * The kq-wake sentinel udata never goes through deferred free
+     * (its lifetime is bound to the kqueue itself), so reclaim it
+     * here.  epollfd was already closed above, which removes the
+     * registration; if it wasn't closed (test-only path), the udata
+     * is still safe to free since no one is in epoll_wait.
+     */
+    if (kq->kq_wake_udata != NULL) {
+        free(kq->kq_wake_udata);
+        kq->kq_wake_udata = NULL;
     }
 }
 
@@ -1072,6 +1115,7 @@ udata_type(enum epoll_udata_type ud_type)
         [EPOLL_UDATA_KNOTE] = "EPOLL_UDATA_KNOTE",
         [EPOLL_UDATA_FD_STATE] = "EPOLL_UDATA_FD_STATE",
         [EPOLL_UDATA_EVENT_FD] = "EPOLL_UDATA_EVENT_FD",
+        [EPOLL_UDATA_KQ_WAKE] = "EPOLL_UDATA_KQ_WAKE",
     };
 
     if (ud_type < 0 || ud_type >= NUM_ELEMENTS(ud_name))
@@ -1259,6 +1303,22 @@ linux_kevent_copyout(struct kqueue *kq, int nready, struct kevent *el, int neven
             el_p += rv;
             break;
         }
+
+        case EPOLL_UDATA_KQ_WAKE:
+            /*
+             * Kq close-detect pipe[0] became readable / hit
+             * EPOLLHUP.  The user closed kqfd while we were
+             * parked in epoll_wait.  Surface as -1/EBADF so the
+             * caller's outer kevent() returns the same error
+             * native kqueue produces in this scenario, instead
+             * of looking like a spurious timeout.  The exit path
+             * in common/kevent.c will run kqueue_kevent_exit and
+             * (if we're the last in-flight) kqueue_complete_deferred_free.
+             */
+            dbg_printf("kq=%p - EPOLL_UDATA_KQ_WAKE, returning EBADF",
+                       epoll_udata->ud_kq);
+            errno = EBADF;
+            return (-1);
 
         /*
          *    Bad udata value. Maybe use after free?

@@ -140,7 +140,11 @@ extern long int syscall (long int __sysno, ...);
 enum epoll_udata_type {
     EPOLL_UDATA_KNOTE = 1,           //!< Udata is a pointer to a knote.
     EPOLL_UDATA_FD_STATE,            //!< Udata is a pointer to a fd state structure.
-    EPOLL_UDATA_EVENT_FD             //!< Udata is a pointer to an eventfd.
+    EPOLL_UDATA_EVENT_FD,            //!< Udata is a pointer to an eventfd.
+    EPOLL_UDATA_KQ_WAKE              //!< Sentinel for the kq's close-detect pipe[0] read end,
+                                     ///< registered in the epoll set so EPOLLHUP fires for every
+                                     ///< parked epoll_wait when the user closes the kqueue fd.
+                                     ///< Copyout sees this type and skips the slot silently.
 };
 
 struct epoll_udata;
@@ -294,6 +298,8 @@ struct epoll_udata {
         struct knote        *ud_kn;     //!< Pointer back to the containing knote.
         struct fd_state     *ud_fds;    //!< Pointer back to the containing fd_state.
         struct eventfd      *ud_efd;    //!< Pointer back to the containing eventfd.
+        struct kqueue       *ud_kq;     //!< For EPOLL_UDATA_KQ_WAKE.  Lifecycle bound to the
+                                        ///< kqueue itself; never goes through deferred-free.
     };
     enum epoll_udata_type   ud_type;    //!< Which union member is live.
     bool                    ud_stale;   //!< Set true under kq_mtx by EV_DELETE.
@@ -397,6 +403,10 @@ struct fd_state {
     RB_HEAD(fd_st, fd_state) kq_fd_st;    /* EVFILT_READ/EVFILT_WRITE fd state */ \
     struct epoll_event kq_plist[MAX_KEVENT]; \
     size_t kq_nplist; \
+    struct epoll_udata *kq_wake_udata;    /* Sentinel registered against pipefd[0] in the epoll */ \
+                                          /* set so user close(kqfd) wakes every parked */ \
+                                          /* epoll_wait via EPOLLHUP.  Lets kqueue_complete_deferred_free */ \
+                                          /* run promptly instead of leaking the kq until process exit. */ \
     uint64_t kq_next_epoch;               /* Monotonic counter; incremented on every kevent() entry. */ \
                                           /* Rebased toward 0 by linux_kqueue_epoch_rebase if it */ \
                                           /* approaches UINT64_MAX (centuries away in practice). */ \

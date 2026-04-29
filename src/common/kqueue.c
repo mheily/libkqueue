@@ -336,6 +336,17 @@ kqueue_free(struct kqueue *kq)
     if (!TAILQ_EMPTY(&kq->kq_inflight)) {
         dbg_printf("kq=%p - in-flight callers exist, deferring teardown", kq);
         kq->kq_freeing = true;
+        /*
+         * Wake every parked waiter so they exit kevent() and the
+         * deferred destruction can complete.  Without this, a
+         * thread blocked in port_getn / epoll_wait with no timeout
+         * stays parked forever and the kqueue leaks until process
+         * exit.  Hook is optional; backends that don't (yet) have
+         * a wake mechanism just rely on natural wakeups (events,
+         * timeouts, signals).
+         */
+        if (kqops.kqueue_interrupt)
+            kqops.kqueue_interrupt(kq);
         kqueue_unlock(kq);
         return;
     }
