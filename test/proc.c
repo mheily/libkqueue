@@ -276,6 +276,73 @@ test_kevent_proc_modify_arms_late(struct test_context *ctx)
 }
 
 /*
+ * Regression test for the "register an EVFILT_PROC knote for a child
+ * that has already exited" path.  Native kqueue and Linux pidfd both
+ * deliver NOTE_EXIT immediately; libkqueue's POSIX backend used to
+ * register silently and only deliver if an unrelated sibling later
+ * exited and triggered a SIGCHLD scan.  kn_create now probes via
+ * waitid(WNOWAIT) so the event fires synchronously.
+ */
+static void
+test_kevent_proc_already_exited(struct test_context *ctx)
+{
+    struct kevent kev, buf[2];
+    int sync_pipe[2];
+    pid_t early;
+    int fflags;
+    char b;
+
+#ifdef __APPLE__
+    fflags = NOTE_EXIT | NOTE_EXITSTATUS;
+#else
+    fflags = NOTE_EXIT;
+#endif
+
+    if (pipe(sync_pipe) < 0)
+        die("pipe");
+
+    early = fork();
+    if (early == 0) {
+        close(sync_pipe[0]);
+        /* close(sync_pipe[1]) happens implicitly in exit(0). */
+        testing_end_quiet();
+        _exit(0);
+    }
+    close(sync_pipe[1]);
+    printf(" -- early-exit child created (pid %d)\n", (int) early);
+
+    /*
+     * Block until child closes its write end (= exits and goes
+     * zombie).  read returning 0 here is the synchronisation point;
+     * after this the child is in zombie state and a probe will see
+     * it.
+     */
+    while (read(sync_pipe[0], &b, 1) > 0) { }
+    close(sync_pipe[0]);
+
+    test_no_kevents(ctx->kqfd);
+
+    /*
+     * Register AFTER the child has exited.  Pre-fix on the POSIX
+     * backend this would silently sit forever; post-fix kn_create's
+     * waitid probe queues the event for immediate delivery.
+     */
+    kevent_add(ctx->kqfd, &kev, early, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
+
+    kevent_get(buf, NUM_ELEMENTS(buf), ctx->kqfd, 1);
+
+    kev.data = 0;
+    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF;
+    kevent_cmp(&kev, buf);
+
+    /* Reap the zombie so we don't leave one around for later tests. */
+    if (waitpid(early, NULL, 0) != early)
+        die("waitpid");
+
+    test_no_kevents(ctx->kqfd);
+}
+
+/*
  * Regression test for the fflags-mutation-on-modify path.
  *
  * Native kqueue allows EV_ADD on an existing knote to replace the
@@ -563,6 +630,7 @@ test_evfilt_proc(struct test_context *ctx)
     test(kevent_proc_exit_status_error, ctx);
     test(kevent_proc_modify_arms_late, ctx);
     test(kevent_proc_modify_disarms, ctx);
+    test(kevent_proc_already_exited, ctx);
     test(kevent_proc_multiple_kqueue, ctx);
 
     signal(SIGUSR1, SIG_DFL);

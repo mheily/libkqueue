@@ -506,35 +506,128 @@ evfilt_proc_destroy(struct filter *filt)
     kqops.eventfd_close(&filt->kf_proc_eventfd);
 }
 
+/** Begin watching a pid for exit on behalf of a knote.
+ *
+ * Inserts the knote onto the pid's waiter list (creating the
+ * proc_pid entry if no other knote was already watching), then
+ * probes via waitid(WNOWAIT) for the un-reaped-zombie case so we
+ * can fire NOTE_EXIT immediately (otherwise the SIGCHLD-scan model
+ * would leave the knote stuck until an unrelated sibling exits and
+ * forces the wait thread to scan the RB tree).
+ *
+ * The ECHILD path is intentionally NOT fired as EV_ERROR: waitid
+ * returns ECHILD for both "was our child, already reaped" and
+ * "was never our child / pid has since been reused by an unrelated
+ * process".  We can't distinguish, so we can't safely surface a
+ * synthetic error - the original process is gone in case 1, and
+ * the user's intent is undefined in cases 2 and 3.  Stay
+ * registered; if the pid does later exit (and is genuinely our
+ * child) the wait thread will eventually deliver normally.
+ *
+ * Caller must NOT hold proc_pid_index_mtx; this function takes it
+ * internally so that the RB / waiter / probe + notify steps are all
+ * serialised against the wait thread.
+ *
+ * @return 0 on success, -1 on calloc failure.
+ */
 static int
-evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
+proc_pid_arm(struct filter *filt, struct knote *kn)
 {
     struct proc_pid *ppd;
+    siginfo_t        info;
+
+    (void) filt;
 
     tracing_mutex_lock(&proc_pid_index_mtx);
-    /*
-     * Fixme - We should probably check to see if the PID exists
-     * here and error out early instead of waiting for the waiter
-     * loop to tell us.
-     */
+
     ppd = RB_FIND(pid_index, &proc_pid_index, &(struct proc_pid){ .ppd_pid = kn->kev.ident });
     if (!ppd) {
         dbg_printf("pid=%u adding waiter list", (unsigned int)kn->kev.ident);
         ppd = calloc(1, sizeof(struct proc_pid));
         if (unlikely(!ppd)) {
             tracing_mutex_unlock(&proc_pid_index_mtx);
-            return -1;
+            return (-1);
         }
         ppd->ppd_pid = kn->kev.ident;
         RB_INSERT(pid_index, &proc_pid_index, ppd);
     }
     LIST_INSERT_HEAD(&ppd->ppd_proc_waiters, kn, kn_proc_waiter);
-    tracing_mutex_unlock(&proc_pid_index_mtx);
 
     /*
-     * These get added by default on macOS (and likely FreeBSD)
-     * which make sense considering a process exiting is an
-     * edge triggered event, not a level triggered one.
+     * waitid(WNOWAIT) inspects without reaping so an existing
+     * application-level wait()/waitpid() consumer downstream is
+     * unaffected on the live path.  Only fire if the kernel
+     * positively confirms an exit (rv == 0 and si_pid matches);
+     * waiter_notify frees ppd, so don't touch it afterwards.
+     */
+    memset(&info, 0, sizeof(info));
+    if (waitid(P_PID, (id_t) kn->kev.ident, &info,
+               WEXITED | WNOWAIT | WNOHANG) == 0
+        && info.si_pid == (pid_t) kn->kev.ident) {
+        int status = waiter_siginfo_to_status(&info);
+        if (status >= 0) {
+            dbg_printf("pid=%u already exited, firing immediately", (unsigned int) kn->kev.ident);
+            waiter_notify(ppd, status);
+        }
+        /*
+         * status < 0 means a non-exit si_code (CLD_STOPPED etc).
+         * Stay registered and let the wait thread handle the
+         * eventual exit normally.
+         */
+    }
+    /* else: alive, never-our-child, or already reaped - all
+     * indistinguishable from waitid here.  Stay registered. */
+
+    tracing_mutex_unlock(&proc_pid_index_mtx);
+    return (0);
+}
+
+/** Stop watching a pid for the given knote.
+ *
+ * Removes the knote from its waiter list and frees the proc_pid
+ * entry if no other knote was watching the same pid.  Idempotent
+ * (safe to call when the knote isn't on a list, e.g. because
+ * waiter_notify already moved it to kf_ready).
+ *
+ * Caller must NOT hold proc_pid_index_mtx.
+ */
+static void
+proc_pid_disarm(struct knote *kn)
+{
+    struct proc_pid *ppd;
+
+    tracing_mutex_lock(&proc_pid_index_mtx);
+    if (LIST_INSERTED(kn, kn_proc_waiter)) LIST_REMOVE_ZERO(kn, kn_proc_waiter);
+
+    ppd = RB_FIND(pid_index, &proc_pid_index, &(struct proc_pid){ .ppd_pid = kn->kev.ident });
+    if (ppd && LIST_EMPTY(&ppd->ppd_proc_waiters)) {
+        dbg_printf("pid=%u removing waiter list", (unsigned int)ppd->ppd_pid);
+        RB_REMOVE(pid_index, &proc_pid_index, ppd);
+        free(ppd);
+    }
+    tracing_mutex_unlock(&proc_pid_index_mtx);
+}
+
+static int
+evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
+{
+    /*
+     * Match native kqueue and the Linux pidfd backend: only register
+     * if the caller asked for at least one event we can deliver.
+     * Currently NOTE_EXIT is the only fflag this backend implements.
+     */
+    if (!(kn->kev.fflags & NOTE_EXIT)) {
+        dbg_printf("not monitoring pid=%u as no NOTE_* fflags set",
+                   (unsigned int) kn->kev.ident);
+        return (0);
+    }
+
+    if (proc_pid_arm(filt, kn) < 0) return (-1);
+
+    /*
+     * EV_ONESHOT|EV_CLEAR are forced because process exit is an edge
+     * event, not a level one.  See evfilt_proc_knote_modify for the
+     * matching preserve-on-modify policy.
      */
     kn->kev.flags |= EV_ONESHOT;
     kn->kev.flags |= EV_CLEAR;
@@ -543,38 +636,45 @@ evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
 }
 
 int
-evfilt_proc_knote_modify(UNUSED struct filter *filt, UNUSED struct knote *kn,
-        UNUSED const struct kevent *kev)
+evfilt_proc_knote_modify(struct filter *filt, struct knote *kn,
+        const struct kevent *kev)
 {
-    return (0); /* All work done in common code */
+    static const unsigned int preserve = EV_ONESHOT | EV_CLEAR | EV_RECEIPT;
+    bool was_armed, want_armed;
+
+    /*
+     * Detect arm-state from the structural fact (knote is on its
+     * pid's waiter list) rather than from a flag bit, so transient
+     * states like "waiter_notify already moved this knote off the
+     * waiter list onto kf_ready" don't masquerade as armed.
+     */
+    was_armed  = LIST_INSERTED(kn, kn_proc_waiter);
+    want_armed = (kev->fflags & NOTE_EXIT) != 0;
+
+    /*
+     * Merge the new caller-visible flags onto kn->kev, preserving
+     * EV_ONESHOT|EV_CLEAR (forced by proc_pid_arm because process
+     * exit is an edge event) and EV_RECEIPT (sticky on BSD).
+     * Mirror the linux/proc.c kn_modify policy exactly.
+     */
+    kn->kev.flags  = (kev->flags & ~preserve)
+                   | (kn->kev.flags & preserve);
+    kn->kev.fflags = kev->fflags;
+
+    if (want_armed && !was_armed) {
+        if (proc_pid_arm(filt, kn) < 0) return (-1);
+        kn->kev.flags |= EV_ONESHOT | EV_CLEAR;
+    } else if (!want_armed && was_armed) {
+        proc_pid_disarm(kn);
+    }
+
+    return (0);
 }
 
 int
 evfilt_proc_knote_delete(UNUSED struct filter *filt, struct knote *kn)
 {
-    struct proc_pid *ppd;
-
-    tracing_mutex_lock(&proc_pid_index_mtx);
-    if (LIST_INSERTED(kn, kn_proc_waiter)) LIST_REMOVE_ZERO(kn, kn_proc_waiter);
-
-    /*
-     * ppd may have been removed already if there
-     * were no more waiters.
-     */
-    ppd = RB_FIND(pid_index, &proc_pid_index, &(struct proc_pid){ .ppd_pid = kn->kev.ident });
-    if (ppd) {
-        if (LIST_EMPTY(&ppd->ppd_proc_waiters)) {
-            dbg_printf("pid=%u removing waiter list", (unsigned int)ppd->ppd_pid);
-            RB_REMOVE(pid_index, &proc_pid_index, ppd);
-            free(ppd);
-        } else {
-             dbg_printf("pid=%u leaving waiter list", (unsigned int)ppd->ppd_pid);
-        }
-    } else {
-        dbg_printf("pid=%u waiter list already removed", (unsigned int)kn->kev.ident);
-    }
-    tracing_mutex_unlock(&proc_pid_index_mtx);
-
+    proc_pid_disarm(kn);
     return (0);
 }
 
