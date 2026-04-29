@@ -20,9 +20,17 @@
 #include <sys/resource.h>
 #endif
 
-#if defined(__linux__)
-/* libkqueue-internal sync helper exposed for tests; see
- * src/linux/platform.c for the definition and rationale. */
+/*
+ * libkqueue-internal sync helper exposed for tests; see
+ * src/linux/platform.c for the definition and rationale.  Lives
+ * only in the Linux backend.  CMake passes
+ * LIBKQUEUE_BACKEND_<NAME>=1 into the test binary; default-Linux
+ * (no override) implies the linux backend, so we accept the
+ * symbol there too.
+ */
+#if defined(LIBKQUEUE_BACKEND_LINUX) || \
+    (defined(__linux__) && !defined(LIBKQUEUE_BACKEND_POSIX))
+# define HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE 1
 void libkqueue_drain_pending_close(void);
 #endif
 
@@ -264,7 +272,7 @@ test_kqueue_descriptor_is_pollable(void *unused)
 }
 #endif
 
-#if defined(__linux__)
+#ifdef HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE
 /*
  * close(kqfd) with active knotes must reclaim every kqueue-side
  * allocation, even without explicit EV_DELETEs.
@@ -285,6 +293,9 @@ test_kqueue_descriptor_is_pollable(void *unused)
  * eventfd path - then closes the kq without any EV_DELETEs and
  * drains.  LSAN at process exit catches any allocation that
  * escaped the close+drain path.
+ *
+ * Only relevant for backends that ship libkqueue_drain_pending_close
+ * (currently the Linux backend's monitoring thread).
  */
 static void
 test_close_cleans_up_active_knotes(void *unused)
@@ -330,7 +341,7 @@ test_kqueue(struct test_context *ctx)
     test(kqueue_alloc, ctx);
     test(kevent, ctx);
 
-#if defined(__linux__)
+#ifdef HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE
     test(cleanup, ctx);
     test(close_cleans_up_active_knotes, ctx);
 

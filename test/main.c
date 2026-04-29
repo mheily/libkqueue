@@ -124,7 +124,16 @@ test_harness(struct unit_test tests[MAX_TESTS], int iterations)
      * likely a leak..." debug message.  Drain synchronously so the
      * monitoring thread retires the kq before atexit runs.
      */
-#if defined(__linux__)
+#if defined(LIBKQUEUE_BACKEND_LINUX) || \
+    (defined(__linux__) && !defined(LIBKQUEUE_BACKEND_POSIX))
+    /*
+     * The drain hook lives in the linux backend's monitoring
+     * thread.  We need it on a default-Linux build (no backend
+     * override -> linux backend), but not when the host is Linux
+     * but we forced the POSIX backend.  CMake passes
+     * LIBKQUEUE_BACKEND_<NAME>=1 into the test binary so the gate
+     * tracks the actual library link.
+     */
     {
         extern void libkqueue_drain_pending_close(void);
         libkqueue_drain_pending_close();
