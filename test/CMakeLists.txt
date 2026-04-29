@@ -20,9 +20,17 @@ project(libkqueue-test LANGUAGES C)
 #
 # Per-filter test sources are only compiled when the matching
 # filter is enabled in the build (LIBKQUEUE_HAVE_FILT_* is set in
-# the parent CMakeLists).  Avoids dragging tests in for filters
-# the public header has redacted.
+# the parent CMakeLists).  When this file is invoked standalone
+# (cd test && cmake .), the gates are unset; default them to ON
+# so the standalone build (which targets the host's native kqueue)
+# still pulls in every filter test source.
 #
+foreach(_filt READ WRITE VNODE PROC TIMER SIGNAL USER LIBKQUEUE)
+  if(NOT DEFINED LIBKQUEUE_HAVE_FILT_${_filt})
+    set(LIBKQUEUE_HAVE_FILT_${_filt} 1)
+  endif()
+endforeach()
+
 set(LIBKQUEUE_TEST_SOURCES
     common.c
     kqueue.c
