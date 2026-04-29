@@ -93,8 +93,19 @@ evfilt_proc_knote_enable(struct filter *filt, struct knote *kn)
 int
 evfilt_proc_knote_disable(struct filter *filt, struct knote *kn)
 {
+    /*
+     * kn_create returns 0 without arming a pidfd when no NOTE_*
+     * fflags are set (kn_procfd stays -1).  A subsequent
+     * EV_DISABLE / EV_DELETE on such a knote has nothing kernel-
+     * side to remove; short-circuit instead of letting epoll_ctl
+     * fail with EBADF and having to decide whether that's benign.
+     */
+    if (kn->kn_procfd < 0)
+        return (0);
+
     if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_DEL, kn->kn_procfd, NULL) < 0) {
-        dbg_printf("epoll_ctl(2): %s", strerror(errno));
+        dbg_printf("epoll_ctl(EPOLL_CTL_DEL pidfd=%i): %s",
+                   kn->kn_procfd, strerror(errno));
         return (-1);
     }
     return (0);
@@ -116,11 +127,15 @@ evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
     pfd = syscall(SYS_pidfd_open, (pid_t)kn->kev.ident, 0);
     if (pfd < 0) {
         dbg_perror("pidfd_open(2)");
+    error_0:
         return (-1);
     }
     if (fcntl(pfd, F_SETFD, FD_CLOEXEC) < 0) {
-        dbg_perror("fcntl(2)");
-        return (-1);
+        dbg_perror("fcntl(F_SETFD)");
+    error_1:
+        (void) close(pfd);
+        kn->kn_procfd = -1;
+        goto error_0;
     }
     dbg_printf("created pidfd=%i monitoring pid=%u", pfd, (unsigned int)kn->kev.ident);
 
@@ -134,17 +149,24 @@ evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
     kn->kev.flags |= EV_ONESHOT;
     kn->kev.flags |= EV_CLEAR;
 
-    KN_UDATA_ALLOC(kn);   /* populate this knote's kn_udata field */
-
-    {
-        int rv = evfilt_proc_knote_enable(filt, kn);
-        if (rv < 0) {
-            /* enable's epoll_ctl(EPOLL_CTL_ADD) failed.  Kernel
-             * never saw the udata, free direct. */
-            KN_UDATA_FREE(kn);
-        }
-        return rv;
+    if (KN_UDATA_ALLOC(kn) == NULL) {
+        dbg_perror("epoll_udata_alloc");
+        goto error_1;
     }
+
+    if (evfilt_proc_knote_enable(filt, kn) < 0) {
+        /*
+         * enable's epoll_ctl(EPOLL_CTL_ADD) failed.  Kernel never
+         * saw the udata, free direct (no defer needed).  Common
+         * code calls knote_release on kn_create failure, not
+         * kn_delete, so this is the only chance to release the
+         * pidfd and udata.
+         */
+        KN_UDATA_FREE(kn);
+        goto error_1;
+    }
+
+    return (0);
 }
 
 int
