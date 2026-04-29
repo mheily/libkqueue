@@ -119,8 +119,13 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
 
     kn->kev.flags |= EV_CLEAR;
 
+    if (kn->kn_udata == NULL && KN_UDATA_ALLOC(kn) == NULL) {
+        dbg_puts("port_udata_alloc");
+        return (-1);
+    }
+
     pn.portnfy_port = filter_epoll_fd(filt);
-    pn.portnfy_user = (void *) kn;
+    pn.portnfy_user = (void *) kn->kn_udata;
 
     se.sigev_notify = SIGEV_PORT;
     se.sigev_value.sival_ptr = &pn;
@@ -166,13 +171,20 @@ evfilt_timer_knote_modify(struct filter *filt UNUSED, struct knote *kn,
 }
 
 int
-evfilt_timer_knote_delete(struct filter *filt UNUSED, struct knote *kn)
+evfilt_timer_knote_delete(struct filter *filt, struct knote *kn)
 {
+    int rv = 0;
+
     if (kn->kev.flags & EV_DISABLE)
         return (0);
 
     dbg_printf("th=%d - deleting timer", kn->kn_timerid);
-    return timer_delete(kn->kn_timerid);
+    rv = timer_delete(kn->kn_timerid);
+
+    if (kn->kn_udata != NULL)
+        KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
+
+    return (rv);
 }
 
 int

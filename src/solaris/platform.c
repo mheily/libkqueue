@@ -14,6 +14,9 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <assert.h>
+#include <inttypes.h>
+
 #include "../common/private.h"
 
 
@@ -101,6 +104,10 @@ solaris_kqueue_init(struct kqueue *kq)
     }
     dbg_printf("created event port; fd=%d", kq->kq_id);
 
+    kq->kq_next_epoch = 0;
+    TAILQ_INIT(&kq->kq_inflight);
+    TAILQ_INIT(&kq->ud_deferred_free);
+
     if (filter_register_all(kq) < 0) {
         close(kq->kq_id);
         return (-1);
@@ -112,6 +119,20 @@ solaris_kqueue_init(struct kqueue *kq)
 void
 solaris_kqueue_free(struct kqueue *kq)
 {
+    struct port_udata *u;
+
+    /*
+     * Drop any udatas still pending deferred reclamation.  By the
+     * time solaris_kqueue_free runs, no kevent() callers can be in
+     * flight on this kqueue (kq_mtx is held by the caller), so any
+     * surviving udata on ud_deferred_free is unconditionally safe
+     * to reclaim.
+     */
+    while ((u = TAILQ_FIRST(&kq->ud_deferred_free))) {
+        TAILQ_REMOVE(&kq->ud_deferred_free, u, ud_deferred_entry);
+        free(u);
+    }
+
     /*
      * Don't close kq->kq_id here.  port_create's fd is the
      * user-visible kqueue handle; the user owns close().  Closing
@@ -125,7 +146,123 @@ solaris_kqueue_free(struct kqueue *kq)
      * cleanup) without the user having called close() leaves the
      * fd open until process exit.  Process teardown reaps it.
      */
-    (void) kq;
+}
+
+/** Allocate a fresh port_udata bound to a knote.
+ *
+ * @param[in] kn    knote the udata is paired with.  Aliased via ud_kn.
+ * @return the new udata, or NULL on allocation failure.
+ */
+struct port_udata *
+port_udata_alloc(struct knote *kn)
+{
+    struct port_udata *u = calloc(1, sizeof(*u));
+    if (u == NULL) return NULL;
+    u->ud_kn = kn;
+    return u;
+}
+
+/** Mark a udata as stale and queue it for deferred reclamation.
+ *
+ * Called under kq_mtx by EV_DELETE (or any other path that's about
+ * to free the containing knote).  After port_udata_defer_free
+ * returns, the caller can safely free the knote - copyout will see
+ * `ud_stale == true` and skip dispatch.
+ */
+void
+port_udata_defer_free(struct kqueue *kq, struct port_udata *u)
+{
+    kqueue_mutex_assert(kq, MTX_LOCKED);
+
+    if (u == NULL) return;
+    assert(!u->ud_stale);
+
+    u->ud_stale = true;
+    u->ud_boundary_epoch = kq->kq_next_epoch;
+    TAILQ_INSERT_TAIL(&kq->ud_deferred_free, u, ud_deferred_entry);
+
+    dbg_printf("kq=%p udata=%p - deferred free, boundary_epoch=%" PRIu64,
+               kq, u, u->ud_boundary_epoch);
+}
+
+/** Sweep the deferred-free list, reclaiming eligible udatas.
+ *
+ * A deferred udata is eligible for free once every still-in-flight
+ * kevent() caller has an entry epoch strictly greater than the
+ * udata's boundary epoch.
+ */
+static void
+solaris_kqueue_sweep_deferred(struct kqueue *kq)
+{
+    struct port_udata          *u;
+    struct kqueue_kevent_state *oldest;
+
+    kqueue_mutex_assert(kq, MTX_LOCKED);
+
+    oldest = TAILQ_FIRST(&kq->kq_inflight);
+    if (!oldest) {
+        while ((u = TAILQ_FIRST(&kq->ud_deferred_free))) {
+            dbg_printf("kq=%p udata=%p - reclaiming, no callers in flight", kq, u);
+            TAILQ_REMOVE(&kq->ud_deferred_free, u, ud_deferred_entry);
+            free(u);
+        }
+        return;
+    }
+
+    while ((u = TAILQ_FIRST(&kq->ud_deferred_free)) && (u->ud_boundary_epoch < oldest->epoch)) {
+        dbg_printf("kq=%p udata=%p - reclaiming, boundary=%" PRIu64 " min_inflight=%" PRIu64,
+                   kq, u, u->ud_boundary_epoch, oldest->epoch);
+        TAILQ_REMOVE(&kq->ud_deferred_free, u, ud_deferred_entry);
+        free(u);
+    }
+}
+
+/** Rebase the epoch counter to head off uint64 wrap.  See linux/platform.c
+ * for the full rationale; in practice this never runs.
+ */
+static void
+solaris_kqueue_epoch_rebase(struct kqueue *kq)
+{
+    struct kqueue_kevent_state *s;
+    struct port_udata          *u;
+    uint64_t                    base;
+
+    kqueue_mutex_assert(kq, MTX_LOCKED);
+
+    s = TAILQ_FIRST(&kq->kq_inflight);
+    base = s ? (s->epoch - 1) : kq->kq_next_epoch;
+
+    dbg_printf("kq=%p - epoch rebase, subtracting %" PRIu64 " from all live epochs", kq, base);
+
+    TAILQ_FOREACH(s, &kq->kq_inflight, entry)
+        s->epoch -= base;
+    TAILQ_FOREACH(u, &kq->ud_deferred_free, ud_deferred_entry)
+        u->ud_boundary_epoch -= base;
+    kq->kq_next_epoch -= base;
+}
+
+void
+solaris_kevent_enter(struct kqueue *kq, struct kqueue_kevent_state *state)
+{
+    kqueue_mutex_assert(kq, MTX_LOCKED);
+
+    if (unlikely(kq->kq_next_epoch == UINT64_MAX)) solaris_kqueue_epoch_rebase(kq);
+
+    state->epoch = ++kq->kq_next_epoch;
+    TAILQ_INSERT_TAIL(&kq->kq_inflight, state, entry);
+
+    dbg_printf("kq=%p - kevent_enter epoch=%" PRIu64, kq, state->epoch);
+}
+
+void
+solaris_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state)
+{
+    kqueue_mutex_assert(kq, MTX_LOCKED);
+
+    TAILQ_REMOVE(&kq->kq_inflight, state, entry);
+    dbg_printf("kq=%p - kevent_exit epoch=%" PRIu64, kq, state->epoch);
+
+    solaris_kqueue_sweep_deferred(kq);
 }
 
 int
@@ -196,22 +333,46 @@ solaris_kevent_copyout(struct kqueue *kq, int nready,
     int i, rv, skip_event, written = 0;
 
     for (i = 0; i < nready; i++) {
+        struct port_udata *ud;
         int remaining = nevents - written;
 
         if (remaining <= 0)
             break;
 
         evt = &evbuf[i];
-        kn = evt->portev_user;
         skip_event = 0;
         dbg_printf("event=%s", port_event_dump(evt));
+
+        /*
+         * Resolve the knote via the heap-allocated port_udata that
+         * was passed to port_associate / port_send.  If the udata is
+         * marked stale, the EV_DELETE that retired it ran while we
+         * were blocked in port_getn; the knote is gone and any
+         * dispatch would dereference freed memory.  Skip the slot.
+         *
+         * EVFILT_SIGNAL is the exception - it port_sends the FILTER
+         * pointer (filters live as long as the kqueue), not a knote
+         * udata, so the PORT_SOURCE_USER case below sets `kn` for it
+         * after dispatching by portev_events filter id.
+         */
+        ud = NULL;
+        kn = NULL;
+        if (evt->portev_source != PORT_SOURCE_USER ||
+            evt->portev_events == EVFILT_USER) {
+            ud = (struct port_udata *) evt->portev_user;
+            if (ud == NULL || ud->ud_stale) {
+                dbg_printf("kq=%p ud=%p - stale udata, skipping", kq, ud);
+                continue;
+            }
+            kn = ud->ud_kn;
+        }
 
         switch (evt->portev_source) {
             case PORT_SOURCE_FD:
                 /*
-                 * portev_user is the knote that registered the
-                 * port_associate; consult its kev.filter directly
-                 * to dispatch to EVFILT_READ or EVFILT_WRITE
+                 * portev_user is the knote's udata (set by the
+                 * filter's port_associate); consult kev.filter
+                 * directly to dispatch to EVFILT_READ or EVFILT_WRITE
                  * (separate per-knote associations on the same fd
                  * fire as separate port events).
                  */

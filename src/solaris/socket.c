@@ -141,11 +141,22 @@ evfilt_socket_knote_create(struct filter *filt, struct knote *kn)
     if (kn->kn_flags == 0 && solaris_get_descriptor_type(kn) < 0)
         return (-1);
 
+    /*
+     * Allocate the udata on first registration; subsequent re-arms
+     * reuse it.  port_associate's user pointer must outlive the
+     * knote across the kevent_wait window so EV_DELETE can defer-
+     * free it instead of freeing inline.
+     */
+    if (kn->kn_udata == NULL && KN_UDATA_ALLOC(kn) == NULL) {
+        dbg_puts("port_udata_alloc");
+        return (-1);
+    }
+
     dbg_printf("port_associate kq fd=%d with actual fd %ld kn_flags=0x%x",
                filter_epoll_fd(filt), kn->kev.ident, kn->kn_flags);
 
     rv = port_associate(filter_epoll_fd(filt), PORT_SOURCE_FD, kn->kev.ident,
-            events, kn);
+            events, kn->kn_udata);
     if (rv < 0) {
             dbg_perror("port_associate(2)");
             return (-1);
@@ -200,6 +211,15 @@ evfilt_socket_knote_delete(struct filter *filt, struct knote *kn)
     if (port_dissociate(filter_epoll_fd(filt), PORT_SOURCE_FD, kn->kev.ident) < 0)
         dbg_perror("port_dissociate(2) on EV_DELETE (likely already auto-removed)");
 
+    /*
+     * After port_dissociate the kernel won't queue new events for
+     * the udata, but a concurrent kevent() may already hold a
+     * stale portev_user in its TLS buffer.  Defer-free so the
+     * udata stays alive until every in-flight caller has exited.
+     */
+    if (kn->kn_udata != NULL)
+        KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
+
     return (0);
 }
 
@@ -213,7 +233,14 @@ evfilt_socket_knote_enable(struct filter *filt, struct knote *kn)
 int
 evfilt_socket_knote_disable(struct filter *filt, struct knote *kn)
 {
-    return evfilt_socket_knote_delete(filt, kn);
+    /*
+     * Disable just dissociates; keep the udata so a later enable
+     * can re-arm without reallocating.  Defer-free happens at
+     * EV_DELETE.
+     */
+    if (port_dissociate(filter_epoll_fd(filt), PORT_SOURCE_FD, kn->kev.ident) < 0)
+        dbg_perror("port_dissociate(2) on EV_DISABLE (likely already auto-removed)");
+    return (0);
 }
 
 int

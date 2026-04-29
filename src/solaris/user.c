@@ -47,7 +47,7 @@ evfilt_user_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
 
 
 int
-evfilt_user_knote_create(struct filter *filt UNUSED, struct knote *kn UNUSED)
+evfilt_user_knote_create(struct filter *filt UNUSED, struct knote *kn)
 {
 #if TODO
     unsigned int ffctrl;
@@ -59,6 +59,10 @@ evfilt_user_knote_create(struct filter *filt UNUSED, struct knote *kn UNUSED)
     }
 
 #endif
+    if (kn->kn_udata == NULL && KN_UDATA_ALLOC(kn) == NULL) {
+        dbg_puts("port_udata_alloc");
+        return (-1);
+    }
     return (0);
 }
 
@@ -111,13 +115,15 @@ evfilt_user_knote_modify(struct filter *filt, struct knote *kn,
      * portev_user is the triggering knote.
      */
     if (atomic_fetch_add(&kn->kn_user_ctr, 1) == 0)
-        return (port_send(filter_epoll_fd(filt), filt->kf_id, kn));
+        return (port_send(filter_epoll_fd(filt), filt->kf_id, kn->kn_udata));
     return (0);
 }
 
 int
-evfilt_user_knote_delete(struct filter *filt UNUSED, struct knote *kn UNUSED)
+evfilt_user_knote_delete(struct filter *filt, struct knote *kn)
 {
+    if (kn->kn_udata != NULL)
+        KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
     return (0);
 }
 

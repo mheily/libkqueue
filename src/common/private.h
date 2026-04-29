@@ -84,12 +84,13 @@ struct kqueue_kevent_state;
 #endif
 
 /*
- * Platforms that don't use the Linux deferred-udata-free machinery
- * get an empty struct + no-op hooks so the common kevent() entry
- * path can stack-allocate a state object and call the hooks
- * unconditionally.  The compiler inlines both away.
+ * Platforms that don't use the deferred-udata-free machinery
+ * (Linux + Solaris opt in via their platform.h) get an empty struct
+ * + no-op hooks so the common kevent() entry path can stack-allocate
+ * a state object and call the hooks unconditionally.  The compiler
+ * inlines both away.
  */
-#if !defined(LIBKQUEUE_BACKEND_LINUX)
+#if !defined(LIBKQUEUE_BACKEND_LINUX) && !defined(LIBKQUEUE_BACKEND_SOLARIS)
 struct kqueue_kevent_state {
     char _unused;
 };
