@@ -14,6 +14,17 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+/*
+ * glibc hides the syscall(2) prototype unless _GNU_SOURCE or
+ * _DEFAULT_SOURCE is defined; the project compiles with
+ * _XOPEN_SOURCE=600 which suppresses it.  We need syscall(SYS_gettid)
+ * inside the __linux__ block below, so opt the file in to the GNU
+ * namespace before any header is included.
+ */
+#ifdef __linux__
+#  define _GNU_SOURCE 1
+#endif
+
 #include <err.h>
 #include <signal.h>
 #include <inttypes.h>

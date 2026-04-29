@@ -58,7 +58,16 @@ static void
 _signal_handler(int sig)
 {
     unsigned char b = (unsigned char) sig;
-    (void) write(sig_pipe[1], &b, 1);
+    ssize_t rv = write(sig_pipe[1], &b, 1);
+    /*
+     * Glibc decorates write(2) with warn_unused_result and the
+     * bare (void) cast is not enough to silence it under
+     * -Werror=unused-result; stash + cast.  Failure is benign:
+     * EAGAIN on a full pipe drops the fire (POSIX coalesces
+     * signals anyway), and we cannot longjmp out of an AS-safe
+     * handler regardless.
+     */
+    (void) rv;
 }
 
 static int

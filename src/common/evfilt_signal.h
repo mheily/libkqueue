@@ -455,12 +455,14 @@ evfilt_signal_knote_create(struct filter *filt, struct knote *kn)
 #endif
 
     /*
-     * On Linux the kqueue close-detection mechanism uses an RT
-     * signal (MONITORING_THREAD_SIGNAL = SIGRTMIN+1) sigwaitinfo'd
-     * by the monitoring thread.  EVFILT_SIGNAL on it would race
-     * that waiter; reject with EINVAL.
+     * The Linux backend's kqueue close-detection mechanism uses an
+     * RT signal (MONITORING_THREAD_SIGNAL = SIGRTMIN+1) sigwaitinfo'd
+     * by the monitoring thread.  EVFILT_SIGNAL on it would race that
+     * waiter; reject with EINVAL.  Gate on the backend rather than
+     * __linux__ since the Linux host may be running our select-based
+     * POSIX backend, which has no monitoring thread.
      */
-#ifdef __linux__
+#if defined(LIBKQUEUE_BACKEND_LINUX)
     if (sig == MONITORING_THREAD_SIGNAL) {
         dbg_printf("SIGRTMIN+1 is reserved by the monitoring thread");
         errno = EINVAL;
