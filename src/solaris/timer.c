@@ -116,12 +116,16 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
     struct sigevent se;
     struct itimerspec ts;
     timer_t timerid;
+    bool fresh_udata = false;
 
     kn->kev.flags |= EV_CLEAR;
 
-    if (kn->kn_udata == NULL && KN_UDATA_ALLOC(kn) == NULL) {
-        dbg_puts("port_udata_alloc");
-        return (-1);
+    if (kn->kn_udata == NULL) {
+        if (KN_UDATA_ALLOC(kn) == NULL) {
+            dbg_puts("port_udata_alloc");
+            return (-1);
+        }
+        fresh_udata = true;
     }
 
     pn.portnfy_port = filter_epoll_fd(filt);
@@ -132,6 +136,8 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
 
     if (timer_create (CLOCK_MONOTONIC, &se, &timerid) < 0) {
         dbg_perror("timer_create(2)");
+        if (fresh_udata)
+            KN_UDATA_FREE(kn);
         return (-1);
     }
 
@@ -139,6 +145,8 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
     if (timer_settime(timerid, 0, &ts, NULL) < 0) {
         dbg_perror("timer_settime(2)");
         (void) timer_delete(timerid);
+        if (fresh_udata)
+            KN_UDATA_FREE(kn);
         return (-1);
     }
 
@@ -175,11 +183,17 @@ evfilt_timer_knote_delete(struct filter *filt, struct knote *kn)
 {
     int rv = 0;
 
-    if (kn->kev.flags & EV_DISABLE)
-        return (0);
-
-    dbg_printf("th=%d - deleting timer", kn->kn_timerid);
-    rv = timer_delete(kn->kn_timerid);
+    /*
+     * Skip timer_delete on a disabled timer: knote_disable already
+     * deleted the kernel timerid.  We always defer-free the udata
+     * though - a stale portev_user from this knote could still be
+     * sitting in another thread's TLS evbuf if the timer fired
+     * between disable and delete.
+     */
+    if (!(kn->kev.flags & EV_DISABLE)) {
+        dbg_printf("th=%d - deleting timer", kn->kn_timerid);
+        rv = timer_delete(kn->kn_timerid);
+    }
 
     if (kn->kn_udata != NULL)
         KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
@@ -194,9 +208,20 @@ evfilt_timer_knote_enable(struct filter *filt, struct knote *kn)
 }
 
 int
-evfilt_timer_knote_disable(struct filter *filt, struct knote *kn)
+evfilt_timer_knote_disable(struct filter *filt UNUSED, struct knote *kn)
 {
-    return evfilt_timer_knote_delete(filt, kn);
+    /*
+     * Disable just deletes the kernel timerid; keep the udata so a
+     * later enable can reuse it without reallocating (and so any
+     * already-queued port event for the timer can still resolve to
+     * the live knote).  Defer-free happens at EV_DELETE.
+     *
+     * common/knote.c:knote_disable short-circuits if the knote is
+     * already disabled, so we always reach here in the
+     * enabled->disabled transition.
+     */
+    dbg_printf("th=%d - deleting timer", kn->kn_timerid);
+    return timer_delete(kn->kn_timerid);
 }
 
 const struct filter evfilt_timer = {

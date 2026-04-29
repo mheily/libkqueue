@@ -224,6 +224,103 @@ test_kevent_threading_close(struct test_context *ctx)
 }
 
 /*
+ * Multi-waiter close: pre-fix, kqueue_free was free to run while N
+ * worker threads were inside the platform wait syscall on the same
+ * kqueue.  The free tore down the kq + per-kq mutex; the workers
+ * then returned from the syscall, called kqueue_lock on the
+ * destroyed mutex, and either crashed or read random heap.
+ *
+ * Post-fix, kqueue_free observes a non-empty kq_inflight under
+ * kq_mtx, sets kq_freeing, and returns without destroying anything.
+ * The last worker out of kevent() calls kqueue_complete_deferred_free
+ * once kq_inflight has drained.  This test pounds on that boundary
+ * by parking N waiters and then issuing the close from the main
+ * thread.
+ */
+struct close_multi_args {
+    int    *kqfd;
+    sem_t  *ready;
+    int     n_waiters;
+};
+
+static void *
+_close_multi_waiter(void *arg)
+{
+    struct close_multi_args   *a = arg;
+    struct kevent              ret[1];
+
+    if (sem_post(a->ready) != 0) die("sem_post(ready)");
+
+    /*
+     * Block until close() interrupts us.  Either EBADF (waiter was
+     * already in the syscall when close fired) or ENOENT (waiter
+     * raced past kqueue_lookup after map_remove ran) is acceptable.
+     * What we MUST NOT see is a crash, a hang, or a silent zero-
+     * event return.
+     */
+    if (kevent(*a->kqfd, NULL, 0, ret, 1, NULL) != -1)
+        die("kevent did not fail");
+    if (errno != EBADF && errno != ENOENT)
+        die("kevent failed with the wrong errno");
+
+    return NULL;
+}
+
+static void
+test_kevent_threading_close_multi(struct test_context *ctx)
+{
+    enum { N_WAITERS = 8 };
+    struct kevent               kev;
+    pthread_t                   th[N_WAITERS];
+    int                         kqfd;
+    sem_t                      *ready;
+    struct close_multi_args     a;
+    int                         i;
+
+    (void) ctx;
+
+    kqfd = kqueue();
+
+    /* Anchor knote so the workers don't race themselves to ENOENT
+     * via filter_lookup before reaching the wait. */
+    kevent_add(kqfd, &kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+
+    ready = sem_open_anon("ready");
+    a.kqfd      = &kqfd;
+    a.ready     = ready;
+    a.n_waiters = N_WAITERS;
+
+    for (i = 0; i < N_WAITERS; i++) {
+        if (pthread_create(&th[i], NULL, _close_multi_waiter, &a) != 0)
+            die("pthread_create");
+    }
+
+    /* Wait for all workers to be one syscall away from the wait. */
+    for (i = 0; i < N_WAITERS; i++) {
+        if (sem_wait(ready) != 0) die("sem_wait(ready)");
+    }
+
+    /* Tiny pause so workers actually reach the syscall - the post-
+     * then-syscall gap is benign for correctness, but the test is
+     * more interesting if the close fires while everyone is parked
+     * in the kernel rather than racing into the syscall. */
+    {
+        struct timespec t = { 0, 1L * 1000L * 1000L };  /* 1ms */
+        nanosleep(&t, NULL);
+    }
+
+    if (close(kqfd) != 0)
+        die("close failed");
+
+    for (i = 0; i < N_WAITERS; i++) {
+        if (pthread_join(th[i], NULL) != 0)
+            die("pthread_join");
+    }
+
+    sem_close_anon(ready);
+}
+
+/*
  * Stress harness for the multi-waiter / deferred-free path.
  *
  * The Linux libkqueue implementation keeps an `epoll_udata` heap
@@ -1300,6 +1397,7 @@ test_threading(struct test_context *ctx)
 	 * what the test is checking.
 	 */
 	test(kevent_threading_close, ctx);
+	test(kevent_threading_close_multi, ctx);
 #endif
 #ifdef TEST_DROP_LOCK_WAKE
 	/*

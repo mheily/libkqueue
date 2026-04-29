@@ -610,12 +610,32 @@ out:
      * Pair with kevent_enter above.  Removes us from the in-flight
      * set and runs the deferred-free sweep so any udata whose
      * boundary epoch is now strictly less than the lowest still-
-     * in-flight epoch can be reclaimed.  No-op on non-Linux.
+     * in-flight epoch can be reclaimed.  No-op on platforms that
+     * don't track in-flight callers (everything but Linux/Solaris).
      */
     kqueue_kevent_exit(kq, &state);
 
+    /*
+     * Snapshot kq_freeing under the per-kq lock so we can safely
+     * release the lock before completing the deferred free.  If
+     * kqueue_free deferred destruction while we were in-flight,
+     * the last caller out (us, if no one else is left in-flight)
+     * has to finish the teardown.  After kqueue_unlock no other
+     * thread can touch this kqueue: kqueue_free already ran
+     * map_remove/LIST_REMOVE, so kqueue_lookup never resolves to
+     * us, and kq_freeing was set under kq_mtx so kqueue_free
+     * won't be called twice.
+     */
+    bool needs_free = false;
+#ifdef KEVENT_WAIT_DROP_LOCK
+    needs_free = (kq->kq_freeing && TAILQ_EMPTY(&kq->kq_inflight));
+#endif
+
     kqueue_unlock(kq);
     dbg_printf("--- END kevent %u ret %d ---", myid, rv);
+
+    if (needs_free)
+        kqueue_complete_deferred_free(kq);
 
     return (rv);
 }

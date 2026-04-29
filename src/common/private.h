@@ -569,10 +569,20 @@ struct kqueue {
                                                ///< per filter type.
     tracing_mutex_t        kq_mtx;
 
+    bool                   kq_freeing;         //!< A kqueue_free has run while in-flight kevent()
+                                               ///< callers existed.  Set under kq_mtx by
+                                               ///< kqueue_free; the last in-flight caller out of
+                                               ///< kevent() observes it and completes the
+                                               ///< deferred destruction.  Only meaningful on
+                                               ///< platforms with KEVENT_WAIT_DROP_LOCK; on the
+                                               ///< rest the field is dead weight (one bool).
+
 #if defined(KQUEUE_PLATFORM_SPECIFIC)
     KQUEUE_PLATFORM_SPECIFIC;
 #endif
 };
+
+void    kqueue_complete_deferred_free(struct kqueue *kq);
 
 /** Platform specific support functions
  *

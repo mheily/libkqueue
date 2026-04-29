@@ -289,6 +289,17 @@ kqueue_knote_mark_disabled_all(struct kqueue *kq)
 
 /** Free a kqueue, must be called with the kq_mtx held
  *
+ * On platforms that drop kq_lock across the kevent_wait syscall
+ * (KEVENT_WAIT_DROP_LOCK), the user (or atexit/monitoring-thread
+ * cleanup) may close the kqueue while another thread is blocked
+ * inside the wait.  We can detect that case here: the per-kq
+ * mutex is droppable, but kq_inflight (only non-empty under
+ * KEVENT_WAIT_DROP_LOCK) is the authoritative "still in use"
+ * indicator.  If non-empty we set kq_freeing and return without
+ * destroying the kqueue.  The last in-flight caller out of
+ * kevent() observes the flag and calls kqueue_complete_deferred_free
+ * to finish the teardown.  Map removal and list unlinking happen
+ * unconditionally so new callers see the kqueue as gone.
  */
 void
 kqueue_free(struct kqueue *kq)
@@ -319,6 +330,44 @@ kqueue_free(struct kqueue *kq)
      * operations on this kqueue.  Unlikely but
      * keeps TSAN Happy.
      */
+    kqueue_lock(kq);
+
+#ifdef KEVENT_WAIT_DROP_LOCK
+    if (!TAILQ_EMPTY(&kq->kq_inflight)) {
+        dbg_printf("kq=%p - in-flight callers exist, deferring teardown", kq);
+        kq->kq_freeing = true;
+        kqueue_unlock(kq);
+        return;
+    }
+#endif
+
+    filter_unregister_all(kq);
+    kqops.kqueue_free(kq);
+    kqueue_unlock(kq);
+
+    tracing_mutex_destroy(&kq->kq_mtx);
+
+#ifndef NDEBUG
+    memset(kq, 0x42, sizeof(*kq));
+#endif
+    free(kq);
+}
+
+/** Complete a kqueue free that was deferred while in-flight callers existed.
+ *
+ * Called by the last kevent() caller out of kqueue_kevent_exit when it
+ * observes kq_freeing == true.  At that point kq_inflight is empty and
+ * the kqueue is unreachable via kqueue_lookup (kqueue_free already ran
+ * map_remove + LIST_REMOVE), so this thread has exclusive ownership.
+ *
+ * Caller must NOT hold kq->kq_mtx (we re-acquire it briefly for the
+ * filter teardown's assertions, then destroy the mutex).
+ */
+void
+kqueue_complete_deferred_free(struct kqueue *kq)
+{
+    dbg_printf("kq=%p - completing deferred free", kq);
+
     kqueue_lock(kq);
     filter_unregister_all(kq);
     kqops.kqueue_free(kq);

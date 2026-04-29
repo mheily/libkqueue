@@ -108,6 +108,7 @@ vnode_arm(struct filter *filt, struct knote *kn)
     struct stat st;
     int fd = (int) kn->kev.ident;
     unsigned int events;
+    bool fresh_udata = false;
 
     if (kn->kn_vnode_path == NULL) {
         kn->kn_vnode_path = fd_to_path(fd);
@@ -131,14 +132,19 @@ vnode_arm(struct filter *filt, struct knote *kn)
     events = fflags_to_file_events(kn->kev.fflags);
     kn->kn_vnode_events = events;
 
-    if (kn->kn_udata == NULL && KN_UDATA_ALLOC(kn) == NULL) {
-        dbg_puts("port_udata_alloc");
-        return (-1);
+    if (kn->kn_udata == NULL) {
+        if (KN_UDATA_ALLOC(kn) == NULL) {
+            dbg_puts("port_udata_alloc");
+            return (-1);
+        }
+        fresh_udata = true;
     }
 
     if (port_associate(filter_epoll_fd(filt), PORT_SOURCE_FILE,
                        (uintptr_t) &kn->kn_vnode_fobj, events, kn->kn_udata) < 0) {
         dbg_perror("port_associate(PORT_SOURCE_FILE)");
+        if (fresh_udata)
+            KN_UDATA_FREE(kn);
         return (-1);
     }
     return (0);

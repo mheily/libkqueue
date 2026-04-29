@@ -120,6 +120,7 @@ int
 evfilt_socket_knote_create(struct filter *filt, struct knote *kn)
 {
     int rv, events;
+    bool fresh_udata = false;
 
     switch (kn->kev.filter) {
         case EVFILT_READ:
@@ -146,10 +147,19 @@ evfilt_socket_knote_create(struct filter *filt, struct knote *kn)
      * reuse it.  port_associate's user pointer must outlive the
      * knote across the kevent_wait window so EV_DELETE can defer-
      * free it instead of freeing inline.
+     *
+     * Track whether we just allocated so we can release on
+     * port_associate failure.  Common code calls knote_release
+     * (not kn_delete) on kn_create failure, so we need to free
+     * inline; the udata never reached the kernel so deferring is
+     * unnecessary.
      */
-    if (kn->kn_udata == NULL && KN_UDATA_ALLOC(kn) == NULL) {
-        dbg_puts("port_udata_alloc");
-        return (-1);
+    if (kn->kn_udata == NULL) {
+        if (KN_UDATA_ALLOC(kn) == NULL) {
+            dbg_puts("port_udata_alloc");
+            return (-1);
+        }
+        fresh_udata = true;
     }
 
     dbg_printf("port_associate kq fd=%d with actual fd %ld kn_flags=0x%x",
@@ -158,9 +168,11 @@ evfilt_socket_knote_create(struct filter *filt, struct knote *kn)
     rv = port_associate(filter_epoll_fd(filt), PORT_SOURCE_FD, kn->kev.ident,
             events, kn->kn_udata);
     if (rv < 0) {
-            dbg_perror("port_associate(2)");
-            return (-1);
-        }
+        dbg_perror("port_associate(2)");
+        if (fresh_udata)
+            KN_UDATA_FREE(kn);
+        return (-1);
+    }
 
     return (0);
 }
