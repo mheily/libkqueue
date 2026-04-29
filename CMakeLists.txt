@@ -229,14 +229,15 @@ if(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "posix")
     set(LIBKQUEUE_HAVE_FILT_TIMER 1)
   endif()
   #
-  #  proc filter relies on the SIGCHLD wait thread calling
-  #  sigwaitinfo(2) for siginfo_t.  macOS doesn't ship sigwaitinfo,
-  #  so the filter is unavailable there until an alternative
-  #  (signal handler + self-pipe) lands.
+  #  PROC: src/posix/proc.c (sigwaitinfo + waitpid wait thread)
+  #  hasn't been verified end-to-end against the new dispatcher
+  #  yet (test_kevent_proc_get crashes), and macOS doesn't ship
+  #  sigwaitinfo at all.  Disable it on the POSIX backend until
+  #  the impl is reworked / verified; keep the
+  #  HAVE_WAITPID/SIGACTION/SIGWAITINFO probes in case later
+  #  re-enable wants them.
   #
-  if(HAVE_WAITPID AND HAVE_SIGACTION AND HAVE_SIGWAITINFO)
-    set(LIBKQUEUE_HAVE_FILT_PROC 1)
-  endif()
+
   #
   #  VNODE: fstat-polling implementation is on the roadmap but not
   #  yet wired in for the POSIX backend.  Leaving it off causes the
