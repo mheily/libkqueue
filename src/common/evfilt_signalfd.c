@@ -138,15 +138,7 @@ sig_platform_remove(int sig)
     return (0);
 }
 
-/*
- * TSAN_IGNORE: TSAN tracks per-fd state and flags read(sig_signalfd)
- * here as racing with the signalfd(sig_signalfd, &mask, 0) mask
- * update in sig_platform_add.  The kernel serialises both syscalls
- * atomically per fd; there's no user-visible state to protect.
- * Suppressing the false positive is cheaper than introducing a
- * lock around the read just to satisfy TSAN.
- */
-TSAN_IGNORE static int
+static int
 sig_platform_wait_dispatch(void)
 {
     struct signalfd_siginfo si[64];
@@ -176,18 +168,38 @@ sig_platform_wait_dispatch(void)
     }
 
     if (FD_ISSET(sig_signalfd, &rfds)) {
+        /*
+         * Lock-around-read serialises against sig_platform_add's
+         * signalfd(sig_signalfd, &mask, 0) mask-update on the same
+         * fd.  Functionally the kernel already does this (both
+         * paths take current->sighand->siglock in fs/signalfd.c)
+         * but TSAN tracks per-fd state in user space and flags the
+         * unsynchronised read without an explicit happens-before
+         * edge.  no_sanitize("thread") doesn't help - the report
+         * comes from libc's read() interceptor, outside our
+         * function.  signalfd is opened SFD_NONBLOCK, so the read
+         * can't block the lock holder.
+         *
+         * As a side benefit it closes the would-be window where
+         * catch_signal could add a new knote between our read()
+         * and dispatch and cause pre-existing siginfos to be
+         * mis-attributed.
+         */
+        pthread_mutex_lock(&sigtbl_mtx);
         n = read(sig_signalfd, si, sizeof(si));
         if (n < 0) {
-            if (errno == EINTR || errno == EAGAIN) return (1);
-            dbg_printf("read(signalfd): %s", strerror(errno));
+            int saved = errno;
+            pthread_mutex_unlock(&sigtbl_mtx);
+            if (saved == EINTR || saved == EAGAIN) return (1);
+            dbg_printf("read(signalfd): %s", strerror(saved));
             return (-1);
         }
         if ((size_t) n < sizeof(si[0])) {
+            pthread_mutex_unlock(&sigtbl_mtx);
             dbg_printf("read(signalfd): short read (%zd bytes)", n);
             return (1);
         }
         count = (size_t) n / sizeof(si[0]);
-        pthread_mutex_lock(&sigtbl_mtx);
         for (i = 0; i < count; i++)
             sig_dispatch_handle((int) si[i].ssi_signo);
         pthread_mutex_unlock(&sigtbl_mtx);
