@@ -60,7 +60,15 @@ struct proc_pid {
 static tracing_mutex_t     proc_init_mtx = TRACING_MUTEX_INITIALIZER;
 static int                 proc_count = 0;
 static pthread_t           proc_wait_thread;
-static pid_t               proc_wait_tid; /* Monitoring thread */
+static pid_t               proc_wait_tid; /* Monitoring thread; set inside wait_thread_loop. */
+static bool                proc_wait_thread_created;
+                                          /* Set true after pthread_create succeeds; reset
+                                           * after pthread_join in destroy.  Protected by
+                                           * proc_init_mtx.  Distinguishes "thread alive,
+                                           * needs join" from "thread never started" so
+                                           * destroy doesn't pthread_cancel garbage and
+                                           * fork-child can clear it without leaving stale
+                                           * state. */
 
 /** Synchronisation for thread start
  *
@@ -416,10 +424,13 @@ static void
 evfilt_proc_libkqueue_fork(void)
 {
     /*
-     * The wait thread isn't duplicated in the forked copy
-     * of the process, and we need to prevent a cancellation
-     * request being sent to it when all the knotes are freed.
+     * The wait thread isn't duplicated in the forked copy of the
+     * process, and we need to prevent a cancellation/join request
+     * being sent to it when all the knotes are freed.  Clear the
+     * created flag so destroy's gate fails; proc_wait_tid is
+     * cleared too for debug-print accuracy.
      */
+    proc_wait_thread_created = false;
     proc_wait_tid = 0;
 }
 
@@ -467,6 +478,14 @@ evfilt_proc_init(struct filter *filt)
             goto error_1;
         }
         /*
+         * Mark the thread as created so destroy can later
+         * pthread_cancel + pthread_join it.  Set BEFORE the
+         * cond_wait so an early cancel from another path
+         * (e.g., a signal-driven teardown that races init)
+         * still finds a flag to clear.
+         */
+        proc_wait_thread_created = true;
+        /*
          * Wait until the wait thread has started and is monitoring
          * signals.  Loop on the predicate so a spurious cond_wait
          * return doesn't release us before the wait thread actually
@@ -494,11 +513,12 @@ evfilt_proc_destroy(struct filter *filt)
     tracing_mutex_lock(&proc_init_mtx);
     assert(proc_count > 0);
     /*
-     * Only cancel the wait thread if we're not
-     * in a forked copy as fork does not produce
-     * a new copy of the thread.
+     * Only cancel + join the wait thread if pthread_create
+     * actually succeeded (proc_wait_thread_created) AND we're not
+     * in a forked copy (where the thread doesn't exist post-fork).
+     * The fork hook resets proc_wait_thread_created.
      */
-    if ((--proc_count == 0) && (proc_wait_tid != 0)) {
+    if ((--proc_count == 0) && proc_wait_thread_created) {
 #ifndef NDEBUG
         pid_t tid = proc_wait_tid;
 #endif
@@ -520,6 +540,7 @@ evfilt_proc_destroy(struct filter *filt)
         } else {
             dbg_printf("tid=%u - join failed: %s", tid, strerror(ret));
         }
+        proc_wait_thread_created = false;
         /*
          * Wait thread is joined; no concurrent reader.  Reset the
          * predicate under the mutex so a subsequent
