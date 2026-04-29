@@ -356,10 +356,18 @@ monitoring_thread_loop(UNUSED void *arg)
     pthread_testcancel();
 
     pthread_cleanup_pop(true); /* Executes the cleanup function (monitoring_thread_cleanup) */
-    res = pthread_detach(pthread_self());
-    if (res != 0)
-        dbg_printf("pthread_detach(3): %s", strerror(res));
 
+    /*
+     * No pthread_detach here.  Main thread reads monitoring_tid
+     * under kq_mtx in linux_libkqueue_free; if the thread has
+     * already cleaned up (tid == 0 from cleanup) main skips
+     * pthread_join, otherwise main joins.  Detaching from this
+     * side races: the thread can detach between main's tid-read
+     * and main's pthread_join, leaving join to fail with "joining
+     * already joined thread".  Without detach, the thread is
+     * always joinable; the leak window is at most up to process
+     * exit, which is when libkqueue_free runs anyway.
+     */
     return NULL;
 }
 

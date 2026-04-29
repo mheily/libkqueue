@@ -111,6 +111,25 @@ test_harness(struct unit_test tests[MAX_TESTS], int iterations)
     testing_end();
 
     close(kqfd);
+
+    /*
+     * Linux's monitoring thread reaps closed kqueues asynchronously
+     * via the F_SETSIG-bound close-detect pipe.  If the test process
+     * exits before the monitoring thread has processed the signal
+     * for the kqueue we just closed, the kqueue stays in kq_list at
+     * atexit, where libkqueue_free's cleanup pass walks it; by that
+     * point the kernel may have reused fd N for an unrelated open,
+     * making fcntl(F_GETFD) on the stale kq_id return success and
+     * triggering the "is alive use_count=N.  Skipping, this is
+     * likely a leak..." debug message.  Drain synchronously so the
+     * monitoring thread retires the kq before atexit runs.
+     */
+#if defined(__linux__)
+    {
+        extern void libkqueue_drain_pending_close(void);
+        libkqueue_drain_pending_close();
+    }
+#endif
 }
 
 void
