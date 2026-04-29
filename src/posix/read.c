@@ -115,9 +115,18 @@ posix_read_descriptor_type(struct knote *kn)
 static void
 posix_wake_kqueue(struct kqueue *kq)
 {
+    ssize_t rv;
+
     if (kq->kq_wake_wfd < 0)
         return;
-    (void) write(kq->kq_wake_wfd, "K", 1);
+    /*
+     * Wake byte: failure is benign (EAGAIN means the pipe is
+     * already primed, which is the state we wanted anyway).
+     * Assigning to rv silences glibc's warn_unused_result
+     * attribute on write(2); a bare (void) cast doesn't.
+     */
+    rv = write(kq->kq_wake_wfd, "K", 1);
+    (void) rv;
 }
 
 /*

@@ -19,6 +19,7 @@
 #include <inttypes.h>
 #ifdef __linux__
 #  include <sys/prctl.h>
+#  include <sys/syscall.h>     /* SYS_gettid for the wait-thread tid */
 #endif
 #include <sys/wait.h>
 #include <unistd.h>
