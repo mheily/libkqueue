@@ -1,0 +1,6 @@
+# Valgrind suppressions for libkqueue tests on illumos.
+#
+# Add suppressions sparingly: a real bug in libkqueue should be
+# fixed, not silenced.  Entries here should target known false
+# positives in libc / libumem / runtime linker, with a comment
+# explaining why the report is not actionable.

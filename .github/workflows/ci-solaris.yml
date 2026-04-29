@@ -5,6 +5,7 @@ on:
     branches:
       - master
       - solaris-ci
+      - solaris-lock-drop
     paths:
       - 'CMakeLists.txt'
       - 'cmake/**'
@@ -14,6 +15,7 @@ on:
       - 'src/posix/**'
       - 'src/solaris/**'
       - 'test/**'
+      - 'tools/valgrind-illumos.supp'
       - '.github/workflows/ci-solaris.yml'
   pull_request:
     branches:
@@ -27,6 +29,7 @@ on:
       - 'src/posix/**'
       - 'src/solaris/**'
       - 'test/**'
+      - 'tools/valgrind-illumos.supp'
       - '.github/workflows/ci-solaris.yml'
   schedule:
     - cron: '0 6 * * *'
@@ -34,11 +37,27 @@ on:
 
 jobs:
   omnios-tests:
-    timeout-minutes: ${{ github.event_name == 'schedule' && 60 || 10 }}
+    timeout-minutes: ${{ github.event_name == 'schedule' && 60 || 30 }}
+    strategy:
+      fail-fast: false
+      matrix:
+          env:
+            - { NAME: release-gcc,        BUILD_TYPE: Release, VALGRIND_TOOL: "" }
+            - { NAME: debug-gcc,          BUILD_TYPE: Debug,   VALGRIND_TOOL: "" }
+            # Clang on illumos has no working sanitizer runtimes
+            # (ASan/TSan are unsupported targets), so we use
+            # valgrind for memory + race coverage instead.  Each
+            # variant runs the test binary under one valgrind tool;
+            # iterations stay at 1 because valgrind is ~10-30x.
+            - { NAME: debug-memcheck,     BUILD_TYPE: Debug,  VALGRIND_TOOL: memcheck }
+            - { NAME: debug-helgrind,     BUILD_TYPE: Debug,  VALGRIND_TOOL: helgrind }
+
     runs-on: ubuntu-latest
-    name: "OmniOS tests"
-    env:
-      KQUEUE_DEBUG: yes
+
+    name: "OmniOS ${{ matrix.env.NAME }}"
+
+    env: ${{ matrix.env }}
+
     steps:
     - uses: actions/checkout@v5
       with:
@@ -48,28 +67,62 @@ jobs:
       uses: vmactions/omnios-vm@v1
       with:
         usesh: true
-        envs: 'KQUEUE_DEBUG'
+        envs: 'KQUEUE_DEBUG NAME BUILD_TYPE VALGRIND_TOOL GITHUB_EVENT_NAME ITERATIONS'
         prepare: |
           echo "=== prepare: installing build deps ==="
           pkg install -q cmake gcc14 git developer/build/gnu-make || true
+          if [ -n "${VALGRIND_TOOL}" ]; then
+              pkg install -q ooce/developer/valgrind || true
+              # ooce binaries live under /opt/ooce/bin which is
+              # already a symlink farm aggregating each ooce/<pkg>;
+              # add it to PATH at run time.
+              ls -l /opt/ooce/bin/valgrind 2>/dev/null || true
+              /opt/ooce/bin/valgrind --version || true
+          fi
           echo "=== prepare: done ==="
         run: |
           set -ex
           echo "=== run: VM is up ==="
           uname -a
+          echo "=== run: variant ${NAME} ==="
           echo "=== run: configure ==="
           cd libkqueue
           rm -rf build-omnios
           mkdir build-omnios
           cd build-omnios
-          cmake -DCMAKE_BUILD_TYPE=Debug -DENABLE_TESTING=YES ..
+          cmake .. \
+            -DCMAKE_BUILD_TYPE="${BUILD_TYPE:-Debug}" \
+            -DENABLE_TESTING=YES
           echo "=== run: build ==="
-          make -j 2
+          # illumos has no nproc and getconf doesn't handle
+          # _NPROCESSORS_ONLN; psrinfo prints one line per logical
+          # CPU so wc -l does the job.
+          # illumos wc -l left-pads the count, which gmake then
+          # interprets as a target name.  Strip whitespace.
+          NPROC=$(psrinfo | wc -l | tr -d '[:space:]')
+          gmake -j "${NPROC}"
           echo "=== run: tests ==="
           # Skip ctest - it buffers test stdout and only shows it on
           # failure-with-exit, so a hung test produces no visible
           # output until the runner-level timeout kills the job.
           # Run the test binary directly so KQUEUE_DEBUG output and
           # per-test progress markers stream live.
-          ./test/libkqueue-test -n ${{ github.event_name == 'schedule' && 50 || 1 }}
+          if [ -n "${VALGRIND_TOOL}" ]; then
+              export PATH="/opt/ooce/bin:${PATH}"
+              SUPP="$(pwd)/../tools/valgrind-illumos.supp"
+              VG_OPTS="--tool=${VALGRIND_TOOL} --error-exitcode=1 --num-callers=30"
+              if [ -f "${SUPP}" ]; then
+                  VG_OPTS="${VG_OPTS} --suppressions=${SUPP}"
+              fi
+              if [ "${VALGRIND_TOOL}" = "memcheck" ]; then
+                  VG_OPTS="${VG_OPTS} --leak-check=full --show-leak-kinds=definite,possible --track-origins=yes"
+              fi
+              echo "valgrind opts: ${VG_OPTS}"
+              valgrind ${VG_OPTS} ./test/libkqueue-test -n "${ITERATIONS:-1}"
+          else
+              ./test/libkqueue-test -n "${ITERATIONS:-1}"
+          fi
           echo "=== run: done ==="
+      env:
+        KQUEUE_DEBUG: ${{ matrix.env.BUILD_TYPE == 'Release' && '' || 'yes' }}
+        ITERATIONS: ${{ github.event_name == 'schedule' && (matrix.env.VALGRIND_TOOL && '5' || '50') || '1' }}
