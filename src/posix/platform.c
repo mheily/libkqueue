@@ -208,15 +208,23 @@ posix_dispatch_filter(struct filter *filt, struct kevent *eventlist,
      *
      *  - Drain filters (SIGNAL): the filter keeps its own internal
      *    pending structure (e.g. sfs_pending) and emits whatever
-     *    is ready in a single call regardless of `src`.  We detect
-     *    this by an empty kf_ready and invoke copyout once with
-     *    src=NULL; the filter walks its own list.
+     *    is ready in a single call regardless of `src`.  Only the
+     *    SIGNAL filter opts in; calling kf_copyout with src=NULL
+     *    on a per-knote filter would dereference garbage.  An
+     *    empty kf_ready for any other filter just means the
+     *    eventfd was raised spuriously - drain it (the caller
+     *    already lowered the level) and emit nothing.
      */
     if (LIST_EMPTY(&filt->kf_ready)) {
-        rv = filt->kf_copyout(eventlist, nevents, filt, NULL, NULL);
-        if (rv < 0)
-            return (-1);
-        return rv;
+#ifdef EVFILT_SIGNAL
+        if (filt->kf_id == EVFILT_SIGNAL) {
+            rv = filt->kf_copyout(eventlist, nevents, filt, NULL, NULL);
+            if (rv < 0)
+                return (-1);
+            return rv;
+        }
+#endif
+        return (0);
     }
 
     LIST_FOREACH_SAFE(kn, &filt->kf_ready, kn_ready, kn_tmp) {
@@ -228,7 +236,13 @@ posix_dispatch_filter(struct filter *filt, struct kevent *eventlist,
             dbg_puts("kf_copyout failed");
             return (-1);
         }
-        LIST_REMOVE(kn, kn_ready);
+        /*
+         * LIST_REMOVE_ZERO clears kn_ready's next/prev pointers
+         * after unlinking; without that LIST_INSERTED returns true
+         * on the now-detached knote and a later knote_delete tries
+         * to LIST_REMOVE it again, walking stale pointers.
+         */
+        LIST_REMOVE_ZERO(kn, kn_ready);
         if (rv > 0)
             n += rv;
     }

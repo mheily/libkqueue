@@ -52,17 +52,13 @@ posix_evfilt_user_copyout(struct kevent *dst, UNUSED int nevents, struct filter 
 
     dst->fflags &= ~NOTE_FFCTRLMASK;     //FIXME: Not sure if needed
     dst->fflags &= ~NOTE_TRIGGER;
-    if (src->kev.flags & EV_ADD) {
-        /* NOTE: True on FreeBSD but not consistent behavior with
-                  other filters. */
-        dst->flags &= ~EV_ADD;
-    }
+    /*
+     * BSD kqueue preserves EV_ADD on delivered events; stripping
+     * it here was a FreeBSD-only quirk and broke test_kevent_user_get
+     * which expects EV_ADD | EV_CLEAR.
+     */
     if (src->kev.flags & EV_CLEAR)
         src->kev.fflags &= ~NOTE_TRIGGER;
-    if (src->kev.flags & (EV_DISPATCH | EV_CLEAR | EV_ONESHOT)) {
-        kqops.eventfd_raise(&filt->kf_efd);
-    }
-
     if (src->kev.flags & EV_DISPATCH)
         src->kev.fflags &= ~NOTE_TRIGGER;
 
@@ -120,7 +116,14 @@ posix_evfilt_user_knote_modify(struct filter *filt, struct knote *kn,
 
     if ((!(kn->kev.flags & EV_DISABLE)) && kev->fflags & NOTE_TRIGGER) {
         kn->kev.fflags |= NOTE_TRIGGER;
-        LIST_INSERT_HEAD(&filt->kf_ready, kn, kn_ready);
+        /*
+         * Coalesce repeated triggers: a back-to-back NOTE_TRIGGER
+         * before copyout drains kf_ready would otherwise relink the
+         * knote and corrupt the list (LIST_INSERT_HEAD assumes a
+         * detached entry).
+         */
+        if (!LIST_INSERTED(kn, kn_ready))
+            LIST_INSERT_HEAD(&filt->kf_ready, kn, kn_ready);
         kqops.eventfd_raise(&filt->kf_efd);
     }
 

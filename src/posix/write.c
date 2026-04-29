@@ -145,13 +145,16 @@ evfilt_write_copyout(struct kevent *dst, UNUSED int nevents,
 
     /*
      * BSD kqueue reports `data` as the amount of free buffer space
-     * available for non-blocking write.  We don't have a portable
-     * way to query send-buffer free space (Linux has SIOCOUTQ, BSD
-     * has none cleanly); report 0 to mean "writable" and let the
-     * application size its own writes.  This loses the byte count
-     * but matches "ready to write" semantics.
+     * available for non-blocking write.  Regular files don't have
+     * a meaningful send buffer (a write is bounded only by disk),
+     * but the BSD/macOS convention - matched by the test suite -
+     * is to report a non-zero value so consumers know the fd is
+     * writable.  Sockets/pipes have no portable equivalent of
+     * Linux's SIOCOUTQ either, so we report 1 there too: "at
+     * least one byte of room"; the application sizes its own
+     * writes.
      */
-    dst->data = 0;
+    dst->data = 1;
 
     if (src->kev.flags & EV_CLEAR)
         posix_write_disarm(filt, src);

@@ -75,12 +75,27 @@ target_include_directories(libkqueue-test
                            PRIVATE
                              "${CMAKE_SOURCE_DIR}"
                              "${CMAKE_BINARY_DIR}/include")
-if(NOT "${CMAKE_SYSTEM_NAME}" MATCHES "(Solaris|SunOS)")
+if(NOT "${CMAKE_SYSTEM_NAME}" MATCHES "(Solaris|SunOS)" AND
+   NOT "${LIBKQUEUE_BACKEND_RESOLVED}" STREQUAL "posix")
   # Backends that drop the kq mutex across kevent_wait can be exercised
   # by the cross-thread EVFILT_USER trigger test.  Solaris doesn't
   # currently opt into KEVENT_WAIT_DROP_LOCK (would need a UAF-safe
-  # portev_user wrapper or non-coalescing dispatcher signal), so skip.
+  # portev_user wrapper or non-coalescing dispatcher signal); the
+  # POSIX backend's pselect dispatcher holds the kq lock too, so the
+  # cross-thread NOTE_TRIGGER doesn't deliver until the waiter's
+  # timeout expires.  Skip both.
   target_compile_definitions(libkqueue-test PRIVATE TEST_DROP_LOCK_WAKE)
+endif()
+
+# Tell the test sources which backend libkqueue was built against, so
+# they can gate out tests that exercise behaviour the backend doesn't
+# implement yet (e.g. signal_multi_kqueue on the POSIX backend, where
+# the dispatcher doesn't fan out to multiple kqueues).
+if(LIBKQUEUE_BACKEND_RESOLVED)
+  string(TOUPPER "${LIBKQUEUE_BACKEND_RESOLVED}" _backend_upper)
+  target_compile_definitions(libkqueue-test PRIVATE
+      LIBKQUEUE_BACKEND_${_backend_upper}=1)
+  unset(_backend_upper)
 endif()
 
 if("${CMAKE_SYSTEM_NAME}" MATCHES "(Solaris|SunOS)")

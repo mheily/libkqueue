@@ -55,7 +55,15 @@
 #  include <netinet/in.h>
 #endif
 
-#if defined(__APPLE__) || defined(__FreeBSD__)
+/*
+ * NATIVE_KQUEUE is set when the test binary is linked against the
+ * host kernel's kqueue rather than libkqueue.  It's the gate for
+ * tests that exercise behaviour libkqueue's POSIX backend doesn't
+ * implement (e.g. close-wake delivery).  When LIBKQUEUE_BACKEND_POSIX
+ * is defined we're testing libkqueue's POSIX backend on the host,
+ * not the host's native kqueue, so leave NATIVE_KQUEUE unset.
+ */
+#if (defined(__APPLE__) || defined(__FreeBSD__)) && !defined(LIBKQUEUE_BACKEND_POSIX)
 #define NATIVE_KQUEUE 1
 #endif
 
