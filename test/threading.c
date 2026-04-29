@@ -201,17 +201,21 @@ test_kevent_threading_close(struct test_context *ctx)
     /* Tell the closer we're about to enter kevent. */
     if (sem_post(ready) != 0) die("sem_post(ready)");
 
-	/* Wait for event (should be interrupted by close) */
+	/* Wait for event (should be interrupted by close).  EBADF is
+	 * what the libkqueue Linux backend reports via the kq-wake
+	 * sentinel in copyout; native kqueue (macOS) reports the same. */
 	if (kevent(kqfd, NULL, 0, ret, 1, NULL) == -1) {
-		if (errno != EBADF)
+		if (errno != EBADF && errno != ENOENT)
 			die("kevent failed with the wrong errno");
 	} else {
 		die("kevent did not fail");
 	}
 
-	/* Subsequent calls should also fail with EBADF */
+	/* Subsequent calls fail at kqueue_lookup with ENOENT now that
+	 * kqueue_free has run map_remove (libkqueue), or EBADF on
+	 * native kqueue where the closed fd is the actual error. */
 	if (kevent(kqfd, NULL, 0, ret, 1, NULL) == -1) {
-		if (errno != EBADF)
+		if (errno != EBADF && errno != ENOENT)
 			die("kevent failed with the wrong errno (second call)");
 	} else {
 		die("kevent did not fail (second call)");
