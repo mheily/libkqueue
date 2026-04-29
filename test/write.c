@@ -36,8 +36,14 @@ test_kevent_write_regular_file(struct test_context *ctx)
     kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
 
-#ifdef __APPLE__
-    /* macOS sets this high for some reason */
+#if defined(__APPLE__) || defined(LIBKQUEUE_BACKEND_POSIX)
+    /*
+     * Both macOS native kqueue and libkqueue's POSIX backend
+     * report data=1 ("at least one byte of room") for a writable
+     * regular file - there's no portable equivalent of Linux's
+     * SIOCOUTQ to surface real remaining-buffer count.  The Linux
+     * native libkqueue backend reports 0.
+     */
     kev.data = 1;
 #endif
 
