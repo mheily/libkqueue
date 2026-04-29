@@ -65,10 +65,14 @@ static pid_t               proc_wait_tid; /* Monitoring thread */
 /** Synchronisation for thread start
  *
  * This prevents any threads from continuing whilst the wait thread
- * is started.
+ * is started.  proc_wait_thread_started is the loop predicate the
+ * cond_wait spins on so spurious wakes don't release the init
+ * caller before the wait thread has actually entered its sigwaitinfo
+ * loop.
  */
 static pthread_mutex_t     proc_wait_thread_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t      proc_wait_thread_cond = PTHREAD_COND_INITIALIZER;
+static bool                proc_wait_thread_started;   /* protected by proc_wait_thread_mtx */
 
 /** The global PID tree
  *
@@ -295,9 +299,13 @@ wait_thread_loop(UNUSED void *arg)
     sigaddset(&sigmask, SIGCHLD);
 
     /*
-     * Inform the parent that we started correctly
+     * Inform the parent that we started correctly.  Conventional
+     * cond_wait predicate pattern: write under the mutex so the
+     * parent's predicate read (also under the mutex) is fully
+     * synchronised.
      */
-    pthread_mutex_lock(&proc_wait_thread_mtx);    /* Must try to lock to ensure parent is waiting on signal */
+    pthread_mutex_lock(&proc_wait_thread_mtx);
+    proc_wait_thread_started = true;
     pthread_cond_signal(&proc_wait_thread_cond);
     pthread_mutex_unlock(&proc_wait_thread_mtx);
     do {
@@ -453,8 +461,16 @@ evfilt_proc_init(struct filter *filt)
 
             goto error_1;
         }
-        /* Wait until the wait thread has started and is monitoring signals */
-        pthread_cond_wait(&proc_wait_thread_cond, &proc_wait_thread_mtx);
+        /*
+         * Wait until the wait thread has started and is monitoring
+         * signals.  Loop on the predicate so a spurious cond_wait
+         * return doesn't release us before the wait thread actually
+         * entered its sigwaitinfo loop.  proc_wait_thread_mtx
+         * synchronises the predicate read against the wait thread's
+         * write.
+         */
+        while (!proc_wait_thread_started)
+            pthread_cond_wait(&proc_wait_thread_cond, &proc_wait_thread_mtx);
         pthread_mutex_unlock(&proc_wait_thread_mtx);
     }
     proc_count++;
@@ -499,6 +515,16 @@ evfilt_proc_destroy(struct filter *filt)
         } else {
             dbg_printf("tid=%u - join failed: %s", tid, strerror(ret));
         }
+        /*
+         * Wait thread is joined; no concurrent reader.  Reset the
+         * predicate under the mutex so a subsequent
+         * evfilt_proc_init (e.g. after the last filter is destroyed
+         * and a new one created later) re-runs the cond_wait loop
+         * from scratch.
+         */
+        pthread_mutex_lock(&proc_wait_thread_mtx);
+        proc_wait_thread_started = false;
+        pthread_mutex_unlock(&proc_wait_thread_mtx);
     }
     tracing_mutex_unlock(&proc_init_mtx);
 

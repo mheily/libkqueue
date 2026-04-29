@@ -33,6 +33,9 @@ struct sleepreq {
     intptr_t    interval;       /* sleep time, in milliseconds */
     pthread_cond_t  cond;
     pthread_mutex_t mtx;
+    bool        terminate;      /* set under mtx by _timer_delete; the cond_signal
+                                 * is otherwise indistinguishable from a spurious
+                                 * pthread_cond_timedwait wakeup. */
     struct sleepstat *stat;
 };
 
@@ -80,17 +83,29 @@ sleeper_thread(void *arg)
         /* Sleep */
         dbg_printf("sleeping for %ld ms", (unsigned long) sr->interval);
         rv = pthread_cond_timedwait(&sr->cond, &sr->mtx, &req);
-        pthread_mutex_unlock(&sr->mtx);
-        if (rv == 0) {
-            /* _timer_delete() has requested that we terminate */
-            dbg_puts("terminating sleeper thread");
-            break;
-        } else if (rv != 0) {
-            dbg_printf("rv=%d %s", rv, strerror(rv));
-            if (rv == EINTR)
-                abort(); //FIXME should not happen
-
-            //ASSUME: rv == ETIMEDOUT
+        {
+            bool terminate = sr->terminate;
+            pthread_mutex_unlock(&sr->mtx);
+            if (rv == 0) {
+                if (terminate) {
+                    /* _timer_delete() has requested that we terminate */
+                    dbg_puts("terminating sleeper thread");
+                    break;
+                }
+                /*
+                 * Spurious cond_wait wake.  Without the terminate
+                 * flag we'd treat this as a delete and exit early,
+                 * leaking the timer.  Loop back and re-arm the
+                 * absolute timeout for the remaining interval.
+                 */
+                dbg_puts("spurious cond_wait wake, resuming");
+                continue;
+            } else if (rv != ETIMEDOUT) {
+                dbg_printf("rv=%d %s", rv, strerror(rv));
+                if (rv == EINTR)
+                    abort(); //FIXME should not happen
+            }
+            /* rv == ETIMEDOUT - timer fired. */
         }
         si.counter++;
         dbg_printf(" -------- sleep over (CTS=%d)----------", cts);
@@ -178,6 +193,7 @@ _timer_delete(struct knote *kn)
     if (kn->kn_sleepreq != NULL) {
         dbg_puts("deleting timer");
         pthread_mutex_lock(&kn->kn_sleepreq->mtx); //FIXME - error check
+        kn->kn_sleepreq->terminate = true;
         pthread_cond_signal(&kn->kn_sleepreq->cond); //FIXME - error check
         pthread_mutex_unlock(&kn->kn_sleepreq->mtx); //FIXME - error check
         pthread_cond_destroy(&kn->kn_sleepreq->cond); //FIXME - error check
