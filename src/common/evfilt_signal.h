@@ -104,7 +104,7 @@ static struct sentry   sigtbl[SIGNAL_MAX] UNUSED;
 static pthread_mutex_t sig_init_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int             sig_filter_count = 0;
 static pthread_t       sig_dispatch_thread;
-static int             sig_dispatch_started;
+static atomic_bool     sig_dispatch_started;
 
 /*
  * Self-pipe used both for shutdown signalling (close write end ->
@@ -238,8 +238,8 @@ sig_dispatch_loop(UNUSED void *arg)
 
     dbg_printf("signal dispatch thread started");
 
+    atomic_store(&sig_dispatch_started, true);
     pthread_mutex_lock(&sig_dispatch_thread_mtx);
-    sig_dispatch_started = 1;
     pthread_cond_signal(&sig_dispatch_thread_cond);
     pthread_mutex_unlock(&sig_dispatch_thread_mtx);
 
@@ -288,7 +288,7 @@ sig_dispatch_start(void)
         sig_pipe[0] = sig_pipe[1] = -1;
         return (-1);
     }
-    while (!sig_dispatch_started)
+    while (!atomic_load(&sig_dispatch_started))
         pthread_cond_wait(&sig_dispatch_thread_cond, &sig_dispatch_thread_mtx);
     pthread_mutex_unlock(&sig_dispatch_thread_mtx);
 
@@ -335,10 +335,7 @@ sig_dispatch_stop(void)
         sig_pipe[0] = -1;
     }
     sig_platform_destroy();
-
-    pthread_mutex_lock(&sig_dispatch_thread_mtx);
-    sig_dispatch_started = 0;
-    pthread_mutex_unlock(&sig_dispatch_thread_mtx);
+    atomic_store(&sig_dispatch_started, false);
 }
 
 /* sigtbl_mtx must be held. */

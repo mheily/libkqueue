@@ -387,8 +387,13 @@ linux_kqueue_start_thread(void)
 
          return (-1);
     }
-    /* Wait for thread creating to be done as we need monitoring_tid to be available */
-    pthread_cond_wait(&monitoring_thread_cond, &monitoring_thread_mtx); /* unlocks mt_mtx allowing child to lock it */
+    /*
+     * Wait for thread creation to publish monitoring_tid.  Loop on
+     * the predicate (monitoring_tid != 0) to be safe against
+     * spurious wakeups.
+     */
+    while (monitoring_tid == 0)
+        pthread_cond_wait(&monitoring_thread_cond, &monitoring_thread_mtx);
     (void) pthread_mutex_unlock(&monitoring_thread_mtx);
 
     return (0);
