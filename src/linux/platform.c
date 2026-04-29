@@ -35,6 +35,12 @@ static __thread struct epoll_event epoll_events[MAX_KEVENT];
  */
 static pthread_t monitoring_thread;
 static pid_t monitoring_tid; /* Monitoring thread */
+static atomic_bool monitoring_thread_created; /* set after successful pthread_create;
+                                                 distinguishes "never started" from
+                                                 "started, then exited" (which clears
+                                                 monitoring_tid).  Cleared in the
+                                                 fork hook so the child can spin up
+                                                 its own monitoring thread. */
 
 static pthread_mutex_t monitoring_thread_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t monitoring_thread_cond = PTHREAD_COND_INITIALIZER;
@@ -381,6 +387,7 @@ linux_kqueue_start_thread(void)
 
          return (-1);
     }
+    atomic_store(&monitoring_thread_created, true);
     /*
      * Wait for thread creation to publish monitoring_tid.  Loop on
      * the predicate (monitoring_tid != 0) to be safe against
@@ -408,13 +415,14 @@ linux_libkqueue_fork(void)
      * which called it.
      *
      * Ensure we don't try and cancel it on exit by
-     * clearing the thread id.
+     * clearing the thread id and the created flag.
      *
      * We don't need to lock the kq_mtx here as we're in
      * the child, and none of our threads will have been
      * duplicated.
      */
     monitoring_tid = 0;
+    atomic_store(&monitoring_thread_created, false);
 
     /*
      * If the process has been forked, then we need
@@ -466,25 +474,30 @@ linux_libkqueue_free(void)
     pid_t tid;
 
     /*
-     * Read tid under kq_mtx but release before pthread_cancel.
-     * Calling pthread_cancel with kq_mtx held would force the
-     * cleanup handler to inherit a lock the cancellor still
-     * owns - functionally fine but invisible to TSAN's lockset
-     * model.  With the lock free at cancel time, the cleanup
-     * handler reacquires it itself and the lock-acquire-release
-     * pattern is symmetric on both sides.
+     * Use monitoring_thread_created (set after pthread_create) to
+     * decide whether the thread exists at all - monitoring_tid is
+     * cleared by the cleanup handler when the thread exits, so it
+     * can't distinguish "never started" from "started, then
+     * exited".  Always pthread_join when created so the thread is
+     * reaped (no thread-leak warning from TSAN).  pthread_join on
+     * an exited-but-joinable thread returns immediately with the
+     * exit status; pthread_cancel on the same is a benign ESRCH.
+     *
+     * No kq_mtx around the read - monitoring_thread_created is an
+     * atomic; main has already finished its kq_mtx-protected work
+     * by the time atexit fires.
      */
-    tracing_mutex_lock(&kq_mtx);
-    tid = monitoring_tid; /* Gets trashed when the thread exits */
-    tracing_mutex_unlock(&kq_mtx);
-
-    if (tid) {
+    if (atomic_load(&monitoring_thread_created)) {
         void *retval;
         int ret;
 
+        tracing_mutex_lock(&kq_mtx);
+        tid = monitoring_tid; /* may be 0 if cleanup already ran */
+        tracing_mutex_unlock(&kq_mtx);
+
         dbg_printf("tid=%u - cancelling", tid);
         ret = pthread_cancel(monitoring_thread);
-        if (ret != 0)
+        if (ret != 0 && ret != ESRCH)
            dbg_printf("tid=%u - cancel failed: %s", tid, strerror(ret));
 
         ret = pthread_join(monitoring_thread, &retval);
@@ -497,6 +510,7 @@ linux_libkqueue_free(void)
         } else {
             dbg_printf("tid=%u - join failed: %s", tid, strerror(ret));
         }
+        atomic_store(&monitoring_thread_created, false);
     }
 }
 
