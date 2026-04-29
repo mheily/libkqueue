@@ -246,9 +246,7 @@ if(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "posix")
 else()
   #
   #  Native backends (linux, solaris, windows) ship complete filter
-  #  sets; expose all of them in the public header.  The actual
-  #  EVFILT_* constants are still defined inside libkqueue itself
-  #  via LIBKQUEUE_INTERNAL regardless of which subset is exposed.
+  #  sets; expose all of them in the public header.
   #
   set(LIBKQUEUE_HAVE_FILT_READ   1)
   set(LIBKQUEUE_HAVE_FILT_WRITE  1)
@@ -267,9 +265,11 @@ set(LIBKQUEUE_HAVE_FILT_LIBKQUEUE 1)
 
 #
 #  Render include/sys/event.h.in -> build dir, redacting filter
-#  macros that this build doesn't implement.  External consumers
-#  see only the working set; internal compilation gets the full
-#  set via -DLIBKQUEUE_INTERNAL=1 below.
+#  macros this build doesn't implement.  Both internal and
+#  external consumers see exactly the working set; everywhere
+#  inside libkqueue that references EVFILT_* unconditionally is
+#  itself #ifdef-gated, so dropping a filter from the source list
+#  here drops every reference to it in the library.
 #
 foreach(_filt READ WRITE AIO VNODE PROC SIGNAL TIMER NETDEV FS LIO USER LIBKQUEUE)
   if(LIBKQUEUE_HAVE_FILT_${_filt})
@@ -415,13 +415,10 @@ add_library(objlib OBJECT ${LIBKQUEUE_SOURCES} ${LIBKQUEUE_HEADERS})
 
 #
 #  Tell src/common/private.h which backend's platform.h to pull in.
-#  LIBKQUEUE_INTERNAL exposes every EVFILT_* constant in our own
-#  translation units, even ones the public header redacts.
 #
 string(TOUPPER "${LIBKQUEUE_BACKEND_RESOLVED}" _LIBKQUEUE_BACKEND_UPPER)
 target_compile_definitions(objlib PRIVATE
-    LIBKQUEUE_BACKEND_${_LIBKQUEUE_BACKEND_UPPER}=1
-    LIBKQUEUE_INTERNAL=1)
+    LIBKQUEUE_BACKEND_${_LIBKQUEUE_BACKEND_UPPER}=1)
 unset(_LIBKQUEUE_BACKEND_UPPER)
 
 #

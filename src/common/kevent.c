@@ -46,6 +46,7 @@ kevent_fflags_dump(const struct kevent *kev)
 
     snprintf(buf, sizeof(buf), "fflags=0x%04x (", kev->fflags);
     switch (kev->filter) {
+#ifdef EVFILT_VNODE
     case EVFILT_VNODE:
         KEVFFL_DUMP(NOTE_DELETE);
         KEVFFL_DUMP(NOTE_WRITE);
@@ -54,7 +55,8 @@ kevent_fflags_dump(const struct kevent *kev)
         KEVFFL_DUMP(NOTE_LINK);
         KEVFFL_DUMP(NOTE_RENAME);
         break;
-
+#endif
+#ifdef EVFILT_USER
     case EVFILT_USER:
         KEVFFL_DUMP(NOTE_FFNOP);
         KEVFFL_DUMP(NOTE_FFAND);
@@ -62,39 +64,47 @@ kevent_fflags_dump(const struct kevent *kev)
         KEVFFL_DUMP(NOTE_FFCOPY);
         KEVFFL_DUMP(NOTE_TRIGGER);
         break;
-
-    case EVFILT_READ:
-    case EVFILT_WRITE:
-#ifdef NOTE_LOWAT
-        KEVFFL_DUMP(NOTE_LOWAT);
 #endif
+#if defined(EVFILT_READ) || defined(EVFILT_WRITE)
+# ifdef EVFILT_READ
+    case EVFILT_READ:
+# endif
+# ifdef EVFILT_WRITE
+    case EVFILT_WRITE:
+# endif
+# ifdef NOTE_LOWAT
+        KEVFFL_DUMP(NOTE_LOWAT);
+# endif
         break;
-
+#endif
+#ifdef EVFILT_PROC
     case EVFILT_PROC:
         KEVFFL_DUMP(NOTE_EXIT);
         KEVFFL_DUMP(NOTE_FORK);
         KEVFFL_DUMP(NOTE_EXEC);
         break;
-
+#endif
+#ifdef EVFILT_TIMER
     case EVFILT_TIMER:
         KEVFFL_DUMP(NOTE_SECONDS);
         KEVFFL_DUMP(NOTE_USECONDS);
         KEVFFL_DUMP(NOTE_NSECONDS);
         KEVFFL_DUMP(NOTE_ABSOLUTE);
         break;
-
+#endif
+#ifdef EVFILT_LIBKQUEUE
     case EVFILT_LIBKQUEUE:
         KEVFFL_DUMP(NOTE_VERSION);
         KEVFFL_DUMP(NOTE_VERSION_STR);
         KEVFFL_DUMP(NOTE_THREAD_SAFE);
         KEVFFL_DUMP(NOTE_FORK_CLEANUP);
-#ifndef NDEBUG
+# ifndef NDEBUG
         KEVFFL_DUMP(NOTE_DEBUG);
         KEVFFL_DUMP(NOTE_DEBUG_PREFIX);
         KEVFFL_DUMP(NOTE_DEBUG_FUNC);
-#endif
+# endif
         break;
-
+#endif
     default:
         break;
     }

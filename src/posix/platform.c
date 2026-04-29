@@ -339,6 +339,7 @@ posix_kevent_copyout(struct kqueue *kq, UNUSED int nready,
          * READ/WRITE are fd-keyed: dispatch one event per knote
          * whose descriptor showed up in the post-pselect set.
          */
+#ifdef EVFILT_READ
         if (filt->kf_id == EVFILT_READ) {
             rv = posix_dispatch_fd_filter(filt, &kq->kq_rfds,
                     eventlist + nout, nevents - nout);
@@ -347,6 +348,8 @@ posix_kevent_copyout(struct kqueue *kq, UNUSED int nready,
             nout += rv;
             continue;
         }
+#endif
+#ifdef EVFILT_WRITE
         if (filt->kf_id == EVFILT_WRITE) {
             rv = posix_dispatch_fd_filter(filt, &kq->kq_wrfds,
                     eventlist + nout, nevents - nout);
@@ -355,6 +358,7 @@ posix_kevent_copyout(struct kqueue *kq, UNUSED int nready,
             nout += rv;
             continue;
         }
+#endif
 
         /*
          * Eventfd-keyed filters (USER, PROC, SIGNAL, TIMER):

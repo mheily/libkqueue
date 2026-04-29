@@ -184,21 +184,39 @@ filter_name(short filt)
 {
     int id;
     const char *fname[EVFILT_SYSCOUNT] = {
+#ifdef EVFILT_READ
         [~EVFILT_READ] = "EVFILT_READ",
+#endif
+#ifdef EVFILT_WRITE
         [~EVFILT_WRITE] = "EVFILT_WRITE",
+#endif
+#ifdef EVFILT_AIO
         [~EVFILT_AIO] = "EVFILT_AIO",
+#endif
+#ifdef EVFILT_VNODE
         [~EVFILT_VNODE] = "EVFILT_VNODE",
+#endif
+#ifdef EVFILT_PROC
         [~EVFILT_PROC] = "EVFILT_PROC",
+#endif
+#ifdef EVFILT_SIGNAL
         [~EVFILT_SIGNAL] = "EVFILT_SIGNAL",
+#endif
+#ifdef EVFILT_TIMER
         [~EVFILT_TIMER] = "EVFILT_TIMER",
+#endif
 #ifdef EVFILT_NETDEV
         [~EVFILT_NETDEV] = "EVFILT_NETDEV",
 #endif
+#ifdef EVFILT_FS
         [~EVFILT_FS] = "EVFILT_FS",
+#endif
 #ifdef EVFILT_LIO
         [~EVFILT_LIO] = "EVFILT_LIO",
 #endif
-        [~EVFILT_USER] = "EVFILT_USER"
+#ifdef EVFILT_USER
+        [~EVFILT_USER] = "EVFILT_USER",
+#endif
     };
 
     id = ~filt;
