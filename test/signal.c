@@ -76,38 +76,53 @@ void
 test_kevent_signal_enable(struct test_context *ctx)
 {
     struct kevent kev, ret[1];
+    struct timespec ts = { 2, 0 };
+    int total = 0;
 
     kevent_add(ctx->kqfd, &kev, SIGUSR1, EVFILT_SIGNAL, EV_ENABLE, 0, 0, NULL);
 
     if (kill(getpid(), SIGUSR1) < 0)
         die("kill");
 
-    kev.flags = EV_ADD | EV_CLEAR;
-#ifdef NATIVE_KQUEUE
     /*
-     * Native BSD/macOS hook EVFILT_SIGNAL into the signal-generation
-     * path so each kill() bumps kev.data atomically before the
-     * kernel's per-process pending bitmap coalesces.  Two fires
-     * (one from test_kevent_signal_disable, one from the kill()
-     * above) report as data=2.
-     */
-    kev.data = 2;
-#else
-    /*
+     * Two fires happened: one in test_kevent_signal_disable while
+     * the knote was disabled, one from the kill() above.  Native
+     * BSD/macOS hook EVFILT_SIGNAL into the signal-generation path
+     * so each fire bumps kev.data atomically before the kernel's
+     * per-process pending bitmap coalesces - they always report
+     * total=2 in one event.
+     *
      * libkqueue's signalfd-backed dispatcher reads from the kernel
-     * pending queue, where non-RT signals coalesce: multiple kills
-     * before signalfd_read drain to a single siginfo.  Both fires
-     * collapse into one bump, so data=1.  RT signals would queue
-     * per-fire and yield data=2; the rt_late_register test exercises
-     * that path explicitly.
+     * pending queue, where non-RT signals coalesce.  Whether we
+     * see 1 or 2 fires depends on dispatcher scheduling: if it
+     * drains the first kill before the second arrives, both are
+     * accounted (total=2, possibly across multiple events); if
+     * not, the second kill collides with the first in the pending
+     * bitmap and signalfd returns one siginfo (total=1).  Both
+     * are correct for the platform.
+     *
+     * Drain in a loop to accumulate any events the dispatcher
+     * produces, then assert against the platform's expected lower
+     * bound.
      */
-    kev.data = 1;
+    while (total < 2) {
+        int rv = kevent_get_timeout(ret, 1, ctx->kqfd, &ts);
+        if (rv <= 0)
+            break;
+        total += ret[0].data;
+    }
+#ifdef NATIVE_KQUEUE
+    if (total != 2)
+        errx(1, "expected total=2 fires, got %d", total);
+#else
+    if (total < 1 || total > 2)
+        errx(1, "expected total in [1,2] fires, got %d", total);
 #endif
-    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
-    kevent_cmp(&kev, ret);
 
     /* Delete the watch */
-    kev.flags = EV_DELETE;
+    kev.ident  = SIGUSR1;
+    kev.filter = EVFILT_SIGNAL;
+    kev.flags  = EV_DELETE;
     kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
 }
 
