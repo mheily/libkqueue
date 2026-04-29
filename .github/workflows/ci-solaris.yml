@@ -68,5 +68,5 @@ jobs:
           # output until the runner-level timeout kills the job.
           # Run the test binary directly so KQUEUE_DEBUG output and
           # per-test progress markers stream live.
-          ./test/libkqueue-test
+          ./test/libkqueue-test -n 5
           echo "=== run: done ==="

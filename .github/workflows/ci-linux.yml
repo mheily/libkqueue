@@ -122,7 +122,7 @@ jobs:
       env:
         KQUEUE_DEBUG: 1
         TSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/tsan.supp
-      run: test/libkqueue-test
+      run: test/libkqueue-test -n 5
 
     - name: Build debian packages
       run: cpack -G DEB

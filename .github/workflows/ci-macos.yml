@@ -32,4 +32,4 @@ jobs:
       env:
         KQUEUE_DEBUG: yes
       run: |
-        ./test/libkqueue-test
+        ./test/libkqueue-test -n 5

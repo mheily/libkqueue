@@ -40,4 +40,4 @@ jobs:
           cd libkqueue/test
           cmake .
           make
-          ./libkqueue-test
+          ./libkqueue-test -n 5
