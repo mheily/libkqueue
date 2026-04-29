@@ -155,20 +155,26 @@ waiter_notify_error(struct proc_pid *ppd, int wait_errno)
     free(ppd);
 }
 
+/** Convert a CLD_* siginfo into the waitpid-style status word.
+ *
+ * Reconstructs the status code waitpid would have returned for the
+ * same exit, matching what the OpenBSD man pages document and what
+ * macOS native kqueue puts in the data field of the kevent.
+ *
+ * @param[out] status_out  populated only on a 0 return.
+ * @param[in]  info        siginfo from sigwaitinfo / waitid.
+ * @return  0 if info described a real exit (status_out is valid),
+ *         -1 on a non-exit si_code (CLD_STOPPED etc) - the caller
+ *         should ignore the notification.
+ */
 static int
-waiter_siginfo_to_status(siginfo_t *info)
+waiter_siginfo_to_status(int *status_out, siginfo_t *info)
 {
-    int status = 0;
+    int status;
 
-    /*
-     *  Try and reconstruct the status code that would have been
-     *  returned by waitpid.  The OpenBSD man pages
-     *  and observations of the macOS kqueue confirm this is what
-     *  we should be returning in the data field of the kevent.
-     */
     switch (info->si_code) {
     case CLD_EXITED:    /* WIFEXITED - High byte contains status, low byte zeroed */
-    status = info->si_status << 8;
+        status = info->si_status << 8;
         dbg_printf("pid=%u exited, status %u", (unsigned int)info->si_pid, status);
         break;
 
@@ -182,11 +188,12 @@ waiter_siginfo_to_status(siginfo_t *info)
         dbg_printf("pid=%u signalled, status %u", (unsigned int)info->si_pid, status);
         break;
 
-    default: /* The rest aren't valid exit states */
-        status = -1;
+    default: /* CLD_STOPPED / CLD_TRAPPED / CLD_CONTINUED - not exit states */
+        return (-1);
     }
 
-    return status;
+    *status_out = status;
+    return (0);
 }
 
 /** This waiter thread serves all kqueues in a given process
@@ -351,10 +358,8 @@ wait_thread_loop(UNUSED void *arg)
              * Check if this is a process we want to monitor
              */
             ppd = RB_FIND(pid_index, &proc_pid_index, &(struct proc_pid){ .ppd_pid = info.si_pid });
-            if (ppd) {
-                status = waiter_siginfo_to_status(&info);
-                if (status >= 0) waiter_notify(ppd, status);  /* If < 0 notification is spurious */
-            }
+            if (ppd && waiter_siginfo_to_status(&status, &info) == 0)
+                waiter_notify(ppd, status);
         }
 
         /*
@@ -376,8 +381,8 @@ wait_thread_loop(UNUSED void *arg)
                 }
             }
 
-            status = waiter_siginfo_to_status(&info);
-            if (status >= 0) waiter_notify(ppd, status);  /* If < 0 notification is spurious */
+            if (waiter_siginfo_to_status(&status, &info) == 0)
+                waiter_notify(ppd, status);
         }
         tracing_mutex_unlock(&proc_pid_index_mtx);
 
@@ -602,15 +607,16 @@ proc_pid_arm(struct filter *filt, struct knote *kn)
     if (waitid(P_PID, (id_t) kn->kev.ident, &info,
                WEXITED | WNOWAIT | WNOHANG) == 0
         && info.si_pid == (pid_t) kn->kev.ident) {
-        int status = waiter_siginfo_to_status(&info);
-        if (status >= 0) {
+        int status;
+
+        if (waiter_siginfo_to_status(&status, &info) == 0) {
             dbg_printf("pid=%u already exited, firing immediately", (unsigned int) kn->kev.ident);
             waiter_notify(ppd, status);
         }
         /*
-         * status < 0 means a non-exit si_code (CLD_STOPPED etc).
-         * Stay registered and let the wait thread handle the
-         * eventual exit normally.
+         * waiter_siginfo_to_status returning -1 means a non-exit
+         * si_code (CLD_STOPPED etc).  Stay registered and let the
+         * wait thread handle the eventual exit normally.
          */
     }
     /* else: alive, never-our-child, or already reaped - all
