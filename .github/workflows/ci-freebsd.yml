@@ -13,11 +13,14 @@ on:
     paths:
       - 'test/*'
       - '.github/workflows/ci-freebsd.yml'
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 jobs:
   freebsd-tests:
 # virtualbox takes a long time to start
-    timeout-minutes: 10
+    timeout-minutes: ${{ github.event_name == 'schedule' && 20 || 10 }}
     runs-on: ubuntu-latest
     name: "FreeBSD tests"
     env:
@@ -40,4 +43,4 @@ jobs:
           cd libkqueue/test
           cmake .
           make
-          ./libkqueue-test -n 5
+          ./libkqueue-test -n ${{ github.event_name == 'schedule' && 20 || 1 }}

@@ -28,10 +28,13 @@ on:
       - 'src/solaris/**'
       - 'test/**'
       - '.github/workflows/ci-solaris.yml'
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 jobs:
   omnios-tests:
-    timeout-minutes: 10
+    timeout-minutes: ${{ github.event_name == 'schedule' && 20 || 10 }}
     runs-on: ubuntu-latest
     name: "OmniOS tests"
     env:
@@ -68,5 +71,5 @@ jobs:
           # output until the runner-level timeout kills the job.
           # Run the test binary directly so KQUEUE_DEBUG output and
           # per-test progress markers stream live.
-          ./test/libkqueue-test -n 5
+          ./test/libkqueue-test -n ${{ github.event_name == 'schedule' && 20 || 1 }}
           echo "=== run: done ==="

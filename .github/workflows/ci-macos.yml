@@ -13,10 +13,13 @@ on:
     paths:
       - 'test/*'
       - '.github/workflows/ci-macos.yml'
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 jobs:
   macos-tests:
-    timeout-minutes: 10
+    timeout-minutes: ${{ github.event_name == 'schedule' && 20 || 10 }}
     runs-on: macos-latest
     name: "macOS tests"
     steps:
@@ -32,4 +35,4 @@ jobs:
       env:
         KQUEUE_DEBUG: yes
       run: |
-        ./test/libkqueue-test -n 5
+        ./test/libkqueue-test -n ${{ github.event_name == 'schedule' && 20 || 1 }}
