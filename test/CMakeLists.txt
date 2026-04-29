@@ -17,23 +17,41 @@ cmake_minimum_required(VERSION 3.7.2)
 
 project(libkqueue-test LANGUAGES C)
 
+#
+# Per-filter test sources are only compiled when the matching
+# filter is enabled in the build (LIBKQUEUE_HAVE_FILT_* is set in
+# the parent CMakeLists).  Avoids dragging tests in for filters
+# the public header has redacted.
+#
 set(LIBKQUEUE_TEST_SOURCES
     common.c
     kqueue.c
-    libkqueue.c
     main.c
-    proc.c
-    read.c
     test.c
-    threading.c
-    timer.c
-    user.c
-    vnode.c
-    write.c)
-if(UNIX)
-  list(APPEND LIBKQUEUE_TEST_SOURCES
-       proc.c
-       signal.c)
+    threading.c)
+if(LIBKQUEUE_HAVE_FILT_READ)
+  list(APPEND LIBKQUEUE_TEST_SOURCES read.c)
+endif()
+if(LIBKQUEUE_HAVE_FILT_WRITE)
+  list(APPEND LIBKQUEUE_TEST_SOURCES write.c)
+endif()
+if(LIBKQUEUE_HAVE_FILT_TIMER)
+  list(APPEND LIBKQUEUE_TEST_SOURCES timer.c)
+endif()
+if(LIBKQUEUE_HAVE_FILT_USER)
+  list(APPEND LIBKQUEUE_TEST_SOURCES user.c)
+endif()
+if(LIBKQUEUE_HAVE_FILT_VNODE)
+  list(APPEND LIBKQUEUE_TEST_SOURCES vnode.c)
+endif()
+if(LIBKQUEUE_HAVE_FILT_PROC AND UNIX)
+  list(APPEND LIBKQUEUE_TEST_SOURCES proc.c)
+endif()
+if(LIBKQUEUE_HAVE_FILT_SIGNAL AND UNIX)
+  list(APPEND LIBKQUEUE_TEST_SOURCES signal.c)
+endif()
+if(LIBKQUEUE_HAVE_FILT_LIBKQUEUE)
+  list(APPEND LIBKQUEUE_TEST_SOURCES libkqueue.c)
 endif()
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/config.h.in
@@ -43,7 +61,7 @@ add_executable(libkqueue-test ${LIBKQUEUE_TEST_SOURCES})
 target_include_directories(libkqueue-test
                            PRIVATE
                              "${CMAKE_SOURCE_DIR}"
-                             "${CMAKE_SOURCE_DIR}/include")
+                             "${CMAKE_BINARY_DIR}/include")
 if(NOT "${CMAKE_SYSTEM_NAME}" MATCHES "(Solaris|SunOS)")
   # Backends that drop the kq mutex across kevent_wait can be exercised
   # by the cross-thread EVFILT_USER trigger test.  Solaris doesn't
@@ -86,7 +104,20 @@ endif()
 # FreeBSD pthread is a separate library, so the threading tests still
 # need an explicit link there; macOS pulls pthread in via libSystem.
 #
-if(NOT "${CMAKE_SYSTEM_NAME}" MATCHES "(Darwin|FreeBSD)")
+#
+# Default: don't link -lkqueue on macOS/FreeBSD (they ship native
+# kqueue).  When we explicitly built the libkqueue POSIX backend on
+# those hosts, the tests must exercise our library, not the native
+# one.  ${LIBKQUEUE_BACKEND_RESOLVED} is inherited from the parent
+# CMakeLists.
+#
+set(_test_use_libkqueue ON)
+if("${CMAKE_SYSTEM_NAME}" MATCHES "(Darwin|FreeBSD)" AND
+   NOT "${LIBKQUEUE_BACKEND_RESOLVED}" STREQUAL "posix")
+  set(_test_use_libkqueue OFF)
+endif()
+
+if(_test_use_libkqueue)
   target_link_libraries(libkqueue-test
                         PRIVATE
                         kqueue

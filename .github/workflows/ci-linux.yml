@@ -45,9 +45,6 @@ jobs:
             - { CC: musl-gcc, OS: ubuntu-24.04, NAME: release-musl-gcc,          BUILD_TYPE: Release    }
             - { CC: clang,    OS: ubuntu-24.04, NAME: debug-asan,                BUILD_TYPE: Debug,    ENABLE_ASAN: YES,   ENABLE_LSAN: YES,   ENABLE_UBSAN: YES }
             - { CC: clang,    OS: ubuntu-24.04, NAME: debug-tsan,                BUILD_TYPE: Debug,    ENABLE_TSAN: YES }
-            # Older kernel triggers a switch to posix/proc as it doesn't support pidfd.
-            - { CC: clang,    OS: ubuntu-24.04, NAME: debug-asan-posix-proc,     BUILD_TYPE: Debug,    ENABLE_ASAN: YES,   ENABLE_LSAN: YES,   ENABLE_UBSAN: YES }
-            - { CC: clang,    OS: ubuntu-24.04, NAME: debug-tsan-posix-proc,     BUILD_TYPE: Debug,    ENABLE_TSAN: YES }
 
     runs-on: ${{ matrix.env.OS }}
 

@@ -28,12 +28,17 @@
 # include <unistd.h>
 #endif
 
-#if defined(__linux__)
+#if defined(LIBKQUEUE_BACKEND_LINUX)
 # include <sys/syscall.h>
 # define THREAD_ID ((pid_t)  syscall(__NR_gettid))
-#elif defined(__sun) || defined(__EMSCRIPTEN__)
-# define THREAD_ID ((int) pthread_self())
-#elif defined(_WIN32)
+#elif defined(LIBKQUEUE_BACKEND_SOLARIS) || defined(LIBKQUEUE_BACKEND_POSIX)
+/*
+ * pthread_self() returns an opaque pointer-or-integer; cast via
+ * uintptr_t so this compiles cleanly on platforms where it's a
+ * struct pointer (e.g. Darwin) without losing useful entropy.
+ */
+# define THREAD_ID ((int)(uintptr_t) pthread_self())
+#elif defined(LIBKQUEUE_BACKEND_WINDOWS)
 # define THREAD_ID (int)(GetCurrentThreadId())
 #else
 # error Unsupported platform

@@ -91,24 +91,41 @@ filter_name(short filt)
 {
     int id;
     const char *fname[EVFILT_SYSCOUNT] = {
+#ifdef EVFILT_READ
         [~EVFILT_READ] = "EVFILT_READ",
+#endif
+#ifdef EVFILT_WRITE
         [~EVFILT_WRITE] = "EVFILT_WRITE",
+#endif
+#ifdef EVFILT_AIO
         [~EVFILT_AIO] = "EVFILT_AIO",
+#endif
+#ifdef EVFILT_VNODE
         [~EVFILT_VNODE] = "EVFILT_VNODE",
+#endif
+#ifdef EVFILT_PROC
         [~EVFILT_PROC] = "EVFILT_PROC",
+#endif
+#ifdef EVFILT_SIGNAL
         [~EVFILT_SIGNAL] = "EVFILT_SIGNAL",
+#endif
+#ifdef EVFILT_TIMER
         [~EVFILT_TIMER] = "EVFILT_TIMER",
+#endif
 #ifdef EVFILT_NETDEV
         [~EVFILT_NETDEV] = "EVFILT_NETDEV",
 #endif
+#ifdef EVFILT_FS
         [~EVFILT_FS] = "EVFILT_FS",
+#endif
 #ifdef EVFILT_LIO
         [~EVFILT_LIO] = "EVFILT_LIO",
 #endif
+#ifdef EVFILT_USER
         [~EVFILT_USER] = "EVFILT_USER",
-
+#endif
 #ifdef EVFILT_LIBKQUEUE
-        [~EVFILT_LIBKQUEUE] = "EVFILT_LIBKQUEUE"
+        [~EVFILT_LIBKQUEUE] = "EVFILT_LIBKQUEUE",
 #endif
     };
 
@@ -141,6 +158,7 @@ kevent_fflags_dump(struct kevent *kev)
 
     snprintf(buf, sizeof(buf), "fflags=0x%04x (", kev->fflags);
     switch (kev->filter) {
+#ifdef EVFILT_VNODE
     case EVFILT_VNODE:
         KEVFFL_DUMP(NOTE_DELETE);
         KEVFFL_DUMP(NOTE_WRITE);
@@ -149,7 +167,8 @@ kevent_fflags_dump(struct kevent *kev)
         KEVFFL_DUMP(NOTE_LINK);
         KEVFFL_DUMP(NOTE_RENAME);
         break;
-
+#endif
+#ifdef EVFILT_USER
     case EVFILT_USER:
         KEVFFL_DUMP(NOTE_FFNOP);
         KEVFFL_DUMP(NOTE_FFAND);
@@ -157,26 +176,33 @@ kevent_fflags_dump(struct kevent *kev)
         KEVFFL_DUMP(NOTE_FFCOPY);
         KEVFFL_DUMP(NOTE_TRIGGER);
         break;
-
-    case EVFILT_READ:
-    case EVFILT_WRITE:
-#ifdef NOTE_LOWAT
-        KEVFFL_DUMP(NOTE_LOWAT);
 #endif
+#if defined(EVFILT_READ) || defined(EVFILT_WRITE)
+# ifdef EVFILT_READ
+    case EVFILT_READ:
+# endif
+# ifdef EVFILT_WRITE
+    case EVFILT_WRITE:
+# endif
+# ifdef NOTE_LOWAT
+        KEVFFL_DUMP(NOTE_LOWAT);
+# endif
         break;
-
+#endif
+#ifdef EVFILT_PROC
     case EVFILT_PROC:
         KEVFFL_DUMP(NOTE_CHILD);
         KEVFFL_DUMP(NOTE_EXIT);
-#ifdef NOTE_EXITSTATUS
+# ifdef NOTE_EXITSTATUS
         KEVFFL_DUMP(NOTE_EXITSTATUS);
-#endif
+# endif
         KEVFFL_DUMP(NOTE_FORK);
         KEVFFL_DUMP(NOTE_EXEC);
-#ifdef NOTE_SIGNAL
+# ifdef NOTE_SIGNAL
         KEVFFL_DUMP(NOTE_SIGNAL);
-#endif
+# endif
         break;
+#endif
 
 #ifdef EVFILT_LIBKQUEUE
     case EVFILT_LIBKQUEUE:

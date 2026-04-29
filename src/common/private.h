@@ -45,17 +45,39 @@ struct eventfd;
 struct evfilt_data;
 struct kqueue_kevent_state;
 
-#if defined(_WIN32)
+/*
+ * Backend selection is driven by CMake.  See LIBKQUEUE_BACKEND in
+ * the top-level CMakeLists.txt; one of LIBKQUEUE_BACKEND_{WINDOWS,
+ * LINUX,SOLARIS,POSIX} is defined for the build.  We fall back to
+ * host-based detection when private.h is included from build
+ * setups that don't pre-define one (e.g. older external consumers).
+ */
+#if !defined(LIBKQUEUE_BACKEND_WINDOWS) && \
+    !defined(LIBKQUEUE_BACKEND_LINUX)   && \
+    !defined(LIBKQUEUE_BACKEND_SOLARIS) && \
+    !defined(LIBKQUEUE_BACKEND_POSIX)
+#  if defined(_WIN32)
+#    define LIBKQUEUE_BACKEND_WINDOWS 1
+#  elif defined(__linux__)
+#    define LIBKQUEUE_BACKEND_LINUX 1
+#  elif defined(__sun)
+#    define LIBKQUEUE_BACKEND_SOLARIS 1
+#  else
+#    define LIBKQUEUE_BACKEND_POSIX 1
+#  endif
+#endif
+
+#if defined(LIBKQUEUE_BACKEND_WINDOWS)
 # include "../windows/platform.h"
 
 # if !defined(NDEBUG) && !defined(__GNUC__)
 #  include <crtdbg.h>
 # endif
-#elif defined(__linux__)
+#elif defined(LIBKQUEUE_BACKEND_LINUX)
 # include "../linux/platform.h"
-#elif defined(__sun)
+#elif defined(LIBKQUEUE_BACKEND_SOLARIS)
 # include "../solaris/platform.h"
-#elif defined(__EMSCRIPTEN__)
+#elif defined(LIBKQUEUE_BACKEND_POSIX)
 # include "../posix/platform.h"
 #else
 # error Unknown platform
@@ -67,7 +89,7 @@ struct kqueue_kevent_state;
  * path can stack-allocate a state object and call the hooks
  * unconditionally.  The compiler inlines both away.
  */
-#if !defined(__linux__)
+#if !defined(LIBKQUEUE_BACKEND_LINUX)
 struct kqueue_kevent_state {
     char _unused;
 };
@@ -711,6 +733,8 @@ extern unsigned int kq_cnt;
 struct knote    *knote_lookup(struct filter *, uintptr_t);
 int             knote_delete_all(struct filter *filt);
 int             knote_mark_disabled_all(struct filter *filt);
+int             knote_foreach(struct filter *filt,
+                              int (*cb)(struct knote *, void *), void *uctx);
 struct knote    *knote_new(void);
 
 #define knote_retain(kn) atomic_inc(&kn->kn_ref)

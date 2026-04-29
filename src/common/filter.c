@@ -19,69 +19,44 @@
 
 #include "private.h"
 
-extern const struct filter evfilt_read;
-extern const struct filter evfilt_write;
-extern const struct filter evfilt_signal;
-extern const struct filter evfilt_vnode;
-extern const struct filter evfilt_proc;
-extern const struct filter evfilt_timer;
-extern const struct filter evfilt_user;
-extern const struct filter evfilt_libkqueue;
+/*
+ * The list of filters compiled into this build is supplied by
+ * CMake via the generated filter_list.h.  It expands FILTER_ENTRY
+ * once per filter that has a backing TU; redefining FILTER_ENTRY
+ * before each include lets us reuse the list for externs,
+ * registration, and per-pass loops without the #ifdef noise.
+ */
+#define FILTER_ENTRY(_name) extern const struct filter _name;
+#include "filter_list.h"
+#undef FILTER_ENTRY
 
 void
 filter_init_all(void)
 {
-#define FILTER_INIT(filt) do { \
-    if (filt.libkqueue_init) \
-        filt.libkqueue_init(); \
-} while (0)
-
-    FILTER_INIT(evfilt_read);
-    FILTER_INIT(evfilt_write);
-    FILTER_INIT(evfilt_signal);
-    FILTER_INIT(evfilt_vnode);
-    FILTER_INIT(evfilt_proc);
-    FILTER_INIT(evfilt_timer);
-    FILTER_INIT(evfilt_user);
-    FILTER_INIT(evfilt_libkqueue);
+#define FILTER_ENTRY(_name) \
+    if (_name.libkqueue_init) _name.libkqueue_init();
+#include "filter_list.h"
+#undef FILTER_ENTRY
 }
 
 #ifndef _WIN32
 void
 filter_fork_all(void)
 {
-#define FILTER_FORK(filt) do { \
-    if (filt.libkqueue_fork) \
-        filt.libkqueue_fork(); \
-} while (0)
-
-    FILTER_FORK(evfilt_read);
-    FILTER_FORK(evfilt_write);
-    FILTER_FORK(evfilt_signal);
-    FILTER_FORK(evfilt_vnode);
-    FILTER_FORK(evfilt_proc);
-    FILTER_FORK(evfilt_timer);
-    FILTER_FORK(evfilt_user);
-    FILTER_FORK(evfilt_libkqueue);
+#define FILTER_ENTRY(_name) \
+    if (_name.libkqueue_fork) _name.libkqueue_fork();
+#include "filter_list.h"
+#undef FILTER_ENTRY
 }
 #endif
 
 void
 filter_free_all(void)
 {
-#define FILTER_FREE(filt) do { \
-    if (filt.libkqueue_free) \
-        filt.libkqueue_free(); \
-} while (0)
-
-    FILTER_FREE(evfilt_read);
-    FILTER_FREE(evfilt_write);
-    FILTER_FREE(evfilt_signal);
-    FILTER_FREE(evfilt_vnode);
-    FILTER_FREE(evfilt_proc);
-    FILTER_FREE(evfilt_timer);
-    FILTER_FREE(evfilt_user);
-    FILTER_FREE(evfilt_libkqueue);
+#define FILTER_ENTRY(_name) \
+    if (_name.libkqueue_free) _name.libkqueue_free();
+#include "filter_list.h"
+#undef FILTER_ENTRY
 }
 
 static int
@@ -140,14 +115,9 @@ filter_register_all(struct kqueue *kq)
     int rv;
 
     rv = 0;
-    rv += filter_register(kq, &evfilt_read);
-    rv += filter_register(kq, &evfilt_write);
-    rv += filter_register(kq, &evfilt_signal);
-    rv += filter_register(kq, &evfilt_vnode);
-    rv += filter_register(kq, &evfilt_proc);
-    rv += filter_register(kq, &evfilt_timer);
-    rv += filter_register(kq, &evfilt_user);
-    rv += filter_register(kq, &evfilt_libkqueue);
+#define FILTER_ENTRY(_name) rv += filter_register(kq, &_name);
+#include "filter_list.h"
+#undef FILTER_ENTRY
     if (rv != 0) {
         filter_unregister_all(kq);
         return (-1);

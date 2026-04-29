@@ -42,8 +42,19 @@ map_new(size_t len)
     }
     dst->len = len;
 #else
+    /*
+     * MAP_ANONYMOUS is the POSIX/Linux spelling; BSD-derived
+     * platforms (Darwin, FreeBSD) only ship MAP_ANON.  MAP_NORESERVE
+     * is a Linux/Solaris-specific hint that we can omit elsewhere.
+     */
+#ifndef MAP_ANONYMOUS
+# define MAP_ANONYMOUS MAP_ANON
+#endif
+#ifndef MAP_NORESERVE
+# define MAP_NORESERVE 0
+#endif
     dst->data = mmap(NULL, len * sizeof(dst->data[0]), PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_NORESERVE | MAP_ANON, -1, 0);
+            MAP_PRIVATE | MAP_NORESERVE | MAP_ANONYMOUS, -1, 0);
     if (dst->data == MAP_FAILED) {
         dbg_perror("mmap(2)");
         free(dst);
@@ -55,10 +66,18 @@ map_new(size_t len)
     return (dst);
 }
 
+/*
+ * m->len is size_t.  Bounds checks must compare against it with
+ * matching width: `idx > (int)m->len` truncates large lengths
+ * (e.g. RLIMIT_NOFILE rlim_max == RLIM_INFINITY -> UINT_MAX) to
+ * -1 and rejects every non-negative index.
+ */
+#define MAP_IDX_OOB(_m, _idx) ((_idx) < 0 || (size_t)(_idx) >= (_m)->len)
+
 int
 map_insert(struct map *m, int idx, void *ptr)
 {
-    if (unlikely(idx < 0 || idx > (int)m->len))
+    if (unlikely(MAP_IDX_OOB(m, idx)))
            return (-1);
 
     if (atomic_ptr_cas(&(m->data[idx]), NULL, ptr)) {
@@ -74,7 +93,7 @@ map_insert(struct map *m, int idx, void *ptr)
 int
 map_remove(struct map *m, int idx, void *ptr)
 {
-    if (unlikely(idx < 0 || idx > (int)m->len))
+    if (unlikely(MAP_IDX_OOB(m, idx)))
            return (-1);
 
     if (atomic_ptr_cas(&(m->data[idx]), ptr, NULL)) {
@@ -105,7 +124,7 @@ map_replace(struct map *m, int idx, void *oldp, void *newp)
 void *
 map_lookup(struct map *m, int idx)
 {
-    if (unlikely(idx < 0 || idx > (int)m->len))
+    if (unlikely(MAP_IDX_OOB(m, idx)))
         return (NULL);
 
     return (void *)atomic_ptr_load(&m->data[idx]);
@@ -114,7 +133,7 @@ map_lookup(struct map *m, int idx)
 void *
 map_delete(struct map *m, int idx)
 {
-    if (unlikely(idx < 0 || idx > (int)m->len))
+    if (unlikely(MAP_IDX_OOB(m, idx)))
            return ((void *)-1);
 
     return (void *)atomic_ptr_swap(&(m->data[idx]), NULL);

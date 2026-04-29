@@ -163,41 +163,56 @@ main(int argc, char **argv)
      * stdio). */
     setvbuf(stdout, NULL, _IOLBF, 0);
 
+    /*
+     * Each filter test is gated on the public header actually
+     * defining its EVFILT_* macro.  CMake renders sys/event.h
+     * (from event.h.in) with only the filters the linked
+     * libkqueue implements; tests for absent filters are simply
+     * not registered, so a backend that ships a partial filter
+     * set still produces a clean run.
+     */
     struct unit_test tests[MAX_TESTS] = {
         { .ut_name = "kqueue",
           .ut_enabled = 1,
           .ut_func = test_kqueue,
           .ut_end = INT_MAX },
-
+#ifdef EVFILT_READ
         { .ut_name = "socket",
           .ut_enabled = 1,
           .ut_func = test_evfilt_read,
           .ut_end = INT_MAX },
-#if !defined(_WIN32) && !defined(__ANDROID__)
+#endif
+#if defined(EVFILT_SIGNAL) && !defined(_WIN32) && !defined(__ANDROID__)
         // XXX-FIXME -- BROKEN ON LINUX WHEN RUN IN A SEPARATE THREAD
         { .ut_name = "signal",
           .ut_enabled = 1,
           .ut_func = test_evfilt_signal,
           .ut_end = INT_MAX },
 #endif
+#ifdef EVFILT_PROC
         { .ut_name = "proc",
           .ut_enabled = 1,
           .ut_func = test_evfilt_proc,
           .ut_end = INT_MAX },
+#endif
+#ifdef EVFILT_TIMER
         { .ut_name = "timer",
           .ut_enabled = 1,
           .ut_func = test_evfilt_timer,
           .ut_end = INT_MAX },
-#ifndef _WIN32
+#endif
+#if defined(EVFILT_VNODE) && !defined(_WIN32)
         { .ut_name = "vnode",
           .ut_enabled = 1,
           .ut_func = test_evfilt_vnode,
           .ut_end = INT_MAX },
 #endif
+#ifdef EVFILT_WRITE
         { .ut_name = "write",
           .ut_enabled = 1,
           .ut_func = test_evfilt_write,
           .ut_end = INT_MAX },
+#endif
 #ifdef EVFILT_USER
         { .ut_name = "user",
           .ut_enabled = 1,

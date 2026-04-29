@@ -59,7 +59,7 @@ test_kevent_proc_get(struct test_context *ctx)
      *  exit code of the process, FreeBSD always
      *  provides it.
      */
-#ifdef __APPLE__
+#ifdef NOTE_EXITSTATUS
     fflags = NOTE_EXIT | NOTE_EXITSTATUS;
 #else
     fflags = NOTE_EXIT;
@@ -104,7 +104,7 @@ test_kevent_proc_exit_status_ok(struct test_context *ctx)
      *  exit code of the process, FreeBSD always
      *  provides it.
      */
-#ifdef __APPLE__
+#ifdef NOTE_EXITSTATUS
     fflags = NOTE_EXIT | NOTE_EXITSTATUS;
 #else
     fflags = NOTE_EXIT;
@@ -156,7 +156,7 @@ test_kevent_proc_exit_status_error(struct test_context *ctx)
      *  exit code of the process, FreeBSD always
      *  provides it.
      */
-#ifdef __APPLE__
+#ifdef NOTE_EXITSTATUS
     fflags = NOTE_EXIT | NOTE_EXITSTATUS;
 #else
     fflags = NOTE_EXIT;
@@ -208,7 +208,7 @@ test_kevent_proc_multiple_kqueue(struct test_context *ctx)
      *  exit code of the process, FreeBSD always
      *  provides it.
      */
-#ifdef __APPLE__
+#ifdef NOTE_EXITSTATUS
     fflags = NOTE_EXIT | NOTE_EXITSTATUS;
 #else
     fflags = NOTE_EXIT;

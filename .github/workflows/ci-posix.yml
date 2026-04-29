@@ -1,0 +1,68 @@
+name: CI POSIX
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'CMakeLists.txt'
+      - 'include/sys/*'
+      - 'src/common/*'
+      - 'src/posix/*'
+      - 'test/*'
+      - '.github/workflows/ci-posix.yml'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'CMakeLists.txt'
+      - 'include/sys/*'
+      - 'src/common/*'
+      - 'src/posix/*'
+      - 'test/*'
+      - '.github/workflows/ci-posix.yml'
+  workflow_dispatch:
+
+env:
+  ASAN_OPTIONS: symbolize=1 detect_leaks=1 detect_stack_use_after_return=1
+  LSAN_OPTIONS: fast_unwind_on_malloc=0:malloc_context_size=50
+
+jobs:
+  posix-build-and-test:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        env:
+          # Force the POSIX (select-based) backend on Linux so it
+          # exercises the same source paths as the macOS native build.
+          - { OS: ubuntu-24.04, NAME: linux-release, BUILD_TYPE: Release }
+          - { OS: ubuntu-24.04, NAME: linux-asan,    BUILD_TYPE: Debug, ENABLE_ASAN: YES, ENABLE_LSAN: YES, ENABLE_UBSAN: YES }
+          - { OS: macos-14,     NAME: macos-release, BUILD_TYPE: Release }
+          - { OS: macos-14,     NAME: macos-asan,    BUILD_TYPE: Debug, ENABLE_ASAN: YES, ENABLE_UBSAN: YES }
+
+    runs-on: ${{ matrix.env.OS }}
+    env: ${{ matrix.env }}
+    name: "${{ matrix.env.NAME }}"
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Configure
+      run: |
+        cmake . -G "Unix Makefiles" \
+          -DCMAKE_VERBOSE_MAKEFILE:BOOL="ON" \
+          -DLIBKQUEUE_BACKEND=posix \
+          -DENABLE_TESTING="YES" \
+          -DENABLE_ASAN="${ENABLE_ASAN:-NO}" \
+          -DENABLE_LSAN="${ENABLE_LSAN:-NO}" \
+          -DENABLE_UBSAN="${ENABLE_UBSAN:-NO}" \
+          -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
+
+    - name: Build
+      run: make -j2
+
+    - name: Test
+      env:
+        KQUEUE_DEBUG: ${{ matrix.env.BUILD_TYPE == 'Release' && '' || '1' }}
+      run: test/libkqueue-test

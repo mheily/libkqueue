@@ -88,20 +88,54 @@ struct kevent {
 
 /** @name Filters
  *
+ * Filter identifier macros.  External consumers see only the
+ * filters this libkqueue build actually implements, so
+ * `#ifdef EVFILT_VNODE` is a portable feature test for "is this
+ * filter available in the libkqueue we're linked against".
+ *
+ * libkqueue's own translation units are compiled with
+ * LIBKQUEUE_INTERNAL set so common code (filter_name, filter
+ * registration, etc.) sees every constant regardless of which
+ * filters this backend chose to ship.
+ *
  * @{
  */
+#if defined(LIBKQUEUE_INTERNAL) || @LIBKQUEUE_PUBLIC_FILT_READ@
 #define EVFILT_READ          (-1)      //!< Read I/O event.
+#endif
+#if defined(LIBKQUEUE_INTERNAL) || @LIBKQUEUE_PUBLIC_FILT_WRITE@
 #define EVFILT_WRITE         (-2)      //!< Write I/O event.
+#endif
+#if defined(LIBKQUEUE_INTERNAL) || @LIBKQUEUE_PUBLIC_FILT_AIO@
 #define EVFILT_AIO           (-3)      //!< Attached to aio requests.
+#endif
+#if defined(LIBKQUEUE_INTERNAL) || @LIBKQUEUE_PUBLIC_FILT_VNODE@
 #define EVFILT_VNODE         (-4)      //!< Attached to vnodes.
+#endif
+#if defined(LIBKQUEUE_INTERNAL) || @LIBKQUEUE_PUBLIC_FILT_PROC@
 #define EVFILT_PROC          (-5)      //!< attached to struct proc.
+#endif
+#if defined(LIBKQUEUE_INTERNAL) || @LIBKQUEUE_PUBLIC_FILT_SIGNAL@
 #define EVFILT_SIGNAL        (-6)      //!< Attached to struct proc.
+#endif
+#if defined(LIBKQUEUE_INTERNAL) || @LIBKQUEUE_PUBLIC_FILT_TIMER@
 #define EVFILT_TIMER         (-7)      //!< Timers.
+#endif
+#if defined(LIBKQUEUE_INTERNAL) || @LIBKQUEUE_PUBLIC_FILT_NETDEV@
 #define EVFILT_NETDEV        (-8)      //!< Network devices.
+#endif
+#if defined(LIBKQUEUE_INTERNAL) || @LIBKQUEUE_PUBLIC_FILT_FS@
 #define EVFILT_FS            (-9)      //!< Filesystem events.
+#endif
+#if defined(LIBKQUEUE_INTERNAL) || @LIBKQUEUE_PUBLIC_FILT_LIO@
 #define EVFILT_LIO           (-10)     //!< Attached to lio requests.
+#endif
+#if defined(LIBKQUEUE_INTERNAL) || @LIBKQUEUE_PUBLIC_FILT_USER@
 #define EVFILT_USER          (-11)     //!< User events.
+#endif
+#if defined(LIBKQUEUE_INTERNAL) || @LIBKQUEUE_PUBLIC_FILT_LIBKQUEUE@
 #define EVFILT_LIBKQUEUE     (-12)     //!< libkqueue specific filter.
+#endif
 #define EVFILT_SYSCOUNT      12
 /** @} */
 

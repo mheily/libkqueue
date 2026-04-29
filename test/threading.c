@@ -637,6 +637,7 @@ test_kevent_threading_signal_delete_race(struct test_context *ctx)
     sigaction(SIGUSR1, &old_sa, NULL);
 }
 
+#ifdef EVFILT_VNODE
 /*
  * EVFILT_VNODE: each watched fd gets its own inotifyfd registered
  * with epoll.  The test doesn't trigger any event - it just churns
@@ -684,7 +685,9 @@ test_kevent_threading_vnode_delete_race(struct test_context *ctx)
     unlink(path);
     sem_close_anon(ready);
 }
+#endif /* EVFILT_VNODE */
 
+#ifdef EVFILT_PROC
 /*
  * EVFILT_PROC: each watched pid gets its own pidfd registered with
  * epoll.  Forking is heavy so this test runs fewer iterations.
@@ -731,6 +734,7 @@ test_kevent_threading_proc_delete_race(struct test_context *ctx)
     if (close(kqfd) < 0) die("close");
     sem_close_anon(ready);
 }
+#endif /* EVFILT_PROC */
 
 /*
  * EVFILT_READ / EVFILT_WRITE share the platform's fd_state machinery
@@ -1036,6 +1040,7 @@ test_kevent_threading_signal_single_delivery(struct test_context *ctx)
     sigaction(SIGUSR1, &prev, NULL);
 }
 
+#ifdef EVFILT_PROC
 struct proc_single_delivery_fire_ctx { pid_t pid; };
 
 static void
@@ -1085,6 +1090,7 @@ test_kevent_threading_proc_single_delivery(struct test_context *ctx)
     if (waitpid(pid, NULL, 0) < 0) die("waitpid");
     if (close(kqfd) < 0) die("close");
 }
+#endif /* EVFILT_PROC */
 
 struct user_single_delivery_fire_ctx { int kqfd; uintptr_t ident; };
 
@@ -1160,6 +1166,7 @@ test_kevent_threading_timer_single_delivery(struct test_context *ctx)
     if (close(kqfd) < 0) die("close");
 }
 
+#ifdef EVFILT_VNODE
 struct vnode_single_delivery_fire_ctx { int fd; };
 
 static void
@@ -1198,6 +1205,7 @@ test_kevent_threading_vnode_single_delivery(struct test_context *ctx)
     if (close(fd) < 0) die("close fd");
     unlink(path);
 }
+#endif /* EVFILT_VNODE */
 
 struct read_single_delivery_fire_ctx { int writefd; };
 
@@ -1315,18 +1323,24 @@ test_threading(struct test_context *ctx)
 	 * retrieval, so these races deadlock or trip EFAULT.  Gated
 	 * until the backend grows knote refcounting + lock-drop.
 	 */
+# ifdef EVFILT_VNODE
 	test(kevent_threading_vnode_delete_race, ctx);
+# endif
+# ifdef EVFILT_PROC
 	test(kevent_threading_proc_delete_race, ctx);
-#else
-	(void) 0;
+# endif
 #endif
 	test(kevent_threading_read_delete_race, ctx);
 	test(kevent_threading_write_delete_race, ctx);
 	test(kevent_threading_user_single_delivery, ctx);
 	test(kevent_threading_timer_single_delivery, ctx);
 	test(kevent_threading_signal_single_delivery, ctx);
+#ifdef EVFILT_VNODE
 	test(kevent_threading_vnode_single_delivery, ctx);
+#endif
+#ifdef EVFILT_PROC
 	test(kevent_threading_proc_single_delivery, ctx);
+#endif
 	test(kevent_threading_read_single_delivery, ctx);
 	test(kevent_threading_write_single_delivery, ctx);
 }

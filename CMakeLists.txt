@@ -147,6 +147,35 @@ include(CheckIncludeFiles)
 include(CheckSymbolExists)
 include(GNUInstallDirs)
 
+#
+#  Backend selection.
+#
+#  auto    - pick a native backend per host (windows/linux/solaris) and
+#            fall back to posix on anything else.
+#  posix   - force the portable select(2)-based backend on any host.
+#  linux   - force the linux/epoll backend.
+#  windows - force the windows IOCP backend.
+#  solaris - force the solaris event-port backend.
+#
+set(LIBKQUEUE_BACKEND "auto" CACHE STRING
+    "Backend to build: auto, posix, linux, windows, solaris")
+set_property(CACHE LIBKQUEUE_BACKEND PROPERTY STRINGS auto posix linux windows solaris)
+
+if(LIBKQUEUE_BACKEND STREQUAL "auto")
+  if(CMAKE_SYSTEM_NAME MATCHES "Windows")
+    set(LIBKQUEUE_BACKEND_RESOLVED "windows")
+  elseif(CMAKE_SYSTEM_NAME MATCHES "(Solaris|SunOS)")
+    set(LIBKQUEUE_BACKEND_RESOLVED "solaris")
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(LIBKQUEUE_BACKEND_RESOLVED "linux")
+  else()
+    set(LIBKQUEUE_BACKEND_RESOLVED "posix")
+  endif()
+else()
+  set(LIBKQUEUE_BACKEND_RESOLVED "${LIBKQUEUE_BACKEND}")
+endif()
+message(STATUS "libkqueue backend: ${LIBKQUEUE_BACKEND_RESOLVED} (request: ${LIBKQUEUE_BACKEND})")
+
 check_include_files(sys/eventfd.h HAVE_SYS_EVENTFD_H)
 check_include_files(sys/queue.h HAVE_SYS_QUEUE_H)
 check_include_files(sys/signalfd.h HAVE_SYS_SIGNALFD_H)
@@ -165,12 +194,123 @@ endif()
 set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
 check_symbol_exists(ppoll poll.h HAVE_DECL_PPOLL)
 check_symbol_exists(SYS_pidfd_open sys/syscall.h HAVE_SYS_PIDFD_OPEN)
+unset(CMAKE_REQUIRED_DEFINITIONS)
+
+#
+#  POSIX-backend feature checks.  Each filter is independently
+#  gated; when its underlying syscall is absent the filter source
+#  compiles to a kf_id=0 stub so filter_register skips it cleanly.
+#
+if(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "posix")
+  check_include_files(sys/select.h HAVE_SYS_SELECT_H)
+  check_symbol_exists(pselect sys/select.h HAVE_PSELECT)
+  check_symbol_exists(sigaction signal.h HAVE_SIGACTION)
+  check_symbol_exists(timer_create "signal.h;time.h" HAVE_TIMER_CREATE)
+  check_symbol_exists(setitimer sys/time.h HAVE_SETITIMER)
+  check_symbol_exists(waitpid sys/wait.h HAVE_WAITPID)
+  check_symbol_exists(sigwaitinfo signal.h HAVE_SIGWAITINFO)
+  check_symbol_exists(pipe2 fcntl.h HAVE_PIPE2)
+  check_symbol_exists(FIONREAD sys/ioctl.h HAVE_DECL_FIONREAD)
+  check_symbol_exists(SO_ERROR sys/socket.h HAVE_DECL_SO_ERROR)
+
+  #
+  #  Per-filter availability.  READ/WRITE/USER/SIGNAL ride on
+  #  pselect+sigaction+a self-pipe and are enabled together when
+  #  those primitives are present.  TIMER, PROC, VNODE are
+  #  separately gated.
+  #
+  if(HAVE_PSELECT AND HAVE_SIGACTION)
+    set(LIBKQUEUE_HAVE_FILT_READ   1)
+    set(LIBKQUEUE_HAVE_FILT_WRITE  1)
+    set(LIBKQUEUE_HAVE_FILT_USER   1)
+    set(LIBKQUEUE_HAVE_FILT_SIGNAL 1)
+  endif()
+  if(HAVE_TIMER_CREATE OR HAVE_SETITIMER)
+    set(LIBKQUEUE_HAVE_FILT_TIMER 1)
+  endif()
+  #
+  #  proc filter relies on the SIGCHLD wait thread calling
+  #  sigwaitinfo(2) for siginfo_t.  macOS doesn't ship sigwaitinfo,
+  #  so the filter is unavailable there until an alternative
+  #  (signal handler + self-pipe) lands.
+  #
+  if(HAVE_WAITPID AND HAVE_SIGACTION AND HAVE_SIGWAITINFO)
+    set(LIBKQUEUE_HAVE_FILT_PROC 1)
+  endif()
+  #
+  #  VNODE: fstat-polling implementation is on the roadmap but not
+  #  yet wired in for the POSIX backend.  Leaving it off causes the
+  #  generated public header to redact EVFILT_VNODE and the test
+  #  suite to skip vnode tests.
+  #
+else()
+  #
+  #  Native backends (linux, solaris, windows) ship complete filter
+  #  sets; expose all of them in the public header.  The actual
+  #  EVFILT_* constants are still defined inside libkqueue itself
+  #  via LIBKQUEUE_INTERNAL regardless of which subset is exposed.
+  #
+  set(LIBKQUEUE_HAVE_FILT_READ   1)
+  set(LIBKQUEUE_HAVE_FILT_WRITE  1)
+  set(LIBKQUEUE_HAVE_FILT_VNODE  1)
+  set(LIBKQUEUE_HAVE_FILT_PROC   1)
+  set(LIBKQUEUE_HAVE_FILT_SIGNAL 1)
+  set(LIBKQUEUE_HAVE_FILT_TIMER  1)
+  set(LIBKQUEUE_HAVE_FILT_USER   1)
+endif()
+
+#
+#  Always-public meta-filter(s).  EVFILT_LIBKQUEUE is implemented in
+#  common code and not gated on any platform feature.
+#
+set(LIBKQUEUE_HAVE_FILT_LIBKQUEUE 1)
+
+#
+#  Render include/sys/event.h.in -> build dir, redacting filter
+#  macros that this build doesn't implement.  External consumers
+#  see only the working set; internal compilation gets the full
+#  set via -DLIBKQUEUE_INTERNAL=1 below.
+#
+foreach(_filt READ WRITE AIO VNODE PROC SIGNAL TIMER NETDEV FS LIO USER LIBKQUEUE)
+  if(LIBKQUEUE_HAVE_FILT_${_filt})
+    set(LIBKQUEUE_PUBLIC_FILT_${_filt} 1)
+  else()
+    set(LIBKQUEUE_PUBLIC_FILT_${_filt} 0)
+  endif()
+endforeach()
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/include/sys/event.h.in
+               ${CMAKE_CURRENT_BINARY_DIR}/include/sys/event.h
+               @ONLY)
+
+#
+#  Generate src/common/filter_list.h: an x-macro list of every
+#  filter that has a backing TU in this build.  src/common/filter.c
+#  redefines FILTER_ENTRY around each #include of this file to walk
+#  externs / register / per-pass calls without per-filter #ifdefs.
+#
+set(_filter_list_lines "")
+foreach(_filt READ WRITE SIGNAL VNODE PROC TIMER USER LIBKQUEUE)
+  if(LIBKQUEUE_HAVE_FILT_${_filt})
+    string(TOLOWER "${_filt}" _filt_lower)
+    string(APPEND _filter_list_lines "FILTER_ENTRY(evfilt_${_filt_lower})\n")
+  endif()
+endforeach()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/include/filter_list.h.tmp"
+"/* Generated by CMake.  Do not edit. */
+#ifndef FILTER_ENTRY
+#  error filter_list.h must be included with FILTER_ENTRY defined
+#endif
+${_filter_list_lines}")
+configure_file(${CMAKE_CURRENT_BINARY_DIR}/include/filter_list.h.tmp
+               ${CMAKE_CURRENT_BINARY_DIR}/include/filter_list.h
+               COPYONLY)
+unset(_filter_list_lines)
 
 include_directories(${CMAKE_CURRENT_BINARY_DIR}
                     ${CMAKE_CURRENT_BINARY_DIR}/include)
 
 set(LIBKQUEUE_HEADERS
-    include/sys/event.h
+    ${CMAKE_CURRENT_BINARY_DIR}/include/sys/event.h
     )
 
 set(LIBKQUEUE_SOURCES
@@ -188,7 +328,7 @@ set(LIBKQUEUE_SOURCES
     src/common/tree.h
     )
 
-if(CMAKE_SYSTEM_NAME MATCHES Windows)
+if(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "windows")
   list(APPEND LIBKQUEUE_SOURCES
        src/windows/platform.c
        src/windows/platform.h
@@ -197,7 +337,7 @@ if(CMAKE_SYSTEM_NAME MATCHES Windows)
        src/windows/timer.c
        src/windows/user.c
        )
-elseif(CMAKE_SYSTEM_NAME MATCHES "(Solaris|SunOS)")
+elseif(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "solaris")
   list(APPEND LIBKQUEUE_SOURCES
        src/common/evfilt_signal.h
        src/common/evfilt_signalfd.c
@@ -211,7 +351,7 @@ elseif(CMAKE_SYSTEM_NAME MATCHES "(Solaris|SunOS)")
        src/solaris/user.c
        src/solaris/vnode.c
        )
-elseif(CMAKE_SYSTEM_NAME STREQUAL Linux)
+elseif(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "linux")
   check_include_files(linux/limits.h HAVE_LINUX_LIMITS_H)
   check_include_files(linux/sockios.h HAVE_LINUX_SOCKIOS_H)
   check_include_files(linux/unistd.h HAVE_LINUX_UNISTD_H)
@@ -239,23 +379,29 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL Linux)
     else()
         list(APPEND LIBKQUEUE_SOURCES src/posix/proc.c)
     endif()
-elseif(CMAKE_SYSTEM_NAME STREQUAL Emscripten)
+elseif(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "posix")
   list(APPEND LIBKQUEUE_SOURCES
+       src/common/evfilt_signal.h
        src/posix/eventfd.c
        src/posix/eventfd.h
        src/posix/platform.c
        src/posix/platform.h
-       src/posix/proc.c
-       src/posix/read.c
-       src/posix/signal.c
-       src/posix/signal.c
-       src/posix/timer.c
-       src/posix/user.c
-       src/posix/vnode.c
-       src/posix/write.c
+       src/posix/platform_ext.h
        )
+  #
+  #  Per-filter source pulls.  Each src/posix/<filt>.c is brought
+  #  in only when its LIBKQUEUE_HAVE_FILT_* gate is set; the matching
+  #  evfilt_<name> symbol is referenced from filter_list.h, also
+  #  generated from the same gates, so the link stays in lock-step.
+  #
+  foreach(_filt READ WRITE VNODE PROC TIMER SIGNAL USER)
+    if(LIBKQUEUE_HAVE_FILT_${_filt})
+      string(TOLOWER "${_filt}" _filt_lower)
+      list(APPEND LIBKQUEUE_SOURCES src/posix/${_filt_lower}.c)
+    endif()
+  endforeach()
 else()
-  message(FATAL_ERROR "unsupported host os")
+  message(FATAL_ERROR "unknown backend ${LIBKQUEUE_BACKEND_RESOLVED}")
 endif()
 
 source_group(includes
@@ -266,6 +412,29 @@ source_group(src
                ${LIBKQUEUE_SOURCES})
 
 add_library(objlib OBJECT ${LIBKQUEUE_SOURCES} ${LIBKQUEUE_HEADERS})
+
+#
+#  Tell src/common/private.h which backend's platform.h to pull in.
+#  LIBKQUEUE_INTERNAL exposes every EVFILT_* constant in our own
+#  translation units, even ones the public header redacts.
+#
+string(TOUPPER "${LIBKQUEUE_BACKEND_RESOLVED}" _LIBKQUEUE_BACKEND_UPPER)
+target_compile_definitions(objlib PRIVATE
+    LIBKQUEUE_BACKEND_${_LIBKQUEUE_BACKEND_UPPER}=1
+    LIBKQUEUE_INTERNAL=1)
+unset(_LIBKQUEUE_BACKEND_UPPER)
+
+#
+#  Per-filter availability defines for the POSIX backend.
+#  Each src/posix/<filt>.c source uses these to expand to a real
+#  filter or a kf_id=0 stub.
+#
+foreach(_filt READ WRITE VNODE PROC TIMER SIGNAL USER)
+  if(LIBKQUEUE_HAVE_FILT_${_filt})
+    target_compile_definitions(objlib PRIVATE LIBKQUEUE_HAVE_FILT_${_filt}=1)
+  endif()
+endforeach()
+
 if(ENABLE_SHARED)
   add_library(kqueue SHARED $<TARGET_OBJECTS:objlib>)
   # We should have absolute ABI compatibility between versions as none
@@ -292,6 +461,11 @@ if(WIN32)
 else()
   include(StdAtomicCheck)
   target_compile_definitions(objlib PRIVATE _XOPEN_SOURCE=600)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    # _XOPEN_SOURCE on Darwin hides BSD extensions (MAP_ANON,
+    # SO_NOSIGPIPE, etc.); _DARWIN_C_SOURCE re-exposes them.
+    target_compile_definitions(objlib PRIVATE _DARWIN_C_SOURCE)
+  endif()
   if(CMAKE_SYSTEM_NAME MATCHES "(Solaris|SunOS)")
     # Solaris/illumos hides various pthread/signal POSIX prototypes
     # (sigwait 2-arg, etc.) and the rlimit/event-port headers behind
@@ -350,7 +524,7 @@ set(CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION ${CMAKE_INSTALL_FULL_MANDIR}
                                                   ${CMAKE_INSTALL_FULL_INCLUDEDIR}/sys)
 
 install(FILES
-          "${CMAKE_SOURCE_DIR}/include/sys/event.h"
+          "${CMAKE_CURRENT_BINARY_DIR}/include/sys/event.h"
         DESTINATION
           "${CMAKE_INSTALL_FULL_INCLUDEDIR}/kqueue/sys"
         COMPONENT headers)

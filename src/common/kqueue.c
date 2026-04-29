@@ -72,6 +72,15 @@ get_fd_limit(void)
         dbg_perror("getrlimit(2)");
         return (65536);
     } else {
+        /*
+         * macOS reports RLIMIT_NOFILE.rlim_max as RLIM_INFINITY by
+         * default, which truncates to UINT_MAX and would have us
+         * mmap'ing tens of gigabytes for the kqmap.  Cap at a
+         * value that's plenty for any sane process.
+         */
+        rlim_t cap = 1U << 20;
+        if (rlim.rlim_max == RLIM_INFINITY || rlim.rlim_max > cap)
+            return (unsigned int) cap;
         return (rlim.rlim_max);
     }
 #endif
