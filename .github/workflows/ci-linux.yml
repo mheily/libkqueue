@@ -22,7 +22,7 @@ on:
       - 'test/*'
       - '.github/workflows/ci-linux.yml'
   schedule:
-    # Daily soak run: 20 iterations to surface flakes that a single
+    # Daily soak run: 50 iterations to surface flakes that a single
     # iteration won't catch.
     - cron: '0 6 * * *'
   workflow_dispatch:
@@ -35,7 +35,7 @@ env:
 
 jobs:
   linux-build-and-test:
-    timeout-minutes: ${{ github.event_name == 'schedule' && 20 || 10 }}
+    timeout-minutes: ${{ github.event_name == 'schedule' && 60 || 10 }}
     strategy:
       fail-fast: false
       matrix:
@@ -124,7 +124,7 @@ jobs:
       env:
         KQUEUE_DEBUG: 1
         TSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/tsan.supp
-      run: test/libkqueue-test -n ${{ github.event_name == 'schedule' && 20 || 1 }}
+      run: test/libkqueue-test -n ${{ github.event_name == 'schedule' && 50 || 1 }}
 
     - name: Build debian packages
       run: cpack -G DEB

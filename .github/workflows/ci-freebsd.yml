@@ -20,7 +20,7 @@ on:
 jobs:
   freebsd-tests:
 # virtualbox takes a long time to start
-    timeout-minutes: ${{ github.event_name == 'schedule' && 20 || 10 }}
+    timeout-minutes: ${{ github.event_name == 'schedule' && 60 || 10 }}
     runs-on: ubuntu-latest
     name: "FreeBSD tests"
     env:
@@ -43,4 +43,4 @@ jobs:
           cd libkqueue/test
           cmake .
           make
-          ./libkqueue-test -n ${{ github.event_name == 'schedule' && 20 || 1 }}
+          ./libkqueue-test -n ${{ github.event_name == 'schedule' && 50 || 1 }}

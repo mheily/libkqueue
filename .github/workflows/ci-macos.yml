@@ -19,7 +19,7 @@ on:
 
 jobs:
   macos-tests:
-    timeout-minutes: ${{ github.event_name == 'schedule' && 20 || 10 }}
+    timeout-minutes: ${{ github.event_name == 'schedule' && 60 || 10 }}
     runs-on: macos-latest
     name: "macOS tests"
     steps:
@@ -35,4 +35,4 @@ jobs:
       env:
         KQUEUE_DEBUG: yes
       run: |
-        ./test/libkqueue-test -n ${{ github.event_name == 'schedule' && 20 || 1 }}
+        ./test/libkqueue-test -n ${{ github.event_name == 'schedule' && 50 || 1 }}

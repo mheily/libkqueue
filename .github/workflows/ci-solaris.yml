@@ -34,7 +34,7 @@ on:
 
 jobs:
   omnios-tests:
-    timeout-minutes: ${{ github.event_name == 'schedule' && 20 || 10 }}
+    timeout-minutes: ${{ github.event_name == 'schedule' && 60 || 10 }}
     runs-on: ubuntu-latest
     name: "OmniOS tests"
     env:
@@ -71,5 +71,5 @@ jobs:
           # output until the runner-level timeout kills the job.
           # Run the test binary directly so KQUEUE_DEBUG output and
           # per-test progress markers stream live.
-          ./test/libkqueue-test -n ${{ github.event_name == 'schedule' && 20 || 1 }}
+          ./test/libkqueue-test -n ${{ github.event_name == 'schedule' && 50 || 1 }}
           echo "=== run: done ==="

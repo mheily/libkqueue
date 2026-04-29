@@ -73,6 +73,9 @@ static int nb_max_fd;
 static void
 linux_kqueue_free(struct kqueue *kq);
 
+static void
+linux_kqueue_interrupt(struct kqueue *kq);
+
 /*
  * Helper method for dealing with the fd_map to avoid calling calloc()
  * on the entire set of fds at once. fd_map uses 0 to indicate that
@@ -171,7 +174,17 @@ monitoring_thread_cleanup(UNUSED void *arg)
                        errno == EBADF ? "File descriptor already closed" : strerror(errno));
             fd_use_cnt[kq->kq_id] = 0;
         } else {
+            /*
+             * User never closed kqfd.  We still treat this as a
+             * leak (sanity check below) but interrupt any threads
+             * parked in epoll_wait first so they exit kevent()
+             * with EBADF instead of staying stuck forever.  The
+             * kq itself is still leaked per the existing contract
+             * - the user is responsible for matching kqueue() with
+             * close().
+             */
             assert(fd_use_cnt[kq->kq_id] > 0);
+            linux_kqueue_interrupt(kq);
         }
 
         if (fd_use_cnt[kq->kq_id] == 0) {
@@ -220,9 +233,14 @@ monitoring_thread_kqueue_cleanup(int signal_fd)
 
     kq = kqueue_lookup(fd);
     if (!kq) {
-        /* Should not happen */
-        dbg_printf("fd=%i - no kqueue associated", fd);
-        assert(0);
+        /*
+         * Stale signal: kqueue_free already ran map_remove on
+         * this kq (e.g., we're being woken by linux_kqueue_interrupt
+         * writing to pipefd[1] from kqueue_free's defer path, OR
+         * a close-detect signal arrived after kqueue_free
+         * finished).  Nothing to clean up here.
+         */
+        dbg_printf("fd=%i - no kqueue associated, ignoring stale signal", fd);
         return;
     }
 
@@ -756,10 +774,16 @@ linux_kqueue_free(struct kqueue *kq)
         }
         kq->pipefd[1] = -1;
     } else if (ret > 0) {
-        // Shouldn't happen unless data is written to kqueue FD
-        // Ignore write and continue with close
-        dbg_puts("unexpected data available on kqueue FD");
-        assert(0);
+        /*
+         * Bytes left in the pipe.  Either an in-flight kevent's
+         * KQ_WAKE handler hasn't drained yet, or no in-flight
+         * waiter ran (e.g., linux_kqueue_interrupt fired but
+         * the parked waiters were already gone).  Drain
+         * non-blockingly and continue; the pipe is going away
+         * with the close below anyway.
+         */
+        dbg_puts("draining residual data on pipefd[0]");
+        while (read(kq->pipefd[0], &buffer, 1) > 0) {}
     }
 
     pipefd = kq->pipefd[0];
@@ -800,6 +824,44 @@ linux_kqueue_free(struct kqueue *kq)
         free(kq->kq_wake_udata);
         kq->kq_wake_udata = NULL;
     }
+}
+
+/** Wake threads parked in epoll_wait on this kqueue.
+ *
+ * Writes a single byte to pipefd[1].  The kernel makes pipefd[0]
+ * readable, every parked epoll_wait registered against pipefd[0]
+ * (via the EPOLL_UDATA_KQ_WAKE sentinel) returns, and copyout
+ * surfaces the wake as -1/EBADF.  Best-effort: level-triggered
+ * EPOLLIN on a pipe doesn't guarantee every parked waiter wakes
+ * for a single byte (the kernel may dispatch to one), but the
+ * primary case (user-close) is already handled by EPOLLHUP which
+ * does wake all parked waiters.  This hook covers the secondary
+ * cases (atexit/fork/kqueue_free_by_id) where the auto-wake
+ * doesn't fire.
+ *
+ * Writing to pipefd[1] also fires the F_SETSIG-bound MONITORING_THREAD_SIGNAL
+ * to the monitoring thread, which would normally treat it as a
+ * close-detect notification.  monitoring_thread_kqueue_cleanup is
+ * tolerant of "kq not in map" since by the time we call this hook
+ * kqueue_free has already run map_remove.  See the softened
+ * assert there.
+ */
+static void
+linux_kqueue_interrupt(struct kqueue *kq)
+{
+    char b = 'x';
+
+    if (kq->pipefd[1] < 0) {
+        dbg_printf("kq=%p - pipefd[1] already closed, EPOLLHUP path will wake waiters", kq);
+        return;
+    }
+    if (write(kq->pipefd[1], &b, 1) < 0) {
+        if (errno != EBADF && errno != EPIPE)
+            dbg_printf("kq=%p - write(pipefd[1]): %s", kq, strerror(errno));
+        /* EBADF/EPIPE = user already closed kqfd; EPOLLHUP handles it. */
+        return;
+    }
+    dbg_printf("kq=%p - wake byte written to pipefd[1]", kq);
 }
 
 /** Allocate a fresh epoll_udata
@@ -1305,20 +1367,37 @@ linux_kevent_copyout(struct kqueue *kq, int nready, struct kevent *el, int neven
         }
 
         case EPOLL_UDATA_KQ_WAKE:
+        {
             /*
-             * Kq close-detect pipe[0] became readable / hit
-             * EPOLLHUP.  The user closed kqfd while we were
-             * parked in epoll_wait.  Surface as -1/EBADF so the
-             * caller's outer kevent() returns the same error
-             * native kqueue produces in this scenario, instead
-             * of looking like a spurious timeout.  The exit path
-             * in common/kevent.c will run kqueue_kevent_exit and
-             * (if we're the last in-flight) kqueue_complete_deferred_free.
+             * Kq close-detect pipe[0] became readable.  Two
+             * triggers:
+             *   1. User closed kqfd (= pipefd[1]) - kernel marks
+             *      pipefd[0] as "no writers", EPOLLHUP fires for
+             *      every parked epoll_wait.  No bytes to drain.
+             *   2. linux_kqueue_interrupt() wrote a byte to
+             *      pipefd[1] from kqueue_free's defer path so a
+             *      parked waiter exits and the deferred free can
+             *      complete.  The byte must be drained here so
+             *      linux_kqueue_free's later read doesn't see
+             *      stray data.
+             *
+             * Either way, surface as -1/EBADF so the caller's
+             * outer kevent() returns the same error native
+             * kqueue produces, instead of a 0-event timeout.
              */
+            char drain[16];
+            ssize_t n;
+
+            do {
+                n = read(epoll_udata->ud_kq->pipefd[0], drain, sizeof(drain));
+            } while (n > 0);
+            /* EAGAIN/EBADF/0 all benign here. */
+
             dbg_printf("kq=%p - EPOLL_UDATA_KQ_WAKE, returning EBADF",
                        epoll_udata->ud_kq);
             errno = EBADF;
             return (-1);
+        }
 
         /*
          *    Bad udata value. Maybe use after free?
@@ -2007,6 +2086,7 @@ const struct kqueue_vtable kqops = {
     .libkqueue_free     = linux_libkqueue_free,
     .kqueue_init        = linux_kqueue_init,
     .kqueue_free        = linux_kqueue_free,
+    .kqueue_interrupt   = linux_kqueue_interrupt,
     .kevent_wait        = linux_kevent_wait,
     .kevent_copyout     = linux_kevent_copyout,
     .eventfd_register   = linux_eventfd_register,
