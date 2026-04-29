@@ -75,8 +75,15 @@
  * macro definition.
  */
 #define POSIX_KQUEUE_PLATFORM_SPECIFIC \
-    fd_set          kq_fds, kq_rfds; \
-    int             kq_nfds
+    fd_set          kq_fds;          /* watched-for-read fd set */ \
+    fd_set          kq_rfds;         /* read-readable fds after last pselect */ \
+    fd_set          kq_wfds;         /* watched-for-write fd set */ \
+    fd_set          kq_wrfds;        /* write-ready fds after last pselect */ \
+    int             kq_nfds;         /* highest watched fd + 1, for pselect's nfds */ \
+    int             kq_wake_wfd;     /* write end of the self-pipe used as kq_id */ \
+    int             kq_always_ready  /* count of "always-ready" knotes; non-zero \
+                                      * forces pselect to a 0 timeout so file/etc \
+                                      * knotes get re-dispatched every wait */
 
 /** Additional members of 'struct knote'
  *

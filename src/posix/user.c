@@ -25,6 +25,11 @@ posix_evfilt_user_init(struct filter *filt)
     if (kqops.eventfd_init(&filt->kf_efd, filt) < 0)
         return (-1);
 
+    if (kqops.eventfd_register(filt->kf_kqueue, &filt->kf_efd) < 0) {
+        kqops.eventfd_close(&filt->kf_efd);
+        return (-1);
+    }
+
     filt->kf_pfd = kqops.eventfd_descriptor(&filt->kf_efd);
 
     return (0);
@@ -33,6 +38,7 @@ posix_evfilt_user_init(struct filter *filt)
 void
 posix_evfilt_user_destroy(struct filter *filt)
 {
+    kqops.eventfd_unregister(filt->kf_kqueue, &filt->kf_efd);
     kqops.eventfd_close(&filt->kf_efd);
     return;
 }

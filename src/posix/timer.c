@@ -14,13 +14,16 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 #include <signal.h>
-#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "private.h"
+
+#if defined(__linux__)
+# include <sys/prctl.h>
+#endif
 
 /* A request to sleep for a certain time */
 struct sleepreq {

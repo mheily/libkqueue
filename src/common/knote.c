@@ -118,6 +118,33 @@ int knote_mark_disabled_all(struct filter *filt)
     return (0);
 }
 
+/** Walk a filter's knotes calling cb on each.
+ *
+ * Allows callers in other translation units to iterate the tree
+ * without taking on the RB internals (the generated functions are
+ * file-local to knote.c).  Iteration is safe against deletion
+ * performed by cb on the current entry.
+ *
+ * @param[in] filt    filter whose knote index to walk.
+ * @param[in] cb      callback invoked per knote; non-zero return
+ *                    aborts iteration and is propagated back.
+ * @param[in] uctx    opaque, passed through to cb.
+ * @return cb's first non-zero return, or 0 on full traversal.
+ */
+int
+knote_foreach(struct filter *filt, int (*cb)(struct knote *, void *), void *uctx)
+{
+    struct knote *kn, *tmp;
+    int rv;
+
+    RB_FOREACH_SAFE(kn, knote_index, &filt->kf_index, tmp) {
+        rv = cb(kn, uctx);
+        if (rv != 0)
+            return (rv);
+    }
+    return (0);
+}
+
 int
 knote_delete(struct filter *filt, struct knote *kn)
 {

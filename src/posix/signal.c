@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 #include "private.h"
+
 #include "../common/evfilt_signal.h"
 
 /*
