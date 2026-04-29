@@ -346,19 +346,6 @@ _kevent_cmp(struct kevent *expected, struct kevent *got, const char *file, int l
     if (expected->flags & EV_ADD)
         got->flags |= EV_ADD;
 #endif
-    /*
-     * EV_RECEIPT is sticky on macOS/FreeBSD: once a knote is
-     * registered with EV_RECEIPT (e.g. via test_ev_receipt early
-     * in the suite), every subsequent kevent returned for that
-     * knote carries the bit forward.  libkqueue's common code
-     * preserves the bit the same way via COPY_FLAGS_BIT discipline.
-     * It's not interesting for behavioural assertions, so strip it
-     * from both sides before the memcmp.
-     */
-#ifdef EV_RECEIPT
-    expected->flags &= ~EV_RECEIPT;
-    got->flags &= ~EV_RECEIPT;
-#endif
     if (memcmp(expected, got, sizeof(*expected)) != 0) {
         printf("[%s:%d]: kevent_cmp() failed:\n", file, line);
         printf("expected %s\n", kevent_to_str(expected));

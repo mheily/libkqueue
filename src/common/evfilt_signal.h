@@ -462,7 +462,13 @@ evfilt_signal_knote_modify(struct filter *filt, struct knote *kn,
                 const struct kevent *kev)
 {
     (void) filt;
-    kn->kev.flags = kev->flags | EV_CLEAR;
+    /*
+     * EV_RECEIPT is sticky on BSD: once a knote was registered
+     * with it, every subsequent kevent returned for that knote
+     * carries the bit forward.  Preserve it across re-EV_ADD so
+     * libkqueue's behaviour matches macOS/FreeBSD.
+     */
+    kn->kev.flags = kev->flags | EV_CLEAR | (kn->kev.flags & EV_RECEIPT);
     return (0);
 }
 

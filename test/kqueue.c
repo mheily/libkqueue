@@ -211,6 +211,15 @@ test_ev_receipt(struct test_context *ctx)
 #endif
 
     kevent_cmp(&kev, &buf);
+
+    /*
+     * Clean up SIGUSR2 so subsequent tests (notably the EVFILT_SIGNAL
+     * suite) get a fresh knote.  Without this, macOS/FreeBSD persist
+     * EV_RECEIPT on the SIGUSR2 knote and any later test that uses
+     * SIGUSR2 sees it leaked into returned events.
+     */
+    EV_SET(&kev, SIGUSR2, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
 }
 #endif
 
