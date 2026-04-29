@@ -24,8 +24,6 @@
 
 #include "../common/private.h"
 
-#define MONITORING_THREAD_SIGNAL  (SIGRTMIN + 1)
-
 /*
  * Per-thread epoll event buffer used to ferry data between
  * kevent_wait() and kevent_copyout().

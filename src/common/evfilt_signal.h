@@ -454,6 +454,20 @@ evfilt_signal_knote_create(struct filter *filt, struct knote *kn)
     }
 #endif
 
+    /*
+     * On Linux the kqueue close-detection mechanism uses an RT
+     * signal (MONITORING_THREAD_SIGNAL = SIGRTMIN+1) sigwaitinfo'd
+     * by the monitoring thread.  EVFILT_SIGNAL on it would race
+     * that waiter; reject with EINVAL.
+     */
+#ifdef __linux__
+    if (sig == MONITORING_THREAD_SIGNAL) {
+        dbg_printf("SIGRTMIN+1 is reserved by the monitoring thread");
+        errno = EINVAL;
+        return (-1);
+    }
+#endif
+
     kn->kev.flags |= EV_CLEAR;
     sfs = filt->kf_signal_state;
     sl = &sfs->sfs_links[sig];

@@ -75,6 +75,12 @@
     Linux builds with `pidfd_open(2)` available use the pidfd-based
     EVFILT_PROC backend instead, where this constraint doesn't apply.
 
+ * `EVFILT_SIGNAL` on `SIGRTMIN+1` is rejected with `EINVAL` on Linux.  The
+    monitoring thread `sigwaitinfo`s this signal to detect kqueue fd
+    closures (set per-pipefd via `fcntl(F_SETSIG)`); a parallel
+    `EVFILT_SIGNAL` reader would race it and leave kqueue cleanup blind
+    to closures.
+
  ## Linux
 
  * If a file descriptor outside of kqueue is closed, the internal kqueue
