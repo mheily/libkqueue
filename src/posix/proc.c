@@ -575,7 +575,19 @@ proc_pid_arm(struct filter *filt, struct knote *kn)
             return (-1);
         }
         ppd->ppd_pid = kn->kev.ident;
-        RB_INSERT(pid_index, &proc_pid_index, ppd);
+        {
+            /*
+             * RB_INSERT returns NULL on success, the existing entry
+             * on duplicate.  We hold proc_pid_index_mtx and just
+             * did RB_FIND, so duplicate is impossible by
+             * construction; assert documents the invariant for
+             * future refactors.  The call must be outside assert()
+             * so it still runs under NDEBUG.
+             */
+            struct proc_pid *dup = RB_INSERT(pid_index, &proc_pid_index, ppd);
+            assert(dup == NULL);
+            (void) dup;
+        }
     }
     LIST_INSERT_HEAD(&ppd->ppd_proc_waiters, kn, kn_proc_waiter);
 
