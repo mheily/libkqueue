@@ -1,0 +1,26 @@
+# ThreadSanitizer suppressions for libkqueue.
+#
+# Apply via:
+#   TSAN_OPTIONS=suppressions=tools/tsan.supp ./libkqueue-test
+#
+# These cover the synchronisation patterns TSAN's race-detection
+# model can't validate but which are correct in practice.
+
+# pthread_cancel cleanup-handler boundary on Linux.
+#
+# linux_libkqueue_free pthread_cancels the monitoring thread, which
+# runs monitoring_thread_cleanup as a cancellation handler.  The
+# handler acquires kq_mtx itself and walks kq_list / frees leftover
+# kqueues; the locking is symmetric on both sides of the cancel,
+# but TSAN's instrumentation does not propagate happens-before
+# edges across pthread_cancel into the cleanup-handler invocation.
+# Result: every memory access made by the cleanup chain
+# (kqueue_free, filter_unregister_all, knote_delete_all,
+# evfilt_signal_destroy, etc.) appears to TSAN as racing with the
+# main thread's prior writes-under-kq_mtx.
+#
+# TSAN_IGNORE on monitoring_thread_cleanup itself doesn't help -
+# the attribute suppresses checks on accesses inside that function
+# only, not its callees.  Stack-pattern suppression catches every
+# call descended from it.
+race:monitoring_thread_cleanup

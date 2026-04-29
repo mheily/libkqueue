@@ -121,6 +121,7 @@ jobs:
     - name: Run tests
       env:
         KQUEUE_DEBUG: 1
+        TSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/tsan.supp
       run: test/libkqueue-test
 
     - name: Build debian packages
