@@ -299,6 +299,7 @@ sig_dispatch_start(void)
 static void
 sig_dispatch_stop(void)
 {
+    pthread_t thread;
     void *retval;
     int ret;
 
@@ -312,7 +313,18 @@ sig_dispatch_stop(void)
         sig_pipe[1] = -1;
     }
 
-    ret = pthread_join(sig_dispatch_thread, &retval);
+    /*
+     * Snapshot sig_dispatch_thread under sig_dispatch_thread_mtx
+     * to satisfy a happens-before w.r.t. the matching write in
+     * sig_dispatch_start.  In practice sig_init_mtx serializes
+     * start/stop so there's no real concurrency, but Coverity
+     * (correctly) flags the unsynchronised read.
+     */
+    pthread_mutex_lock(&sig_dispatch_thread_mtx);
+    thread = sig_dispatch_thread;
+    pthread_mutex_unlock(&sig_dispatch_thread_mtx);
+
+    ret = pthread_join(thread, &retval);
     if (ret != 0)
         dbg_printf("pthread_join: %s", strerror(ret));
     else
@@ -323,7 +335,10 @@ sig_dispatch_stop(void)
         sig_pipe[0] = -1;
     }
     sig_platform_destroy();
+
+    pthread_mutex_lock(&sig_dispatch_thread_mtx);
     sig_dispatch_started = 0;
+    pthread_mutex_unlock(&sig_dispatch_thread_mtx);
 }
 
 /* sigtbl_mtx must be held. */
