@@ -290,9 +290,10 @@ evfilt_timer_knote_modify(struct filter *filt, struct knote *kn,
         return (-1);
     }
 
-    kn->kev.flags = kev->flags | EV_CLEAR;
+    /* EV_RECEIPT is sticky on BSD; preserve across modify. */
+    kn->kev.flags  = kev->flags | EV_CLEAR | (kn->kev.flags & EV_RECEIPT);
     kn->kev.fflags = kev->fflags;
-    kn->kev.data = kev->data;
+    kn->kev.data   = kev->data;
 
     return (0);
 }
