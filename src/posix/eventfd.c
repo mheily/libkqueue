@@ -44,8 +44,10 @@ posix_eventfd_pipe(int sd[2])
             fcntl(sd[i], F_SETFL, fl | O_NONBLOCK) < 0 ||
             fcntl(sd[i], F_SETFD, FD_CLOEXEC) < 0) {
             dbg_perror("fcntl(2)");
-            (void) close(sd[0]);
-            (void) close(sd[1]);
+            if (close(sd[0]) < 0)
+                dbg_perror("close(sd[0]) on cleanup");
+            if (close(sd[1]) < 0)
+                dbg_perror("close(sd[1]) on cleanup");
             return (-1);
         }
     }

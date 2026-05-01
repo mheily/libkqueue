@@ -38,8 +38,10 @@ posix_self_pipe(int fd[2])
             fcntl(fd[i], F_SETFL, fl | O_NONBLOCK) < 0 ||
             fcntl(fd[i], F_SETFD, FD_CLOEXEC) < 0) {
             dbg_perror("fcntl(2)");
-            (void) close(fd[0]);
-            (void) close(fd[1]);
+            if (close(fd[0]) < 0)
+                dbg_perror("close(fd[0]) on cleanup");
+            if (close(fd[1]) < 0)
+                dbg_perror("close(fd[1]) on cleanup");
             return (-1);
         }
     }
@@ -70,8 +72,10 @@ posix_kqueue_init(struct kqueue *kq)
     kq->kq_wake_wfd = sd[1];
 
     if (filter_register_all(kq) < 0) {
-        (void) close(sd[0]);
-        (void) close(sd[1]);
+        if (close(sd[0]) < 0)
+            dbg_perror("close(sd[0]) on cleanup");
+        if (close(sd[1]) < 0)
+            dbg_perror("close(sd[1]) on cleanup");
         kq->kq_id = -1;
         kq->kq_wake_wfd = -1;
         return (-1);
@@ -84,11 +88,13 @@ void
 posix_kqueue_free(struct kqueue *kq)
 {
     if (kq->kq_id >= 0) {
-        (void) close(kq->kq_id);
+        if (close(kq->kq_id) < 0)
+            dbg_perror("close(kq_id)");
         kq->kq_id = -1;
     }
     if (kq->kq_wake_wfd >= 0) {
-        (void) close(kq->kq_wake_wfd);
+        if (close(kq->kq_wake_wfd) < 0)
+            dbg_perror("close(kq_wake_wfd)");
         kq->kq_wake_wfd = -1;
     }
     FD_ZERO(&kq->kq_fds);

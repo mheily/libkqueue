@@ -72,7 +72,8 @@ static void
 sig_platform_destroy(void)
 {
     if (sig_signalfd >= 0) {
-        (void) close(sig_signalfd);
+        if (close(sig_signalfd) < 0)
+            dbg_perror("close(sig_signalfd)");
         sig_signalfd = -1;
     }
 }
@@ -93,7 +94,8 @@ static void
 sig_platform_reset_after_fork(void)
 {
     if (sig_signalfd >= 0) {
-        (void) close(sig_signalfd);
+        if (close(sig_signalfd) < 0)
+            dbg_perror("close(sig_signalfd) in fork-child");
         sig_signalfd = -1;
     }
 }
