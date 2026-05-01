@@ -400,6 +400,21 @@ solaris_kevent_copyout(struct kqueue *kq, int nready,
                 continue;
             }
             kn = ud->ud_kn;
+
+            /*
+             * BSD's EV_DISABLE drops pending events as well as future
+             * ones.  An event may have been kernel-queued before the
+             * disable hook ran (or before this thread observed the
+             * disable through kq_mtx); suppress dispatch when the knote
+             * is currently disabled.  EVFILT_USER's sub-port path
+             * already drains on disable; this catches the
+             * vnode/socket/timer cases where the kernel buffers the
+             * event in the main port queue.
+             */
+            if (kn->kev.flags & EV_DISABLE) {
+                dbg_printf("kq=%p kn=%p - knote disabled, skipping", kq, kn);
+                continue;
+            }
         }
 
         switch (evt->portev_source) {
