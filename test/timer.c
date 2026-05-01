@@ -267,6 +267,79 @@ test_kevent_timer_dispatch(struct test_context *ctx)
 }
 #endif  /* EV_DISPATCH */
 
+/*
+ * Exercise the NOTE_* unit selectors on EVFILT_TIMER.  Each variant
+ * arms a one-shot timer with a ~50ms equivalent expressed in the
+ * tested unit and waits up to 5s for it to fire.  We're testing the
+ * unit conversion, not timer accuracy, so the sleep budget is
+ * deliberately huge - what we care about is "the kernel programmed
+ * a timer that fires in finite time", not "it fired in 50ms".
+ */
+static void
+_timer_unit_check(struct test_context *ctx, intptr_t data,
+                  uint32_t fflags, const char *label)
+{
+    struct kevent  kev, ret[1];
+    struct timespec timeout = { 5, 0 };
+    int n;
+
+    test_no_kevents(ctx->kqfd);
+    kevent_add(ctx->kqfd, &kev, 100, EVFILT_TIMER,
+               EV_ADD | EV_ONESHOT, fflags, data, NULL);
+
+    n = kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout);
+    if (n < 0)
+        die("%s: kevent() returned -1", label);
+    if (n == 0)
+        die("%s: timer did not fire within 5s (data=%ld fflags=0x%x)",
+            label, (long) data, fflags);
+    if (ret[0].ident != 100 || ret[0].filter != EVFILT_TIMER)
+        die("%s: unexpected event %s", label, kevent_to_str(&ret[0]));
+
+    /* No EV_DELETE: EV_ONESHOT already auto-removed the knote on
+     * delivery, and the libkqueue test helper that asserts success
+     * would trip on the resulting ENOENT. */
+}
+
+static void
+test_kevent_timer_note_useconds(struct test_context *ctx)
+{
+    /* 50ms = 50,000us */
+    _timer_unit_check(ctx, 50000L, NOTE_USECONDS, "NOTE_USECONDS");
+}
+
+static void
+test_kevent_timer_note_nseconds(struct test_context *ctx)
+{
+    /* 50ms = 50,000,000ns */
+    _timer_unit_check(ctx, 50L * 1000L * 1000L, NOTE_NSECONDS,
+                      "NOTE_NSECONDS");
+}
+
+static void
+test_kevent_timer_note_seconds(struct test_context *ctx)
+{
+    /* Min granularity in this unit is 1s; budget 5s. */
+    _timer_unit_check(ctx, 1L, NOTE_SECONDS, "NOTE_SECONDS");
+}
+
+static void
+test_kevent_timer_note_absolute(struct test_context *ctx)
+{
+    struct timespec  now;
+    intptr_t         deadline_ms;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+        die("clock_gettime");
+    /* 100ms in the future, expressed as absolute ms since epoch on
+     * the same clock the backend uses (CLOCK_MONOTONIC). */
+    deadline_ms = (intptr_t)(now.tv_sec) * 1000
+                + (intptr_t)(now.tv_nsec / 1000000)
+                + 100;
+
+    _timer_unit_check(ctx, deadline_ms, NOTE_ABSOLUTE, "NOTE_ABSOLUTE");
+}
+
 void
 test_evfilt_timer(struct test_context *ctx)
 {
@@ -282,5 +355,17 @@ test_evfilt_timer(struct test_context *ctx)
     test(kevent_timer_disable_and_enable, ctx);
 #ifdef EV_DISPATCH
     test(kevent_timer_dispatch, ctx);
+#endif
+#ifdef NOTE_USECONDS
+    test(kevent_timer_note_useconds, ctx);
+#endif
+#ifdef NOTE_NSECONDS
+    test(kevent_timer_note_nseconds, ctx);
+#endif
+#ifdef NOTE_SECONDS
+    test(kevent_timer_note_seconds, ctx);
+#endif
+#ifdef NOTE_ABSOLUTE
+    test(kevent_timer_note_absolute, ctx);
 #endif
 }

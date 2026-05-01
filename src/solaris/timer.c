@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2026 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
  * Copyright (c) 2009 Mark Heily <mark@heily.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -39,16 +40,36 @@ itimerspec_dump(struct itimerspec *ts)
 }
 #endif
 
-/* Convert milliseconds into seconds+nanoseconds */
+/*
+ * Unit-selector bits in NOTE_* fflags (USECONDS/NSECONDS/SECONDS,
+ * default ms).  Mutually exclusive per BSD kqueue.
+ */
+#define NOTE_TIMER_MASK (NOTE_ABSOLUTE-1)
+
 static void
-convert_msec_to_itimerspec(struct itimerspec *dst, int src, int oneshot)
+convert_timedata_to_itimerspec(struct itimerspec *dst, long src,
+                               unsigned int flags, int oneshot)
 {
     time_t sec, nsec;
 
-    sec = src / 1000;
-    nsec = (src % 1000) * 1000000;
+    switch (flags & NOTE_TIMER_MASK) {
+    case NOTE_USECONDS:
+        sec = src / 1000000;
+        nsec = (src % 1000000) * 1000;
+        break;
+    case NOTE_NSECONDS:
+        sec = src / 1000000000;
+        nsec = (src % 1000000000);
+        break;
+    case NOTE_SECONDS:
+        sec = src;
+        nsec = 0;
+        break;
+    default: /* milliseconds */
+        sec = src / 1000;
+        nsec = (src % 1000) * 1000000;
+    }
 
-    /* Set the interval */
     if (oneshot) {
         dst->it_interval.tv_sec = 0;
         dst->it_interval.tv_nsec = 0;
@@ -57,7 +78,6 @@ convert_msec_to_itimerspec(struct itimerspec *dst, int src, int oneshot)
         dst->it_interval.tv_nsec = nsec;
     }
 
-    /* Set the initial expiration */
     dst->it_value.tv_sec = sec;
     dst->it_value.tv_nsec = nsec;
     dbg_printf("%s", itimerspec_dump(dst));
@@ -82,9 +102,6 @@ evfilt_timer_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
     port_event_t *pe = (port_event_t *) ptr;
 
     memcpy(dst, &src->kev, sizeof(*dst));
-    //TODO:
-    //if (ev->events & EPOLLERR)
-    //    dst->fflags = 1; /* FIXME: Return the actual timer error */
 
     /*
      * Solaris collapses repeated SIGEV_PORT timer firings into a
@@ -94,16 +111,6 @@ evfilt_timer_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
      */
     dst->data = (int) pe->portev_events;
 
-#if FIXME
-    timerid = src->kn_timerid;
-    //should be done in kqops.copyout()
-    if (src->kev.flags & EV_DISPATCH) {
-        timer_delete(src->kn_timerid);
-    } else if (src->kev.flags & EV_ONESHOT) {
-        timer_delete(src->kn_timerid);
-    }
-#endif
-
     if (knote_copyout_flag_actions(filt, src) < 0) return -1;
 
     return (1);
@@ -112,12 +119,13 @@ evfilt_timer_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
 int
 evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
 {
-    port_notify_t pn;
-    struct sigevent se;
+    port_notify_t pn = { 0 };
+    struct sigevent se = { 0 };
     struct itimerspec ts;
     timer_t timerid;
     bool fresh_udata = false;
 
+    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     kn->kev.flags |= EV_CLEAR;
 
     if (kn->kn_udata == NULL) {
@@ -141,10 +149,13 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
         return (-1);
     }
 
-    convert_msec_to_itimerspec(&ts, kn->kev.data, kn->kev.flags & EV_ONESHOT);
-    if (timer_settime(timerid, 0, &ts, NULL) < 0) {
+    convert_timedata_to_itimerspec(&ts, kn->kev.data, kn->kev.fflags,
+                                   kn->kev.flags & EV_ONESHOT);
+    int abstime = (kn->kev.fflags & NOTE_ABSOLUTE) ? TIMER_ABSTIME : 0;
+    if (timer_settime(timerid, abstime, &ts, NULL) < 0) {
         dbg_perror("timer_settime(2)");
-        (void) timer_delete(timerid);
+        if (timer_delete(timerid) < 0)
+            dbg_perror("timer_delete(2) on cleanup");
         if (fresh_udata)
             KN_UDATA_FREE(kn);
         return (-1);
@@ -163,15 +174,15 @@ evfilt_timer_knote_modify(struct filter *filt UNUSED, struct knote *kn,
     struct itimerspec ts;
 
     /*
-     * Reprogram the existing timer in place via timer_settime
-     * rather than deleting + recreating - this preserves any
-     * already-overrun count that hasn't been delivered yet.
-     * Read the new period/oneshot flag from the incoming kevent;
-     * common code merges into kn->kev only AFTER kn_modify returns,
-     * so kn->kev still reflects the old values here.
+     * timer_settime on the existing timer keeps any pending expirations
+     * (timer_getoverrun); a delete+recreate would zero them.  The new
+     * period is in the incoming kev - kn->kev still holds the old values;
+     * common code overwrites kn->kev after we return.
      */
-    convert_msec_to_itimerspec(&ts, kev->data, kev->flags & EV_ONESHOT);
-    if (timer_settime(kn->kn_timerid, 0, &ts, NULL) < 0) {
+    convert_timedata_to_itimerspec(&ts, kev->data, kev->fflags,
+                                   kev->flags & EV_ONESHOT);
+    int abstime = (kev->fflags & NOTE_ABSOLUTE) ? TIMER_ABSTIME : 0;
+    if (timer_settime(kn->kn_timerid, abstime, &ts, NULL) < 0) {
         dbg_perror("timer_settime(2)");
         return (-1);
     }
@@ -184,11 +195,10 @@ evfilt_timer_knote_delete(struct filter *filt, struct knote *kn)
     int rv = 0;
 
     /*
-     * Skip timer_delete on a disabled timer: knote_disable already
-     * deleted the kernel timerid.  We always defer-free the udata
-     * though - a stale portev_user from this knote could still be
-     * sitting in another thread's TLS evbuf if the timer fired
-     * between disable and delete.
+     * If the knote is already disabled the kernel timer is gone (knote_disable
+     * deleted it), so don't call timer_delete again.  Hand the udata to
+     * cleanup regardless: a timer fire could have queued a port event whose
+     * portev_user references this knote (see port_udata in platform.h).
      */
     if (!(kn->kev.flags & EV_DISABLE)) {
         dbg_printf("th=%d - deleting timer", kn->kn_timerid);
@@ -211,14 +221,9 @@ int
 evfilt_timer_knote_disable(struct filter *filt UNUSED, struct knote *kn)
 {
     /*
-     * Disable just deletes the kernel timerid; keep the udata so a
-     * later enable can reuse it without reallocating (and so any
-     * already-queued port event for the timer can still resolve to
-     * the live knote).  Defer-free happens at EV_DELETE.
-     *
-     * common/knote.c:knote_disable short-circuits if the knote is
-     * already disabled, so we always reach here in the
-     * enabled->disabled transition.
+     * Stop the kernel timer but keep the udata: a re-enable reuses it,
+     * and an in-flight port event queued just before this call can still
+     * resolve to a live knote.  EV_DELETE handles the udata cleanup.
      */
     dbg_printf("th=%d - deleting timer", kn->kn_timerid);
     return timer_delete(kn->kn_timerid);
