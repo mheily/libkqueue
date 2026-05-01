@@ -676,13 +676,14 @@ proc_pid_arm(struct filter *filt, struct knote *kn)
  *
  * Caller must NOT hold proc_pid_index_mtx.
  */
-static void
+/* Caller must hold proc_pid_index_mtx. */
+static inline void
 proc_pid_disarm(struct knote *kn)
 {
     struct proc_pid *ppd;
 
-    tracing_mutex_lock(&proc_pid_index_mtx);
-    if (LIST_INSERTED(kn, kn_proc_waiter)) LIST_REMOVE_ZERO(kn, kn_proc_waiter);
+    if (LIST_INSERTED(kn, kn_proc_waiter))
+        LIST_REMOVE_ZERO(kn, kn_proc_waiter);
 
     ppd = RB_FIND(pid_index, &proc_pid_index, &(struct proc_pid){ .ppd_pid = kn->kev.ident });
     if (ppd && LIST_EMPTY(&ppd->ppd_proc_waiters)) {
@@ -690,7 +691,6 @@ proc_pid_disarm(struct knote *kn)
         RB_REMOVE(pid_index, &proc_pid_index, ppd);
         free(ppd);
     }
-    tracing_mutex_unlock(&proc_pid_index_mtx);
 }
 
 static int
@@ -751,16 +751,41 @@ evfilt_proc_knote_modify(struct filter *filt, struct knote *kn,
         if (proc_pid_arm(filt, kn) < 0) return (-1);
         kn->kev.flags |= EV_ONESHOT | EV_CLEAR;
     } else if (!want_armed && was_armed) {
+        /*
+         * Caller stopped caring about NOTE_EXIT.  Disarm and drop
+         * any already-fired delivery from kf_ready in one critical
+         * section so we don't take proc_pid_index_mtx twice.
+         */
+        tracing_mutex_lock(&proc_pid_index_mtx);
         proc_pid_disarm(kn);
+        if (LIST_INSERTED(kn, kn_ready))
+            LIST_REMOVE_ZERO(kn, kn_ready);
+        if (LIST_EMPTY(&filt->kf_ready))
+            kqops.eventfd_lower(&filt->kf_proc_eventfd);
+        tracing_mutex_unlock(&proc_pid_index_mtx);
     }
 
     return (0);
 }
 
 int
-evfilt_proc_knote_delete(UNUSED struct filter *filt, struct knote *kn)
+evfilt_proc_knote_delete(struct filter *filt, struct knote *kn)
 {
+    /*
+     * If the wait thread already linked this knote onto kf_ready
+     * (process exited, no kevent() drain yet), unlink it before the
+     * caller's knote_release frees the knote - otherwise the next
+     * copyout walks a freed pointer.  Combine with the disarm so
+     * we take proc_pid_index_mtx once.
+     */
+    tracing_mutex_lock(&proc_pid_index_mtx);
     proc_pid_disarm(kn);
+    if (LIST_INSERTED(kn, kn_ready))
+        LIST_REMOVE_ZERO(kn, kn_ready);
+    if (LIST_EMPTY(&filt->kf_ready))
+        kqops.eventfd_lower(&filt->kf_proc_eventfd);
+    tracing_mutex_unlock(&proc_pid_index_mtx);
+
     return (0);
 }
 
@@ -777,8 +802,10 @@ evfilt_proc_knote_disable(struct filter *filt, struct knote *kn)
      * raise.
      */
     tracing_mutex_lock(&proc_pid_index_mtx);
-    if (LIST_INSERTED(kn, kn_proc_waiter)) LIST_REMOVE_ZERO(kn, kn_proc_waiter);
-    if (LIST_INSERTED(kn, kn_ready))       LIST_REMOVE_ZERO(kn, kn_ready);
+    if (LIST_INSERTED(kn, kn_proc_waiter))
+        LIST_REMOVE_ZERO(kn, kn_proc_waiter);
+    if (LIST_INSERTED(kn, kn_ready))
+        LIST_REMOVE_ZERO(kn, kn_ready);
     if (LIST_EMPTY(&filt->kf_ready))
         kqops.eventfd_lower(&filt->kf_proc_eventfd);
     tracing_mutex_unlock(&proc_pid_index_mtx);
