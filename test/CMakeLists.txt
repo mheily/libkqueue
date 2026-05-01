@@ -128,19 +128,17 @@ elseif(UNIX)
 endif()
 
 #
-# Don't link against -lkqueue on OSX and FreeBSD (native kqueue).  On
-# FreeBSD pthread is a separate library, so the threading tests still
-# need an explicit link there; macOS pulls pthread in via libSystem.
+# Don't link against -lkqueue on native-kqueue platforms (macOS, FreeBSD,
+# OpenBSD, NetBSD).  When we explicitly built the libkqueue POSIX backend on
+# those hosts, the tests must exercise our library, not the native one.
+# ${LIBKQUEUE_BACKEND_RESOLVED} is inherited from the parent CMakeLists.
 #
-#
-# Default: don't link -lkqueue on macOS/FreeBSD (they ship native
-# kqueue).  When we explicitly built the libkqueue POSIX backend on
-# those hosts, the tests must exercise our library, not the native
-# one.  ${LIBKQUEUE_BACKEND_RESOLVED} is inherited from the parent
-# CMakeLists.
+# On FreeBSD and OpenBSD pthread is a separate library (not in libc), so the
+# threading tests still need an explicit link; macOS pulls pthread in via
+# libSystem.
 #
 set(_test_use_libkqueue ON)
-if("${CMAKE_SYSTEM_NAME}" MATCHES "(Darwin|FreeBSD)" AND
+if("${CMAKE_SYSTEM_NAME}" MATCHES "(Darwin|FreeBSD|OpenBSD|NetBSD)" AND
    NOT "${LIBKQUEUE_BACKEND_RESOLVED}" STREQUAL "posix")
   set(_test_use_libkqueue OFF)
 endif()
@@ -150,7 +148,7 @@ if(_test_use_libkqueue)
                         PRIVATE
                         kqueue
                         Threads::Threads)
-elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "FreeBSD")
+elseif("${CMAKE_SYSTEM_NAME}" MATCHES "(FreeBSD|OpenBSD|NetBSD)")
   set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
   set(THREADS_PREFER_PTHREAD_FLAG TRUE)
   find_package(Threads REQUIRED)
