@@ -260,6 +260,24 @@ evfilt_socket_copyout(struct kevent *dst, UNUSED int nevents, struct filter *fil
         }
     }
 
+    if (pe->portev_events & POLLOUT) {
+        /*
+         * BSD reports "space remaining in the write buffer".  illumos
+         * has no SIOCOUTQ-style queued-bytes ioctl, so report SO_SNDBUF
+         * (the high-water mark): an upper bound on a single write that
+         * the kernel will accept without blocking.  Approximate, but
+         * matches the value most consumers expect for buffer sizing.
+         */
+        int       sndbuf = 0;
+        socklen_t slen = sizeof(sndbuf);
+        if (getsockopt(pe->portev_object, SOL_SOCKET, SO_SNDBUF, &sndbuf, &slen) < 0) {
+            dbg_perror("getsockopt(SO_SNDBUF)");
+            dst->data = 0;
+        } else {
+            dst->data = sndbuf;
+        }
+    }
+
     if (pe->portev_events & POLLIN) {
         if (src->kn_flags & KNFL_SOCKET_PASSIVE) {
             /*
