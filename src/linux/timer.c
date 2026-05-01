@@ -238,8 +238,49 @@ evfilt_timer_knote_modify(struct filter *filt, struct knote *kn,
 {
     struct itimerspec ts;
     int flags;
+    bool clk_changed = ((kev->fflags ^ kn->kev.fflags) & NOTE_ABSOLUTE) != 0;
 
     dbg_printf("timer_fd=%i - modified", kn->kn_timerfd);
+
+    /*
+     * NOTE_ABSOLUTE selects the clockid baked into the timerfd at
+     * create (CLOCK_REALTIME vs CLOCK_MONOTONIC), and timerfd has no
+     * runtime way to change clocks.  Toggling NOTE_ABSOLUTE on modify
+     * means the deadline domain changed; tear down the old timerfd
+     * and create a fresh one in the right clock.  Matches FreeBSD's
+     * filt_timertouch which drains the callout and re-arms via
+     * filt_timerstart in the new domain (kern_event.c:1033).
+     */
+    if (clk_changed) {
+        clockid_t clk = (kev->fflags & NOTE_ABSOLUTE) ? CLOCK_REALTIME
+                                                      : CLOCK_MONOTONIC;
+        int newfd;
+        int events;
+
+        newfd = timerfd_create(clk, TFD_CLOEXEC | TFD_NONBLOCK);
+        if (newfd < 0) {
+            dbg_perror("timerfd_create(2) on NOTE_ABSOLUTE toggle");
+            return (-1);
+        }
+
+        events = EPOLLIN | EPOLLET;
+        if (kev->flags & (EV_ONESHOT | EV_DISPATCH))
+            events |= EPOLLONESHOT;
+
+        if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_DEL,
+                      kn->kn_timerfd, NULL) < 0)
+            dbg_perror("epoll_ctl(DEL) on NOTE_ABSOLUTE toggle");
+        (void) close(kn->kn_timerfd);
+
+        if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_ADD, newfd,
+                      EPOLL_EV_KN(events, kn)) < 0) {
+            dbg_perror("epoll_ctl(ADD) on NOTE_ABSOLUTE toggle");
+            (void) close(newfd);
+            return (-1);
+        }
+
+        kn->kn_timerfd = newfd;
+    }
 
     convert_timedata_to_itimerspec(&ts, kev->data, kev->fflags,
                                    kev->flags & EV_ONESHOT);

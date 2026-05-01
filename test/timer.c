@@ -340,6 +340,46 @@ test_kevent_timer_note_absolute(struct test_context *ctx)
     _timer_unit_check(ctx, deadline_ms, NOTE_ABSOLUTE, "NOTE_ABSOLUTE");
 }
 
+/*
+ * Register a relative timer, then EV_ADD-modify it to NOTE_ABSOLUTE
+ * with a CLOCK_REALTIME deadline ~200ms in the future, and verify it
+ * fires within that window.
+ *
+ * Catches the bug where the platform reuses the underlying timer's
+ * original clockid (CLOCK_MONOTONIC for relative) and just toggles
+ * the abstime flag in timer_settime.  Without the fix the deadline
+ * is interpreted as a monotonic-clock absolute time - an Epoch-style
+ * timestamp would land roughly 50+ years past system boot, so no
+ * event arrives within the test timeout.
+ */
+static void
+test_kevent_timer_note_absolute_after_modify(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    struct timespec now;
+    intptr_t        deadline_ms;
+    struct timespec timeout = { 1, 0 };  /* 1s window for the 200ms deadline */
+
+    /* Original registration: relative 1h timer, picks CLOCK_MONOTONIC. */
+    kevent_add(ctx->kqfd, &kev, 88, EVFILT_TIMER,
+               EV_ADD | EV_ONESHOT, 0, 60L * 60L * 1000L, NULL);
+    test_no_kevents(ctx->kqfd);
+
+    /* Modify to NOTE_ABSOLUTE with an Epoch-millisecond deadline. */
+    if (clock_gettime(CLOCK_REALTIME, &now) < 0)
+        die("clock_gettime");
+    deadline_ms = (intptr_t)(now.tv_sec) * 1000
+                + (intptr_t)(now.tv_nsec / 1000000)
+                + 200;
+    kevent_add(ctx->kqfd, &kev, 88, EVFILT_TIMER,
+               EV_ADD | EV_ONESHOT, NOTE_ABSOLUTE, deadline_ms, NULL);
+
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 1)
+        die("expected NOTE_ABSOLUTE timer to fire within 1s after modify");
+
+    /* EV_ONESHOT auto-deleted the knote; no explicit EV_DELETE needed. */
+}
+
 void
 test_evfilt_timer(struct test_context *ctx)
 {
@@ -367,5 +407,6 @@ test_evfilt_timer(struct test_context *ctx)
 #endif
 #ifdef NOTE_ABSOLUTE
     test(kevent_timer_note_absolute, ctx);
+    test(kevent_timer_note_absolute_after_modify, ctx);
 #endif
 }

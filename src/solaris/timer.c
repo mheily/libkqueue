@@ -184,24 +184,66 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
 }
 
 int
-evfilt_timer_knote_modify(struct filter *filt UNUSED, struct knote *kn,
+evfilt_timer_knote_modify(struct filter *filt, struct knote *kn,
         const struct kevent *kev)
 {
     struct itimerspec ts;
+    int abstime;
+    bool clk_changed = ((kev->fflags ^ kn->kev.fflags) & NOTE_ABSOLUTE) != 0;
 
     /*
      * timer_settime on the existing timer keeps any pending expirations
-     * (timer_getoverrun); a delete+recreate would zero them.  The new
-     * period is in the incoming kev - kn->kev still holds the old values;
-     * common code overwrites kn->kev after we return.
+     * (timer_getoverrun); the new period is in the incoming kev -
+     * kn->kev still holds the old values, common code overwrites
+     * kn->kev after we return.
+     *
+     * NOTE_ABSOLUTE selects the clockid baked into the timerid at
+     * timer_create (CLOCK_REALTIME vs CLOCK_MONOTONIC), and there's
+     * no runtime way to change clocks.  Toggling NOTE_ABSOLUTE means
+     * the deadline domain changed; tear down and recreate in the
+     * right clock.  Matches FreeBSD's filt_timertouch which drains
+     * the callout and re-arms in the new domain (kern_event.c:1033).
      */
+    if (clk_changed) {
+        port_notify_t pn = { 0 };
+        struct sigevent se = { 0 };
+        timer_t newid;
+        clockid_t clk = (kev->fflags & NOTE_ABSOLUTE) ? CLOCK_REALTIME
+                                                      : CLOCK_MONOTONIC;
+
+        pn.portnfy_port = filter_epoll_fd(filt);
+        pn.portnfy_user = (void *) kn->kn_udata;
+        se.sigev_notify = SIGEV_PORT;
+        se.sigev_value.sival_ptr = &pn;
+
+        if (timer_create(clk, &se, &newid) < 0) {
+            dbg_perror("timer_create(2) on NOTE_ABSOLUTE toggle");
+            return (-1);
+        }
+        if (timer_delete(kn->kn_timerid) < 0)
+            dbg_perror("timer_delete(2) on NOTE_ABSOLUTE toggle");
+        kn->kn_timerid = newid;
+    }
+
     convert_timedata_to_itimerspec(&ts, kev->data, kev->fflags,
                                    kev->flags & EV_ONESHOT);
-    int abstime = (kev->fflags & NOTE_ABSOLUTE) ? TIMER_ABSTIME : 0;
+    abstime = (kev->fflags & NOTE_ABSOLUTE) ? TIMER_ABSTIME : 0;
     if (timer_settime(kn->kn_timerid, abstime, &ts, NULL) < 0) {
         dbg_perror("timer_settime(2)");
         return (-1);
     }
+
+    /*
+     * Common code only copies udata (and conditionally EV_DISPATCH)
+     * back into kn->kev after kn_modify; the rest is on us.  Stale
+     * kn->kev would lie to copyout and misdetect clk_changed on a
+     * subsequent NOTE_ABSOLUTE toggle.  EV_RECEIPT is sticky on BSD;
+     * preserve it across the modify.  EV_CLEAR is forced on for
+     * timers (matches knote_create).
+     */
+    kn->kev.flags  = kev->flags | EV_CLEAR | (kn->kev.flags & EV_RECEIPT);
+    kn->kev.fflags = kev->fflags;
+    kn->kev.data   = kev->data;
     return (0);
 }
 
