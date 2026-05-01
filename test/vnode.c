@@ -340,12 +340,18 @@ test_kevent_vnode_dispatch(struct test_context *ctx)
 }
 #endif     /* EV_DISPATCH */
 
-/*
- * BSD overwrites kn->kev.udata on every modify.  Solaris-only because
- * Linux's evfilt_vnode_knote_modify is a stub returning -1; macOS uses
- * native kqueue so this code path doesn't run there.
- */
+/* ============================================================
+ * Flag-behaviour tests
+ *
+ * Solaris-only because Linux's evfilt_vnode_knote_modify is a stub
+ * returning -1; macOS uses native kqueue so this code path doesn't
+ * run there.
+ * ============================================================ */
 #ifdef __sun
+
+/*
+ * BSD overwrites kn->kev.udata on every modify.
+ */
 static void
 test_kevent_vnode_modify_clobbers_udata(struct test_context *ctx)
 {
@@ -364,7 +370,70 @@ test_kevent_vnode_modify_clobbers_udata(struct test_context *ctx)
     if (ret[0].udata != NULL)
         die("expected udata clobbered to NULL, got %p", ret[0].udata);
 }
-#endif
+
+/*
+ * modify_disarms: re-EV_ADD with fflags switched away from the
+ * triggering note must tear down the kernel watch so the original
+ * file event no longer fires.
+ */
+static void
+test_kevent_vnode_modify_disarms(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_ADD, NOTE_WRITE, 0, NULL);
+    /* Switch to NOTE_DELETE - we'll only write, not delete. */
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_ADD, NOTE_DELETE, 0, NULL);
+
+    testfile_write(ctx->testfile);
+    test_no_kevents(ctx->kqfd);
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE, EV_DELETE, 0, 0, NULL);
+}
+
+/*
+ * disable_drains: kernel queues a port_event_t for the file change;
+ * EV_DISABLE must drop it before the drain.
+ */
+static void
+test_kevent_vnode_disable_drains(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_ADD, NOTE_WRITE, 0, NULL);
+
+    /* Trigger: write returns when kernel has noted the file change. */
+    testfile_write(ctx->testfile);
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_DISABLE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE, EV_DELETE, 0, 0, NULL);
+}
+
+/*
+ * delete_drains: same as disable_drains but with EV_DELETE; also
+ * exercises the "queued event for a freed knote" UAF class.
+ */
+static void
+test_kevent_vnode_delete_drains(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_ADD, NOTE_WRITE, 0, NULL);
+
+    testfile_write(ctx->testfile);
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_DELETE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
+}
+#endif  /* __sun */
 
 void
 test_evfilt_vnode(struct test_context *ctx)
@@ -406,6 +475,9 @@ test_evfilt_vnode(struct test_context *ctx)
 #endif
 #ifdef __sun
     test(kevent_vnode_modify_clobbers_udata, ctx);
+    test(kevent_vnode_modify_disarms, ctx);
+    test(kevent_vnode_disable_drains, ctx);
+    test(kevent_vnode_delete_drains, ctx);
 #endif
     /* TODO: test r590 corner case where a descriptor is closed and
              the associated knote is automatically freed. */
