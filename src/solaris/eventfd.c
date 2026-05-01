@@ -15,26 +15,14 @@
  */
 
 /*
- * Port-based eventfd shim for illumos/Solaris.
+ * Implements kqops.eventfd_raise for illumos.
  *
- * libkqueue's common code uses kqops.eventfd_raise() as a generic
- * "wake the kqueue waiter" doorbell.  On Linux that maps to writing
- * an eventfd that's registered in epoll.  illumos has no eventfd(2)
- * and the waiter blocks in port_getn(3C), so we model the doorbell
- * as port_send(3C) into the kqueue's event port.
+ * The cross-platform code calls eventfd_raise to wake a kqueue waiter.
+ * illumos has no eventfd(2), so we wake by port_send into the kqueue's
+ * event port.  efd_events carries the filter id; solaris_kevent_copyout
+ * dispatches via filter_lookup.
  *
- * efd_events carries the originating filter id (set at init time
- * from filt->kf_id) and is written to portev_events on each
- * port_send.  The platform copyout dispatcher routes the wakeup
- * back to the right filter via filter_lookup(kq, evt->portev_events).
- * efd is the platform's per-filter eventfd (filt->kf_efd) so
- * signal_handler / user-filter NOTE_TRIGGER can call
- * kqops.eventfd_raise(&filt->kf_efd) without caring about the
- * port underneath.
- *
- * No file descriptor is consumed by these "eventfds"; ef_id is
- * left at -1 and eventfd_descriptor returns -1.  That distinguishes
- * them from real fd-backed eventfds for any caller that cares.
+ * No fd is allocated: ef_id stays -1, eventfd_descriptor returns -1.
  */
 
 #include "../common/private.h"
@@ -44,12 +32,6 @@ solaris_eventfd_init(struct eventfd *efd, struct filter *filt)
 {
     efd->ef_id = -1;
     efd->ef_filt = filt;
-    /*
-     * Use the filter id as the port_send discriminator.  This
-     * doubles as the routing key in solaris_kevent_copyout: a
-     * single filter_lookup(kq, portev_events) recovers the
-     * originating filter without parallel constants.
-     */
     efd->efd_events = filt->kf_id;
     atomic_store(&efd->efd_raised, 0);
     return (0);
@@ -73,12 +55,10 @@ solaris_eventfd_raise(struct eventfd *efd)
     unsigned int expected = 0;
 
     /*
-     * Coalesce: only port_send when transitioning 0 -> 1.
-     * Without this the doorbell isn't level-triggered like a real
-     * eventfd counter and N raises produce N spurious wakes,
-     * which trips assertions in consumers that drain their
-     * ready-list on the first wake (e.g. evfilt_proc_knote_copyout
-     * asserts kf_ready non-empty).  eventfd_lower clears the flag.
+     * Only port_send on the 0->1 transition.  Without coalescing, N raises
+     * fire N port events; consumers like evfilt_proc_knote_copyout drain
+     * their ready-list on the first wake and assert kf_ready non-empty
+     * on subsequent ones.
      */
     if (!atomic_compare_exchange_strong(&efd->efd_raised, &expected, 1))
         return (0);
