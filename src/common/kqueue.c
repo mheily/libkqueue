@@ -426,9 +426,23 @@ kqueue(void)
     tracing_mutex_init(&kq_mtx, NULL);
 #else
     int prev_cancel_state;
-    tracing_mutex_lock(&kq_mtx);
+    /*
+     * pthread_once is its own one-shot barrier: a second thread
+     * entering while another is still running init_routine blocks
+     * until init returns, and POSIX requires "On return from
+     * pthread_once(), init_routine shall have completed", with
+     * memory-ordering guarantees so all writes done in
+     * libkqueue_init are visible to every caller after
+     * pthread_once returns.
+     *
+     * That makes a wrapping kq_mtx redundant.  It was also actively
+     * harmful: libkqueue_init calls pthread_atfork which acquires
+     * libc's atfork-list lock, and fork() acquires the same libc
+     * lock then runs our libkqueue_pre_fork which takes kq_mtx -
+     * the inverse order.  Helgrind flagged it on every proc test
+     * fork.
+     */
     (void) pthread_once(&kq_is_initialized, libkqueue_init);
-    tracing_mutex_unlock(&kq_mtx);
 #endif
 
 #ifndef _WIN32
