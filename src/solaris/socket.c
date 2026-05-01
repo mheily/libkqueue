@@ -26,16 +26,12 @@
 #include "private.h"
 
 /*
- * Classify the fd associated with a knote and stamp kn->kn_flags
- * with the corresponding KNFL_* bits.  Mirrors the Linux backend's
- * linux_get_descriptor_type so the read filter's copyout can branch
- * on cached state instead of doing fstat/getsockopt on every event.
- *
- * - KNFL_FILE / KNFL_PIPE / KNFL_BLOCKDEV / KNFL_CHARDEV: from stat
- * - KNFL_SOCKET_STREAM / DGRAM / RDM / SEQPACKET / RAW: from SO_TYPE
- * - KNFL_SOCKET_PASSIVE: also set if SO_ACCEPTCONN reports a
- *   listening socket (FIONREAD on a passive socket returns 0; the
- *   readiness signals a pending accept(), not data).
+ * Cache the fd type in kn_flags so the read filter's copyout can
+ * branch without per-event fstat/getsockopt (mirrors Linux's
+ * linux_get_descriptor_type).  KNFL_SOCKET_PASSIVE flags listening
+ * sockets so the read filter knows to deliver their wakes even
+ * when FIONREAD shows 0 - on a listener "readable" means a pending
+ * accept, not queued bytes.
  */
 static int
 solaris_get_descriptor_type(struct knote *kn)
@@ -123,6 +119,7 @@ evfilt_socket_knote_create(struct filter *filt, struct knote *kn)
     int rv, events;
     bool fresh_udata = false;
 
+    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     switch (kn->kev.filter) {
         case EVFILT_READ:
             events = POLLIN;
@@ -144,16 +141,12 @@ evfilt_socket_knote_create(struct filter *filt, struct knote *kn)
         return (-1);
 
     /*
-     * Allocate the udata on first registration; subsequent re-arms
-     * reuse it.  port_associate's user pointer must outlive the
-     * knote across the kevent_wait window so EV_DELETE can defer-
-     * free it instead of freeing inline.
-     *
-     * Track whether we just allocated so we can release on
-     * port_associate failure.  Common code calls knote_release
-     * (not kn_delete) on kn_create failure, so we need to free
-     * inline; the udata never reached the kernel so deferring is
-     * unnecessary.
+     * Allocate on first registration; re-arms reuse the existing ud
+     * (see port_udata in platform.h).  If port_associate fails we
+     * have to free the ud inline: kn_create failure goes through
+     * knote_release, not kn_delete, so defer_free never runs.
+     * fresh_udata distinguishes "we allocated this call" from "we
+     * re-armed an existing ud" so we only free what we own.
      */
     if (kn->kn_udata == NULL) {
         if (KN_UDATA_ALLOC(kn) == NULL) {
@@ -183,17 +176,10 @@ evfilt_socket_knote_modify(struct filter *filt, struct knote *kn,
         const struct kevent *kev)
 {
     /*
-     * BSD's kevent semantics: EV_ADD on an existing knote updates
-     * the registration in place.  On Solaris/illumos event ports
-     * a second port_associate on an already-associated source
-     * serves as an update (port_associate(3C): "If the specified
-     * object is already associated with the specified port, the
-     * port_associate() function serves to update the events and
-     * user arguments of the association").
-     *
-     * The common kevent_copyin path copies kev into kn->kev after
-     * we return success, so just re-associate using the filter's
-     * implied events.  No need to mutate kn here.
+     * port_associate doubles as update: a second call on an already-
+     * associated source replaces events and user, so we just call
+     * knote_create again.  No need to mutate kn - kevent_copyin
+     * copies kev into kn->kev after we return success.
      */
     (void) kev;
     return evfilt_socket_knote_create(filt, kn);
@@ -202,34 +188,16 @@ evfilt_socket_knote_modify(struct filter *filt, struct knote *kn,
 int
 evfilt_socket_knote_delete(struct filter *filt, struct knote *kn)
 {
-    /* FIXME: should be handled at kevent_copyin()
-    if (kn->kev.flags & EV_DISABLE)
-        return (0);
-    */
 
     /*
-     * Solaris/illumos event ports are one-shot per association
-     * (port_associate(3C): "At most one event notification will be
-     * generated per associated file descriptor").  If a prior event
-     * already auto-dissociated the fd, port_dissociate() here will
-     * fail (the man page lists EBADF/EBADFD/EINVAL but not
-     * specifically the auto-removed case for PORT_SOURCE_FD; in
-     * practice it returns one of those).
-     *
-     * Either way, EV_DELETE is a teardown call and the kernel-side
-     * state is already gone after a failed dissociate, so log the
-     * error and return success.  The caller doesn't have anything
-     * useful it can do with the failure.
+     * port_dissociate may fail if a prior delivery auto-removed the
+     * association (PORT_SOURCE_FD is one-shot per delivery).  EV_DELETE
+     * is teardown - the kernel-side state is gone either way, so log
+     * and return success.
      */
     if (port_dissociate(filter_epoll_fd(filt), PORT_SOURCE_FD, kn->kev.ident) < 0)
         dbg_perror("port_dissociate(2) on EV_DELETE (likely already auto-removed)");
 
-    /*
-     * After port_dissociate the kernel won't queue new events for
-     * the udata, but a concurrent kevent() may already hold a
-     * stale portev_user in its TLS buffer.  Defer-free so the
-     * udata stays alive until every in-flight caller has exited.
-     */
     if (kn->kn_udata != NULL)
         KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
 
@@ -239,7 +207,6 @@ evfilt_socket_knote_delete(struct filter *filt, struct knote *kn)
 int
 evfilt_socket_knote_enable(struct filter *filt, struct knote *kn)
 {
-
     return evfilt_socket_knote_create(filt, kn);
 }
 
@@ -268,11 +235,9 @@ evfilt_socket_copyout(struct kevent *dst, UNUSED int nevents, struct filter *fil
     memcpy(dst, &src->kev, sizeof(*dst));
 
     /*
-     * port_associate(3C) on PORT_SOURCE_FD says event types follow
-     * poll(2) semantics.  POLLERR -> error; POLLHUP -> peer hangup;
-     * POLLIN combined with no readable data on a connected stream
-     * socket also indicates EOF on illumos (POLLHUP isn't always
-     * delivered).
+     * port_associate uses poll(2) event types.  POLLHUP signals an
+     * explicit hangup; a peer's FIN-close on a connected stream arrives
+     * as POLLIN with no data instead, caught by the MSG_PEEK below.
      */
     if (pe->portev_events & (POLLHUP | POLLERR)) {
         /*
@@ -298,11 +263,10 @@ evfilt_socket_copyout(struct kevent *dst, UNUSED int nevents, struct filter *fil
     if (pe->portev_events & POLLIN) {
         if (src->kn_flags & KNFL_SOCKET_PASSIVE) {
             /*
-             * Listening socket: readiness signals a pending accept,
-             * not protocol data.  FIONREAD would return 0 here and
-             * solaris_kevent_copyout's `skip if data == 0` defence
-             * would drop the event; report data=1 so it survives.
-             * Matches Linux's KNFL_SOCKET_PASSIVE path.
+             * Listening socket: readiness signals a pending accept, not data
+             * bytes.  solaris_kevent_copyout drops POLLIN events with data==0
+             * to suppress zero-byte read races; we report data=1 so a real
+             * accept readiness isn't suppressed.
              */
             dst->data = 1;
         } else if (ioctl(pe->portev_object, FIONREAD, &pending_data) < 0) {
@@ -314,12 +278,12 @@ evfilt_socket_copyout(struct kevent *dst, UNUSED int nevents, struct filter *fil
         }
 
         /*
-         * Connected stream sockets: zero-byte readiness from POLLIN
-         * means the peer shut down or closed.  Translate to EV_EOF
-         * so the consumer sees terminal state instead of having the
-         * event silently dropped by the data==0 filter.  Use
-         * MSG_PEEK to confirm rather than guessing - a transient
-         * race with a reader is also possible.
+         * POLLIN + data=0 on a connected stream is ambiguous: peer closed
+         * (EOF) or another thread drained the queue first (race).  recv
+         * with MSG_PEEK + MSG_DONTWAIT confirms - it returns 0 only on real
+         * EOF.  Set EV_EOF only when confirmed; otherwise the copyout's
+         * data==0 skip drops the event silently and the consumer never
+         * sees the close.
          */
         if (dst->data == 0 && (src->kn_flags & KNFL_SOCKET_STREAM) &&
             !(src->kn_flags & KNFL_SOCKET_PASSIVE)) {
@@ -332,11 +296,10 @@ evfilt_socket_copyout(struct kevent *dst, UNUSED int nevents, struct filter *fil
     }
 
     /*
-     * NOTE: re-association after delivery and EV_DISPATCH/EV_ONESHOT
-     * handling are both done in solaris_kevent_copyout, NOT here,
-     * unlike the Linux backend which calls knote_copyout_flag_actions
-     * inside the per-filter copyout.  Doing it in both places leads
-     * to a double knote_delete and use-after-free.
+     * NOTE: re-association and EV_DISPATCH/EV_ONESHOT handling happen
+     * in solaris_kevent_copyout, not here.  Calling
+     * knote_copyout_flag_actions inside this function would double-fire
+     * the actions and UAF the knote.
      */
     return (1);
 }
