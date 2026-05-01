@@ -200,9 +200,9 @@ evfilt_timer_knote_modify(struct filter *filt, struct knote *kn,
      * NOTE_ABSOLUTE selects the clockid baked into the timerid at
      * timer_create (CLOCK_REALTIME vs CLOCK_MONOTONIC), and there's
      * no runtime way to change clocks.  Toggling NOTE_ABSOLUTE means
-     * the deadline domain changed; tear down and recreate in the
-     * right clock.  Matches FreeBSD's filt_timertouch which drains
-     * the callout and re-arms in the new domain (kern_event.c:1033).
+     * tear down and recreate in the right clock.  Matches FreeBSD's
+     * filt_timertouch which drains the callout and re-arms in the new
+     * domain (kern_event.c:1033).
      */
     if (clk_changed) {
         port_notify_t pn = { 0 };
@@ -239,7 +239,7 @@ evfilt_timer_knote_modify(struct filter *filt, struct knote *kn,
      * kn->kev would lie to copyout and misdetect clk_changed on a
      * subsequent NOTE_ABSOLUTE toggle.  EV_RECEIPT is sticky on BSD;
      * preserve it across the modify.  EV_CLEAR is forced on for
-     * timers (matches knote_create).
+     * timers (they only fire once).
      */
     kn->kev.flags  = kev->flags | EV_CLEAR | (kn->kev.flags & EV_RECEIPT);
     kn->kev.fflags = kev->fflags;

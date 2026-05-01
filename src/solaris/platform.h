@@ -85,10 +85,11 @@ void    solaris_kqueue_free(struct kqueue *);
 int     solaris_kqueue_init(struct kqueue *);
 
 /*
- * Cookie passed as port_associate's user pointer; returned via the
- * portev_user field when an event is ready.  Heap-allocated so it can
- * outlive the knote: a port_getn may return an event whose portev_user
- * points here after another thread has run EV_DELETE and freed the kn.
+ * "udata" is passed as port_associate's user pointer; returned via the
+ * portev_user field when an event is ready.  It is heap-allocated so it
+ * can outlive the knote: a port_getn may return an event whose
+ * portev_user points here after another thread has run EV_DELETE and
+ * freed the kn.
  *
  * EV_DELETE protocol:
  *   1. Remove the kernel registration (port_dissociate for FD/FILE/
@@ -103,7 +104,7 @@ int     solaris_kqueue_init(struct kqueue *);
  * don't use port_udata - filter pointers live as long as the kqueue.
  */
 struct port_udata {
-    struct knote            *ud_kn;             //!< Pointer back to the containing knote.
+    struct knote             *ud_kn;            //!< Pointer back to the containing knote.
     bool                     ud_stale;          //!< Set true under kq_mtx by EV_DELETE.
                                                 ///< Once ud_stale is set, ud_kn is dangling and
                                                 ///< copyout must skip dispatch.
@@ -132,10 +133,10 @@ struct kqueue_kevent_state {
 TAILQ_HEAD(kqueue_kevent_state_head, kqueue_kevent_state);
 
 struct port_udata *port_udata_alloc(struct knote *kn);
-void               port_udata_defer_free(struct kqueue *kq, struct port_udata *u);
+void port_udata_defer_free(struct kqueue *kq, struct port_udata *u);
 
-void    solaris_kevent_enter(struct kqueue *kq, struct kqueue_kevent_state *state);
-void    solaris_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state);
+void solaris_kevent_enter(struct kqueue *kq, struct kqueue_kevent_state *state);
+void solaris_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state);
 
 #define kqueue_kevent_enter(_kq, _state) solaris_kevent_enter((_kq), (_state))
 #define kqueue_kevent_exit(_kq, _state)  solaris_kevent_exit((_kq), (_state))
@@ -150,7 +151,7 @@ void    solaris_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state
  * successfully passed to port_associate (e.g. kn_create failure).
  * For the normal teardown path use KN_UDATA_DEFER_FREE.
  */
-#define KN_UDATA_FREE(_kn)        do { \
+#define KN_UDATA_FREE(_kn) do { \
     free((_kn)->kn_udata); \
     (_kn)->kn_udata = NULL; \
 } while (0)
@@ -170,9 +171,29 @@ struct event_buf {
 };
 
 /*
+ * Per-knote state for EVFILT_TIMER.  See solaris/timer.c.
+ */
+#define SOLARIS_KNOTE_TIMER_PLATFORM_SPECIFIC \
+    timer_t kn_timerid
+
+/*
+ * Per-knote state for EVFILT_USER.
+ *
+ * kn_user_ctr coalesces NOTE_TRIGGERs: only the 0->1 transition calls
+ * port_send; the accumulated count drains on copyout.
+ * kn_user_subport is a dedicated port(5) fd that proxies EVFILT_USER
+ * wakeups into the platform event loop.  See solaris/user.c.
+ */
+#define SOLARIS_KNOTE_USER_PLATFORM_SPECIFIC \
+    struct { \
+        atomic_uint kn_user_ctr; \
+        int         kn_user_subport; \
+    }
+
+/*
  * Per-knote state for EVFILT_VNODE / PORT_SOURCE_FILE.  kn_vnode_path
  * is heap-owned by the knote (fobj.fo_name aliases it).  See
- * src/solaris/vnode.c for the protocol.
+ * solaris/vnode.c for the protocol.
  */
 #define SOLARIS_KNOTE_VNODE_PLATFORM_SPECIFIC \
     struct { \
@@ -184,19 +205,24 @@ struct event_buf {
     }
 
 #define KNOTE_PLATFORM_SPECIFIC \
-    timer_t         kn_timerid; \
-    atomic_uint     kn_user_ctr;     /* EVFILT_USER trigger counter; only 0->1 triggers port_send. */ \
-    int             kn_user_subport; /* EVFILT_USER per-knote sub-port fd; see solaris/user.c. */ \
-    struct port_udata *kn_udata;     /* See @ref port_udata. */ \
+    struct port_udata *kn_udata; /* live for all filter types; remaining fields are per-type and share a union */ \
     union { \
+        SOLARIS_KNOTE_TIMER_PLATFORM_SPECIFIC; \
+        SOLARIS_KNOTE_USER_PLATFORM_SPECIFIC; \
         POSIX_KNOTE_PROC_PLATFORM_SPECIFIC; \
         SOLARIS_KNOTE_VNODE_PLATFORM_SPECIFIC; \
     }
 
+/*
+ * Per-filter fields are also mutually exclusive: a struct filter serves
+ * exactly one filter type.  kf_signal_state and the proc fields share a
+ * union for that reason.
+ */
 #define FILTER_PLATFORM_SPECIFIC \
-    int             kf_pfd; \
-    void           *kf_signal_state; /* posix/signal.c per-filter heap state */ \
-    POSIX_FILTER_PROC_PLATFORM_SPECIFIC
+    union { \
+        void *kf_signal_state;                      /* EVFILT_SIGNAL: sig_filter_state pointer (evfilt_signal.h) */ \
+        POSIX_FILTER_PROC_PLATFORM_SPECIFIC;        /* EVFILT_PROC: eventfd + reaper thread (posix/proc.c) */ \
+    }
 
 /*
  * Per-kqueue deferred-free bookkeeping.

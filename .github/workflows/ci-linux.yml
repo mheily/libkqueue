@@ -72,10 +72,6 @@ jobs:
         repo-name: llvm-toolchain
         keys-asc: https://apt.llvm.org/llvm-snapshot.gpg.key
 
-    - name: Add GCC source
-      if: ${{ matrix.env.CC == 'gcc' }}
-      run: |
-        sudo add-apt-repository ppa:ubuntu-toolchain-r/test
 
     - name: Install LLVM ${{ env.CLANG_VER }}
       if: ${{ matrix.env.CC == 'clang' }}
@@ -83,6 +79,14 @@ jobs:
         sudo apt-get install -y --no-install-recommends clang-${{ env.CLANG_VER }} llvm-${{ env.CLANG_VER }} gdb libclang-rt-${{ env.CLANG_VER }}-dev
         sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ env.CLANG_VER }} 60 && sudo update-alternatives --set clang /usr/bin/clang-${{ env.CLANG_VER }}
         sudo update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer /usr/bin/llvm-symbolizer-${{ env.CLANG_VER }} 60 && sudo update-alternatives --set llvm-symbolizer /usr/bin/llvm-symbolizer-${{ env.CLANG_VER }}
+
+    - name: Add GCC source
+      if: ${{ matrix.env.CC == 'gcc' }}
+      uses: myci-actions/add-deb-repo@10
+      with:
+        repo: deb https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu ${{ env.MYREL }} main
+        repo-name: ubuntu-toolchain-r-test
+        keys-asc: https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x1E9377A2BA9EF27F
 
     - name: Install GCC ${{ env.GCC_VER }}
       if: ${{ matrix.env.CC == 'gcc' }}

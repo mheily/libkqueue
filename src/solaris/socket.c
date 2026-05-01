@@ -164,7 +164,6 @@ evfilt_socket_knote_create(struct filter *filt, struct knote *kn)
      * kernel wakes again immediately because data is still queued.
      * The flag is silently ignored.
      */
-
     dbg_printf("port_associate kq fd=%d with actual fd %ld kn_flags=0x%x",
                filter_epoll_fd(filt), kn->kev.ident, kn->kn_flags);
 
@@ -182,7 +181,7 @@ evfilt_socket_knote_create(struct filter *filt, struct knote *kn)
 
 int
 evfilt_socket_knote_modify(struct filter *filt, struct knote *kn,
-        const struct kevent *kev)
+                           const struct kevent *kev)
 {
     /*
      * port_associate doubles as update: a second call on an already-
