@@ -524,6 +524,17 @@ test_kevent_proc_already_exited(struct test_context *ctx)
 
     test_no_kevents(ctx->kqfd);
 
+#ifdef __APPLE__
+    /*
+     * macOS native kqueue rejects EVFILT_PROC registration for a zombie
+     * with ESRCH; it does not support register-after-exit.
+     */
+    EV_SET(&kev, early, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+        die("expected ESRCH registering EVFILT_PROC on zombie, got success");
+    if (errno != ESRCH)
+        die("expected ESRCH registering EVFILT_PROC on zombie, got %s", strerror(errno));
+#else
     /*
      * Register AFTER the child has exited.  Pre-fix on the POSIX
      * backend this would silently sit forever; post-fix kn_create's
@@ -536,6 +547,7 @@ test_kevent_proc_already_exited(struct test_context *ctx)
     kev.data = 0;
     kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF;
     kevent_cmp(&kev, buf);
+#endif
 
     /* Reap the zombie so we don't leave one around for later tests. */
     if (waitpid(early, NULL, 0) != early)
