@@ -1,12 +1,17 @@
 libkqueue
 =========
 
+### Targets + Test suite
 [![CI Linux](https://github.com/mheily/libkqueue/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-linux.yml)
 [![CI Windows](https://github.com/mheily/libkqueue/actions/workflows/ci-windows.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-windows.yml)
+[![CI Solaris (OmniOS)](https://github.com/mheily/libkqueue/actions/workflows/ci-solaris.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-solaris.yml)
+[![Coverity](https://scan.coverity.com/projects/24822/badge.svg)](https://scan.coverity.com/projects/mheily-libkqueue)
+### Test suite
 [![Test suite FreeBSD](https://github.com/mheily/libkqueue/actions/workflows/ci-freebsd.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-freebsd.yml)
 [![Test suite macOS](https://github.com/mheily/libkqueue/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-macos.yml)
-[![Test suite Solaris (OmniOS)](https://github.com/mheily/libkqueue/actions/workflows/ci-solaris.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-solaris.yml)
-[![Coverity](https://scan.coverity.com/projects/24822/badge.svg)](https://scan.coverity.com/projects/mheily-libkqueue)
+
+Overview
+--------
 
 A user space implementation of the kqueue(2) kernel event notification mechanism
 libkqueue acts as a translator between the kevent structure and the native
