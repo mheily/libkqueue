@@ -16,6 +16,8 @@ on:
       - 'src/solaris/**'
       - 'test/**'
       - 'tools/valgrind-illumos.supp'
+      - 'tools/test-stack-dump.sh'
+      - 'tools/valgrind-port-getn.patch'
       - '.github/workflows/ci-solaris.yml'
   pull_request:
     branches:
@@ -30,13 +32,99 @@ on:
       - 'src/solaris/**'
       - 'test/**'
       - 'tools/valgrind-illumos.supp'
+      - 'tools/test-stack-dump.sh'
+      - 'tools/valgrind-port-getn.patch'
       - '.github/workflows/ci-solaris.yml'
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
 
 jobs:
+  # Build our patched valgrind 3.27.0 (tools/valgrind-port-getn.patch)
+  # for illumos.  Downstream jobs depend on this via `needs:` and
+  # consume the produced tarball via actions/download-artifact.
+  #
+  # The build itself is gated on actions/cache: cache key includes
+  # the patch hash, so the heavy VM-build step only runs when the
+  # patch changes (or when the cache entry expires - GH caches age
+  # out after 7 days unused).  Otherwise we restore the cached
+  # tarball and skip straight to the artifact upload.
+  valgrind-build:
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    name: "valgrind 3.27.0 (illumos, patched)"
+    env:
+      VALGRIND_VERSION: '3.27.0'
+      VALGRIND_TAG: 'VALGRIND_3_27_0'
+      ARTIFACT_NAME: 'valgrind-3.27.0-illumos-amd64-patched-sunos5.11'
+    outputs:
+      artifact_name: ${{ env.ARTIFACT_NAME }}
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        path: libkqueue
+
+    - name: Restore patched valgrind from cache
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: libkqueue/.artifacts/${{ env.ARTIFACT_NAME }}.tar.gz
+        # Cache key: valgrind version + patch sha + (hardcoded) kernel
+        # ABI.  Patch change invalidates; bumping VALGRIND_VERSION
+        # invalidates; nothing else does.
+        key: valgrind-${{ env.VALGRIND_VERSION }}-illumos-amd64-sunos5.11-${{ hashFiles('libkqueue/tools/valgrind-port-getn.patch') }}
+
+    - name: Build valgrind in OmniOS VM
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: vmactions/omnios-vm@v1
+      with:
+        usesh: true
+        mem: 4096
+        copyback: true
+        envs: 'VALGRIND_VERSION VALGRIND_TAG ARTIFACT_NAME'
+        prepare: |
+          pkg install -q gcc14 git developer/build/automake \
+              developer/build/autoconf developer/build/libtool \
+              developer/build/gnu-make || true
+        run: |
+          set -ex
+          cd /tmp
+          git clone --depth 1 --branch "${VALGRIND_TAG}" \
+              git://sourceware.org/git/valgrind.git valgrind
+          cd valgrind
+          patch -p1 < /home/runner/work/libkqueue/libkqueue/libkqueue/tools/valgrind-port-getn.patch
+          grep -A 4 'case VKI_PORT_GETN:' \
+              coregrind/m_syswrap/syswrap-solaris.c | head -5
+          ./autogen.sh
+          for cand in /opt/gcc-*/bin/gcc /usr/bin/gcc /opt/ooce/bin/gcc; do
+              [ -x "$cand" ] && CC="$cand" && break
+          done
+          export CC
+          # MAKE=gmake: illumos's /usr/bin/make is BSD make, valgrind's
+          # autotools depends on GNU make for dependency tracking.
+          ./configure \
+              MAKE=gmake \
+              --prefix=/opt/valgrind-${VALGRIND_VERSION}-patched \
+              --enable-only64bit
+          NPROC=$(psrinfo | wc -l | tr -d '[:space:]')
+          gmake -j "$NPROC"
+          DESTDIR=/tmp/valgrind-stage gmake install
+          mkdir -p /home/runner/work/libkqueue/libkqueue/libkqueue/.artifacts
+          OUT=/home/runner/work/libkqueue/libkqueue/libkqueue/.artifacts/${ARTIFACT_NAME}.tar.gz
+          # illumos tar doesn't accept GNU's -C flag.
+          ( cd /tmp/valgrind-stage && tar -czf "$OUT" . )
+          ls -l "$OUT"
+
+    - name: Upload patched valgrind tarball
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        path: libkqueue/.artifacts/${{ env.ARTIFACT_NAME }}.tar.gz
+        retention-days: 7
+        if-no-files-found: error
+
   omnios-tests:
+    needs: valgrind-build
     timeout-minutes: ${{ github.event_name == 'schedule' && 60 || 30 }}
     strategy:
       fail-fast: false
@@ -45,10 +133,10 @@ jobs:
             - { NAME: release-gcc,        BUILD_TYPE: Release, VALGRIND_TOOL: "" }
             - { NAME: debug-gcc,          BUILD_TYPE: Debug,   VALGRIND_TOOL: "" }
             # Clang on illumos has no working sanitizer runtimes
-            # (ASan/TSan are unsupported targets), so we use
-            # valgrind for memory + race coverage instead.  Each
-            # variant runs the test binary under one valgrind tool;
-            # iterations stay at 1 because valgrind is ~10-30x.
+            # (ASan/TSan are unsupported targets), so we use valgrind
+            # for memory + race coverage.  Both valgrind variants run
+            # our in-tree-patched 3.27.0 (PORT_GETN packed-return
+            # fix); the valgrind-build job above produces the binary.
             - { NAME: debug-memcheck,     BUILD_TYPE: Debug,  VALGRIND_TOOL: memcheck }
             - { NAME: debug-helgrind,     BUILD_TYPE: Debug,  VALGRIND_TOOL: helgrind }
 
@@ -63,21 +151,38 @@ jobs:
       with:
         path: libkqueue
 
+    - uses: actions/download-artifact@v4
+      if: matrix.env.VALGRIND_TOOL != ''
+      with:
+        name: ${{ needs.valgrind-build.outputs.artifact_name }}
+        path: libkqueue/.artifacts/
+
     - name: libkqueue build + test suite
       uses: vmactions/omnios-vm@v1
       with:
         usesh: true
+        # Bump VM memory above the default; memcheck's shadow memory
+        # accumulates across the test run and OOMs on a 4GB image.
+        mem: 8192
         envs: 'KQUEUE_DEBUG NAME BUILD_TYPE VALGRIND_TOOL GITHUB_EVENT_NAME ITERATIONS'
         prepare: |
           echo "=== prepare: installing build deps ==="
           pkg install -q cmake gcc14 git developer/build/gnu-make || true
           if [ -n "${VALGRIND_TOOL}" ]; then
-              pkg install -q ooce/developer/valgrind || true
-              # ooce binaries live under /opt/ooce/bin which is
-              # already a symlink farm aggregating each ooce/<pkg>;
-              # add it to PATH at run time.
-              ls -l /opt/ooce/bin/valgrind 2>/dev/null || true
-              /opt/ooce/bin/valgrind --version || true
+              # Use our patched valgrind 3.27.0 (PORT_GETN packed-return
+              # fix, see tools/valgrind-port-getn.patch).  The tarball
+              # was downloaded by the runner and rsynced into the VM
+              # workspace at /home/runner/work/.../libkqueue/.artifacts/
+              # by vmactions.  Extract from / so it lands at the
+              # configured prefix /opt/valgrind-3.27.0-patched.
+              # gdb is still useful for the watchdog stack-dump path.
+              pkg install -q ooce/developer/gdb || true
+              TARBALL=$(ls /home/runner/work/libkqueue/libkqueue/libkqueue/.artifacts/valgrind-*.tar.gz | head -1)
+              echo "Extracting ${TARBALL}"
+              ( cd / && tar -xzf "${TARBALL}" )
+              ls -l /opt/valgrind-3.27.0-patched/bin/valgrind /opt/ooce/bin/gdb 2>/dev/null || true
+              /opt/valgrind-3.27.0-patched/bin/valgrind --version || true
+              /opt/ooce/bin/gdb --version | head -1 || true
           fi
           echo "=== prepare: done ==="
         run: |
@@ -108,9 +213,18 @@ jobs:
           # Run the test binary directly so KQUEUE_DEBUG output and
           # per-test progress markers stream live.
           if [ -n "${VALGRIND_TOOL}" ]; then
-              export PATH="/opt/ooce/bin:${PATH}"
+              # Patched valgrind first; ooce/bin still in PATH for gdb
+              # and friends used by the watchdog dump script.
+              export PATH="/opt/valgrind-3.27.0-patched/bin:/opt/ooce/bin:${PATH}"
               SUPP="$(pwd)/../tools/valgrind-illumos.supp"
-              VG_OPTS="--tool=${VALGRIND_TOOL} --error-exitcode=1 --num-callers=30"
+              # --child-silent-after-fork silences child output but
+              # does NOT stop --error-exitcode propagating: the proc
+              # tests fork, the child triggers valgrind in its own
+              # right, and would exit with --error-exitcode=1.  That
+              # breaks exit-status assertions in the parent.  We drop
+              # --error-exitcode and grep the valgrind summary at end
+              # to gate CI on real findings instead.
+              VG_OPTS="--tool=${VALGRIND_TOOL} --num-callers=30 --child-silent-after-fork=yes"
               if [ -f "${SUPP}" ]; then
                   VG_OPTS="${VG_OPTS} --suppressions=${SUPP}"
               fi
@@ -118,11 +232,38 @@ jobs:
                   VG_OPTS="${VG_OPTS} --leak-check=full --show-leak-kinds=definite,possible --track-origins=yes"
               fi
               echo "valgrind opts: ${VG_OPTS}"
-              valgrind ${VG_OPTS} ./test/libkqueue-test -n "${ITERATIONS:-1}"
+              VG_LOG=valgrind.log
+              # If a test goes silent for 120s the watchdog runs the
+              # OS-appropriate stack-dump tool and SIGABRTs the parent.
+              # Without this, a hang just times out the runner with no
+              # diagnostic.
+              /opt/valgrind-3.27.0-patched/bin/valgrind \
+                  ${VG_OPTS} --log-file="${VG_LOG}" \
+                  ./test/libkqueue-test \
+                      --watchdog-timeout=120 \
+                      --watchdog-cmd="$(pwd)/../tools/test-stack-dump.sh" \
+                      -n "${ITERATIONS:-1}"
+              TEST_RC=$?
+              echo "--- valgrind log ---"
+              cat "${VG_LOG}"
+              # Fail the job on any valgrind finding (ERROR SUMMARY
+              # lines reporting a non-zero error count).  Empty match
+              # is OK; non-empty match is a fail.
+              if grep -E '^==[0-9]+== ERROR SUMMARY: [^0]' "${VG_LOG}"; then
+                  echo "valgrind reported errors, failing build"
+                  exit 1
+              fi
+              if [ "${TEST_RC}" -ne 0 ]; then
+                  echo "test binary exited ${TEST_RC}"
+                  exit "${TEST_RC}"
+              fi
           else
               ./test/libkqueue-test -n "${ITERATIONS:-1}"
           fi
           echo "=== run: done ==="
       env:
         KQUEUE_DEBUG: ${{ matrix.env.BUILD_TYPE == 'Release' && '' || 'yes' }}
-        ITERATIONS: ${{ github.event_name == 'schedule' && (matrix.env.VALGRIND_TOOL && '5' || '50') || '1' }}
+        # Valgrind is pinned at 1 iteration: memcheck's shadow memory
+        # accumulates across the suite and a single iteration already
+        # peaks at multiple GB; running more in-process OOMs the VM.
+        ITERATIONS: ${{ matrix.env.VALGRIND_TOOL && '1' || (github.event_name == 'schedule' && '50' || '1') }}

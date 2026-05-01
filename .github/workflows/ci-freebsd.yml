@@ -6,12 +6,14 @@ on:
       - master
     paths:
       - 'test/*'
+      - 'tools/test-stack-dump.sh'
       - '.github/workflows/ci-freebsd.yml'
   pull_request:
     branches:
       - master
     paths:
       - 'test/*'
+      - 'tools/test-stack-dump.sh'
       - '.github/workflows/ci-freebsd.yml'
   schedule:
     - cron: '0 6 * * *'
@@ -36,11 +38,14 @@ jobs:
         usesh: true
         sync: sshfs
         prepare: |
-          pkg install -y cmake llvm
+          pkg install -y cmake llvm gdb
         envs: 'KQUEUE_DEBUG'
         run: |
           freebsd-version
           cd libkqueue/test
           cmake .
           make
-          ./libkqueue-test -n ${{ github.event_name == 'schedule' && 50 || 1 }}
+          ./libkqueue-test \
+            --watchdog-timeout=120 \
+            --watchdog-cmd=../tools/test-stack-dump.sh \
+            -n ${{ github.event_name == 'schedule' && 50 || 1 }}

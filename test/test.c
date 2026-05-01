@@ -57,9 +57,17 @@ testing_atexit(void)
 void
 test_begin(struct test_context *ctx, const char *func)
 {
+    extern void watchdog_heartbeat(const char *);
+
     if (ctx->cur_test_id)
         free(ctx->cur_test_id);
     ctx->cur_test_id = strdup(func);
+
+    /*
+     * Per-test heartbeat: lets the watchdog distinguish "this test is
+     * hung" from "the test class is just slow under valgrind".
+     */
+    watchdog_heartbeat(ctx->cur_test_id);
 
     printf("%d: %s\n", ctx->test->ut_num, ctx->cur_test_id);
     //TODO: redirect stdout/err to logfile

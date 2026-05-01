@@ -1,6 +1,53 @@
 # Valgrind suppressions for libkqueue tests on illumos.
 #
 # Add suppressions sparingly: a real bug in libkqueue should be
-# fixed, not silenced.  Entries here should target known false
-# positives in libc / libumem / runtime linker, with a comment
-# explaining why the report is not actionable.
+# fixed, not silenced.  Entries here target known false positives in
+# libc / runtime linker, with a comment explaining why the report is
+# not actionable.
+
+# helgrind: child-side fork hooks (libkqueue_child_fork ->
+# filter_fork_all -> *_reset_after_fork) write fields that the
+# dispatcher thread read pre-fork.  fork(2) drops every thread but
+# the caller, so in the child there is no concurrent reader, only
+# helgrind's stale parent-side thread metadata.
+{
+   evfilt_signal-reset_after_fork-stale-parent-thread
+   Helgrind:Race
+   fun:evfilt_signal_reset_after_fork
+   fun:filter_fork_all
+   fun:libkqueue_child_fork
+   ...
+}
+
+{
+   sig_platform_reset_after_fork-stale-parent-thread
+   Helgrind:Race
+   fun:sig_platform_reset_after_fork
+   fun:evfilt_signal_reset_after_fork
+   ...
+}
+
+# helgrind: sem_trywait on illumos reported as "failed with EBUSY".
+#
+# Two layers are involved:
+#  - illumos's POSIX wrapper sem_trywait() (libc port/rt/sem.c) calls
+#    the underlying sema_trywait().  When the semaphore count is zero
+#    sema_trywait returns EBUSY; the POSIX wrapper then translates
+#    EBUSY -> EAGAIN before returning, per POSIX.  In a non-instru-
+#    mented run callers only ever see EAGAIN.
+#  - On Solaris, helgrind's interceptor (helgrind/hg_intercepts.c)
+#    hooks sema_trywait, NOT the POSIX sem_trywait wrapper.  It sees
+#    the raw EBUSY return, calls DO_PthAPIerror with it, and emits
+#    "Thread #N's call to sem_trywait failed with error code 16
+#    (EBUSY: ...)".  The user-visible return is still EAGAIN; only
+#    helgrind's diagnostic message uses the pre-translation code.
+#
+# The libkqueue threading test deliberately calls sem_trywait as a
+# zero-extra-delivery sanity check, so this report is expected and
+# does not indicate a libkqueue bug.
+{
+   illumos-helgrind-sem_trywait-ebusy-mislabelled
+   Helgrind:PthAPIerror
+   fun:sem_trywait_WRK
+   ...
+}

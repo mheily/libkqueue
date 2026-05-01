@@ -10,6 +10,7 @@ on:
       - 'src/common/*'
       - 'src/linux/*'
       - 'test/*'
+      - 'tools/test-stack-dump.sh'
       - '.github/workflows/ci-linux.yml'
   pull_request:
     branches:
@@ -20,6 +21,7 @@ on:
       - 'src/common/*'
       - 'src/linux/*'
       - 'test/*'
+      - 'tools/test-stack-dump.sh'
       - '.github/workflows/ci-linux.yml'
   schedule:
     # Daily soak run: 50 iterations to surface flakes that a single
@@ -127,7 +129,12 @@ jobs:
       env:
         KQUEUE_DEBUG: ${{ matrix.env.BUILD_TYPE == 'Release' && '' || '1' }}
         TSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/tsan.supp
-      run: test/libkqueue-test -n ${{ github.event_name == 'schedule' && 50 || 1 }}
+      run: |
+        sudo apt-get install -y elfutils gdb >/dev/null
+        test/libkqueue-test \
+          --watchdog-timeout=120 \
+          --watchdog-cmd="${{ github.workspace }}/tools/test-stack-dump.sh" \
+          -n ${{ github.event_name == 'schedule' && 50 || 1 }}
 
     - name: Build debian packages
       run: cpack -G DEB

@@ -1,0 +1,46 @@
+From: Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+Subject: [PATCH] solaris: fix POST(sys_port) PORT_GETN packed-return decoding
+
+portfs(PORT_GETN) on illumos packs its int64_t return as a union rval
+(see <sys/systm.h>):
+  low  32 bits (r_val1) = nget (events written), or -1 on hard error
+  high 32 bits (r_val2) = 0 on success, ETIME on timeout
+
+portfs is registered SE_64RVAL so RES holds the full packed int64_t.
+See illumos uts/common/fs/portfs/port.c portfs() PORT_GETN case and
+the libc unpacking in lib/libc/port/gen/event_port.c port_getn().
+
+The existing POST handler treated RES as a flat count of events.  On
+ETIME RES is (62 << 32), and RES * sizeof(port_event_t) is a TB-scale
+range that, when fed to POST_MEM_WRITE, corrupts memcheck's shadow
+tracking and panics:
+
+  Memcheck: the 'impossible' happened:
+    create_MC_Chunk: shadow area is accessible
+
+Hard errors don't reach the POST handler (kernel goes through
+set_errno() and SUCCESS is false), so we only need to handle the
+success/ETIME packed return: extract the low 32 bits as nget.
+---
+ coregrind/m_syswrap/syswrap-solaris.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/coregrind/m_syswrap/syswrap-solaris.c b/coregrind/m_syswrap/syswrap-solaris.c
+index abc..def 100644
+--- a/coregrind/m_syswrap/syswrap-solaris.c
++++ b/coregrind/m_syswrap/syswrap-solaris.c
+@@ -7802,9 +7802,12 @@ POST(sys_port)
+    case VKI_PORT_GET:
+       POST_MEM_WRITE(ARG3, sizeof(vki_port_event_t));
+       break;
+-   case VKI_PORT_GETN:
+-      POST_MEM_WRITE(ARG3, RES * sizeof(vki_port_event_t));
++   case VKI_PORT_GETN: {
++      UInt nget = (UInt)(RES & 0xFFFFFFFFu);
++      if (nget > 0)
++         POST_MEM_WRITE(ARG3, (UInt)nget * sizeof(vki_port_event_t));
+       break;
++   }
+    case VKI_PORT_ALERT:
+    case VKI_PORT_DISPATCH:
+       break;

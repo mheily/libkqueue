@@ -16,6 +16,10 @@
 
 #include <limits.h>
 
+#ifndef _WIN32
+#include <getopt.h>
+#endif
+
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__sun) || defined(__APPLE__)
 #include <sys/time.h>
 #include <sys/resource.h>
@@ -26,6 +30,256 @@
 #endif
 
 #include "common.h"
+
+/*
+ * Watchdog: a tiny child process that fires a stack dump and
+ * aborts the parent if no test sends a heartbeat within
+ * --watchdog-timeout.
+ *
+ * Heartbeat transport is a pipe: parent writes "<test_name>\n" before
+ * each test; the watchdog poll(2)s the read end with the timeout as
+ * its deadline.  poll returning 0 means the deadline expired with no
+ * data == bark; any data == reset and poll again.  No polling tick,
+ * no shared memory, deterministic fire time at exactly the timeout.
+ *
+ * Disabled until --watchdog-timeout is given on the command line.
+ * The dump command is set with --watchdog-cmd; the parent pid is
+ * appended as the final argv entry.  Run via execvp(3): bare names
+ * resolve via $PATH, paths with a slash are taken literally.
+ * Examples:
+ *   --watchdog-cmd=pstack
+ *   --watchdog-cmd='/usr/bin/eu-stack -p'
+ */
+#ifndef _WIN32
+# include <poll.h>
+# include <signal.h>
+# include <sys/wait.h>
+
+#define WATCHDOG_TEST_NAME_MAX 64
+#define WATCHDOG_CMD_ARGS_MAX  16
+#define WATCHDOG_CMD_BUF       256
+
+static int    watchdog_timeout_s     = 0; /* 0 = disabled */
+static int    watchdog_pipe[2]       = { -1, -1 };
+static pid_t  watchdog_pid           = -1;
+static char   watchdog_cmd_buf[WATCHDOG_CMD_BUF];
+static char  *watchdog_cmd_argv[WATCHDOG_CMD_ARGS_MAX];
+
+static void
+watchdog_parse_cmd(const char *cmd)
+{
+    size_t n = strlen(cmd);
+    if (n >= sizeof(watchdog_cmd_buf)) n = sizeof(watchdog_cmd_buf) - 1;
+    memcpy(watchdog_cmd_buf, cmd, n);
+    watchdog_cmd_buf[n] = '\0';
+
+    int i = 0;
+    char *tok = strtok(watchdog_cmd_buf, " \t");
+    while (tok && i < WATCHDOG_CMD_ARGS_MAX - 2) {
+        watchdog_cmd_argv[i++] = tok;
+        tok = strtok(NULL, " \t");
+    }
+    watchdog_cmd_argv[i] = NULL;
+}
+
+/* Async-signal-safe int-to-decimal, returns bytes written. */
+static int
+itoa_safe(char *buf, size_t cap, long v)
+{
+    char tmp[32];
+    int n = 0;
+    int neg = v < 0;
+    unsigned long u = neg ? (unsigned long) -v : (unsigned long) v;
+    int i;
+
+    do { tmp[n++] = (char)('0' + (u % 10)); u /= 10; } while (u && n < (int) sizeof(tmp));
+    if (neg && n < (int) sizeof(tmp)) tmp[n++] = '-';
+    if ((size_t) n > cap) n = (int) cap;
+    for (i = 0; i < n; i++) buf[i] = tmp[n - 1 - i];
+    return n;
+}
+
+static void
+watchdog_loop(pid_t parent, int rfd)
+{
+    char          pidbuf[16];
+    int           pidlen;
+    char          last_name[WATCHDOG_TEST_NAME_MAX];
+    size_t        last_len = 0;
+    char          rdbuf[256];
+    struct pollfd pfd = { .fd = rfd, .events = POLLIN };
+
+    pidlen = itoa_safe(pidbuf, sizeof(pidbuf) - 1, (long) parent);
+    pidbuf[pidlen] = '\0';
+    last_name[0]   = '\0';
+
+    /* Append pid to the dump command as its final argv entry. */
+    int argc = 0;
+    while (watchdog_cmd_argv[argc] != NULL) argc++;
+    watchdog_cmd_argv[argc]     = pidbuf;
+    watchdog_cmd_argv[argc + 1] = NULL;
+
+    for (;;) {
+        int rv = poll(&pfd, 1, watchdog_timeout_s * 1000);
+        if (rv < 0) {
+            if (errno == EINTR) continue;
+            _exit(125);
+        }
+        if (rv == 0) break;  /* Timeout - bark. */
+
+        ssize_t n = read(rfd, rdbuf, sizeof(rdbuf));
+        if (n <= 0) _exit(0);  /* Parent closed the pipe == clean exit. */
+
+        /* Capture the last newline-terminated record as the current
+         * test name.  Multiple heartbeats may have batched into one
+         * read; we only care about the most recent. */
+        ssize_t last_nl = -1;
+        for (ssize_t i = n - 1; i >= 0; i--)
+            if (rdbuf[i] == '\n') { last_nl = i; break; }
+        if (last_nl > 0) {
+            ssize_t start = last_nl - 1;
+            while (start >= 0 && rdbuf[start] != '\n') start--;
+            start++;
+            size_t len = (size_t)(last_nl - start);
+            if (len >= sizeof(last_name)) len = sizeof(last_name) - 1;
+            memcpy(last_name, rdbuf + start, len);
+            last_name[len] = '\0';
+            last_len = len;
+        }
+    }
+
+    /* Bark. */
+    const char *prefix = "\n=== test watchdog: timeout in ";
+    write(STDERR_FILENO, prefix, strlen(prefix));
+    if (last_len) write(STDERR_FILENO, last_name, last_len);
+    else          write(STDERR_FILENO, "(unknown)", 9);
+    write(STDERR_FILENO, " (pid ", 6);
+    write(STDERR_FILENO, pidbuf, pidlen);
+    write(STDERR_FILENO, "), dumping stacks ===\n", 22);
+
+    /* Log the resolved argv so a reader can see exactly what we
+     * tried to run.  Useful when the dump command itself misbehaves. */
+    write(STDERR_FILENO, "watchdog: exec:", 15);
+    for (int a = 0; watchdog_cmd_argv[a] != NULL; a++) {
+        write(STDERR_FILENO, " ", 1);
+        write(STDERR_FILENO, watchdog_cmd_argv[a], strlen(watchdog_cmd_argv[a]));
+    }
+    write(STDERR_FILENO, "\n", 1);
+
+    pid_t child = fork();
+    if (child == 0) {
+        execvp(watchdog_cmd_argv[0], watchdog_cmd_argv);
+        const char *fail = "watchdog: exec failed\n";
+        write(STDERR_FILENO, fail, strlen(fail));
+        _exit(127);
+    }
+    if (child > 0) {
+        /* Don't wait forever for the dump.  pstack/gdb/vgdb can hang
+         * attaching to a wedged inferior; the parent kill is what
+         * actually matters here, so cap the dump at 30s and SIGKILL
+         * the dumper if it overruns. */
+        const int dump_timeout_s = 30;
+        int       waited = 0;
+        for (;;) {
+            pid_t r = waitpid(child, NULL, WNOHANG);
+            if (r == child || r < 0) break;
+            if (waited >= dump_timeout_s) {
+                write(STDERR_FILENO,
+                      "watchdog: dump command exceeded 30s, killing\n", 45);
+                kill(child, SIGKILL);
+                waitpid(child, NULL, 0);
+                break;
+            }
+            sleep(1);
+            waited++;
+        }
+    }
+
+    const char *abrt = "=== test watchdog: killing parent ===\n";
+    write(STDERR_FILENO, abrt, strlen(abrt));
+    kill(parent, SIGKILL);
+    _exit(124);
+}
+
+static void
+watchdog_start(void)
+{
+    if (watchdog_timeout_s <= 0)
+        return;
+    if (watchdog_cmd_argv[0] == NULL) {
+        fprintf(stderr, "--watchdog-timeout requires --watchdog-cmd\n");
+        return;
+    }
+
+    if (pipe(watchdog_pipe) < 0) {
+        perror("pipe(watchdog)");
+        return;
+    }
+
+    pid_t parent = getpid();
+    pid_t pid    = fork();
+    if (pid < 0) {
+        perror("fork(watchdog)");
+        close(watchdog_pipe[0]);
+        close(watchdog_pipe[1]);
+        watchdog_pipe[0] = watchdog_pipe[1] = -1;
+        return;
+    }
+    if (pid == 0) {
+        close(watchdog_pipe[1]);  /* Child reads only. */
+        watchdog_loop(parent, watchdog_pipe[0]);
+        _exit(0);
+    }
+    /* Parent writes only. */
+    close(watchdog_pipe[0]);
+    watchdog_pipe[0] = -1;
+    watchdog_pid = pid;
+
+    printf("watchdog active (timeout %ds, cmd '%s', pid %d)\n",
+           watchdog_timeout_s, watchdog_cmd_argv[0], (int) pid);
+}
+
+void
+watchdog_heartbeat(const char *test_name)
+{
+    /* No-op when the watchdog wasn't started.  Callers always pass
+     * a non-NULL ut_name from the registered test table. */
+    if (watchdog_pipe[1] < 0) return;
+
+    /* "<name>\n" in one write so the watchdog reads a complete record.
+     * Writes <= PIPE_BUF (4096) are atomic per POSIX; we cap the name
+     * well below that. */
+    char    buf[WATCHDOG_TEST_NAME_MAX + 1];
+    size_t  n = strlen(test_name);
+    if (n >= WATCHDOG_TEST_NAME_MAX) n = WATCHDOG_TEST_NAME_MAX - 1;
+    memcpy(buf, test_name, n);
+    buf[n++] = '\n';
+
+    ssize_t w = write(watchdog_pipe[1], buf, n);
+    (void) w;
+}
+
+static void
+watchdog_stop(void)
+{
+    if (watchdog_pid > 0) {
+        /* Murderise it - we want it gone now, not waiting on its
+         * next poll deadline. */
+        kill(watchdog_pid, SIGKILL);
+        waitpid(watchdog_pid, NULL, 0);
+        watchdog_pid = -1;
+    }
+    if (watchdog_pipe[1] >= 0) {
+        close(watchdog_pipe[1]);
+        watchdog_pipe[1] = -1;
+    }
+}
+#else  /* _WIN32 */
+static void watchdog_start(void) {}
+void        watchdog_heartbeat(const char *test_name) { (void) test_name; }
+static void watchdog_stop(void)  {}
+static void watchdog_parse_cmd(const char *cmd) { (void) cmd; }
+#endif
 
 unsigned int
 get_fd_limit(void)
@@ -71,6 +325,8 @@ print_fd_table(void)
     return used;
 }
 
+extern void watchdog_heartbeat(const char *test_name);
+
 void
 run_iteration(struct test_context *ctx)
 {
@@ -79,6 +335,7 @@ run_iteration(struct test_context *ctx)
     for (test = ctx->tests; test->ut_name != NULL; test++) {
         if (test->ut_enabled) {
             ctx->test = test; /* Record the current test */
+            watchdog_heartbeat(test->ut_name);
             test->ut_func(ctx);
         }
     }
@@ -93,6 +350,7 @@ test_harness(struct unit_test tests[MAX_TESTS], int iterations)
 
     printf("Running %d iterations\n", iterations);
 
+    watchdog_start();
     testing_begin();
     if ((kqfd = kqueue()) < 0)
         die("kqueue()");
@@ -139,14 +397,21 @@ test_harness(struct unit_test tests[MAX_TESTS], int iterations)
         libkqueue_drain_pending_close();
     }
 #endif
+
+    watchdog_stop();
 }
 
 void
 usage(void)
 {
-    printf("usage: [-hn] [testclass ...]\n"
-           " -h        This message\n"
-           " -n        Number of iterations (default: 1)\n"
+    printf("usage: [-hn] [--watchdog-timeout=SECONDS --watchdog-cmd=CMD] [testclass ...]\n"
+           " -h                         This message\n"
+           " -n                         Number of iterations (default: 1)\n"
+           " --watchdog-timeout=N       Abort after N seconds with no test\n"
+           "                            heartbeat (default: disabled)\n"
+           " --watchdog-cmd=CMD         Run CMD <pid> for the stack dump on\n"
+           "                            timeout, e.g. 'pstack' or\n"
+           "                            '/usr/bin/eu-stack -p'\n"
            " testclass[:<num>|:<start>-<end>] Tests suites to run:\n"
            "           ["
            "kqueue "
@@ -169,8 +434,13 @@ main(int argc, char **argv)
     /* Line-buffer stdout so a hung test in CI is visible in the live
      * log, instead of having the last 4KB of output sit in a block
      * buffer until the process exits (or aborts, which doesn't flush
-     * stdio). */
-    setvbuf(stdout, NULL, _IOLBF, 0);
+     * stdio).  Pass our own static buffer so libc doesn't allocate
+     * one internally; that allocation is never freed and shows up as
+     * a "possibly lost" leak under valgrind.  Thread-safe: libc's
+     * stdio serialises FILE access via the FILE's internal lock, so
+     * the shared buffer is no different from libc's own. */
+    static char stdout_buf[BUFSIZ];
+    setvbuf(stdout, stdout_buf, _IOLBF, sizeof(stdout_buf));
 
     /*
      * Each filter test is gated on the public header actually
@@ -272,16 +542,37 @@ main(int argc, char **argv)
 
 /* Windows does not provide a POSIX-compatible getopt */
 #ifndef _WIN32
-    while ((c = getopt (argc, argv, "hn:")) != -1) {
-        switch (c) {
-            case 'h':
-                usage();
-                break;
-            case 'n':
-                iterations = atoi(optarg);
-                break;
-            default:
-                usage();
+    {
+        enum {
+            OPT_WATCHDOG_TIMEOUT = 256,
+            OPT_WATCHDOG_CMD,
+        };
+        static const struct option long_opts[] = {
+            { "watchdog-timeout", required_argument, NULL, OPT_WATCHDOG_TIMEOUT },
+            { "watchdog-cmd",     required_argument, NULL, OPT_WATCHDOG_CMD     },
+            { NULL,               0,                 NULL, 0                    },
+        };
+        while ((c = getopt_long(argc, argv, "hn:", long_opts, NULL)) != -1) {
+            switch (c) {
+                case 'h':
+                    usage();
+                    break;
+                case 'n':
+                    iterations = atoi(optarg);
+                    break;
+                case OPT_WATCHDOG_TIMEOUT:
+                    watchdog_timeout_s = atoi(optarg);
+                    if (watchdog_timeout_s <= 0) {
+                        fprintf(stderr, "--watchdog-timeout must be > 0\n");
+                        exit(1);
+                    }
+                    break;
+                case OPT_WATCHDOG_CMD:
+                    watchdog_parse_cmd(optarg);
+                    break;
+                default:
+                    usage();
+            }
         }
     }
 
