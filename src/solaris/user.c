@@ -155,19 +155,53 @@ evfilt_user_knote_delete(struct filter *filt, struct knote *kn)
 }
 
 int
-evfilt_user_knote_enable(struct filter *filt UNUSED, struct knote *kn UNUSED)
+evfilt_user_knote_enable(struct filter *filt, struct knote *kn)
 {
     /*
-     * EV_ENABLE | NOTE_TRIGGER is handled by kevent_copyin_one: it
+     * Re-associate the sub-port with the main port so future
+     * NOTE_TRIGGERs reach the kqueue waiter.  knote_disable
+     * dissociated and drained the sub-port; counter is 0, so the
+     * next NOTE_TRIGGER will cleanly 0->1 and port_send.
+     *
+     * EV_ENABLE | NOTE_TRIGGER atomic re-arm: kevent_copyin_one
      * calls knote_enable here and then falls through to kn_modify,
-     * which fires the trigger.  Nothing for this side to do.
+     * which fires the trigger via the now-re-associated path.
      */
+    if (port_associate(filter_epoll_fd(filt), PORT_SOURCE_FD,
+                       kn->kn_user_subport, POLLIN, kn->kn_udata) < 0) {
+        dbg_perror("port_associate(re-enable sub)");
+        return (-1);
+    }
     return (0);
 }
 
 int
-evfilt_user_knote_disable(struct filter *filt UNUSED, struct knote *kn UNUSED)
+evfilt_user_knote_disable(struct filter *filt, struct knote *kn)
 {
+    /*
+     * BSD's EV_DISABLE drops pending events as well as future ones.
+     * The sub-port may have a queued trigger (sent by an earlier
+     * NOTE_TRIGGER that hasn't been drained), and the main port may
+     * have an FD-ready entry for the sub-port.
+     *
+     * port_dissociate cancels the in-flight main-port entry; draining
+     * the sub-port via port_getn(timeout=0) clears any kernel-side
+     * trigger byte; resetting kn_user_ctr makes the next 0->1
+     * transition after re-enable fire cleanly.
+     */
+    port_event_t    drained[1];
+    uint_t          ngot = 0;
+    struct timespec zero = { 0, 0 };
+
+    if (port_dissociate(filter_epoll_fd(filt), PORT_SOURCE_FD,
+                        kn->kn_user_subport) < 0)
+        dbg_perror("port_dissociate(sub) on EV_DISABLE");
+
+    if (port_getn(kn->kn_user_subport, drained, 1, &ngot, &zero) < 0
+        && errno != ETIME)
+        dbg_perror("port_getn(sub) drain on EV_DISABLE");
+
+    atomic_store(&kn->kn_user_ctr, 0);
     return (0);
 }
 
