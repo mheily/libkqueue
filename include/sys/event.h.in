@@ -206,6 +206,7 @@ struct kevent {
 #define NOTE_RENAME     0x0020         //!< Vnode was renamed.
 #define NOTE_REVOKE     0x0040         //!< Vnode access was revoked.
 #undef  NOTE_REVOKE     /* Not supported on Linux */
+#define NOTE_TRUNCATE   0x0080         //!< File was truncated.
 /** @} */
 
 /** @name Data/hint flags for EVFILT_PROC
