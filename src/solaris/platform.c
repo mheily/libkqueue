@@ -317,8 +317,16 @@ solaris_kevent_wait(
      * *nget=1.  Passing *nget=nevents would block until nevents
      * events arrived, which deadlocks tests that expect a single
      * event from a single trigger.
+     *
+     * Cap at MAX_KEVENT (the static evbuf size).  Callers asking for
+     * more get the rest on the next kevent() call.
      */
-    max = (nevents > 0 && nevents <= MAX_KEVENT) ? (uint_t) nevents : 1;
+    if (nevents <= 0)
+        max = 1;
+    else if (nevents > MAX_KEVENT)
+        max = MAX_KEVENT;
+    else
+        max = (uint_t) nevents;
     nget = 1;
 
     reset_errno();
