@@ -274,10 +274,20 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents,
          * For stream sockets / pipes, an FD that pselect reported
          * readable but has zero queued bytes typically means the
          * peer closed.  Mirror BSD kqueue's EV_EOF.
+         * For stream sockets also query SO_ERROR: a RST sets it to
+         * ECONNRESET whereas a clean FIN leaves it 0.  getsockopt
+         * clears the error, so call it only once here.
          */
         if (dst->data == 0 &&
-            (src->kn_flags & (KNFL_SOCKET_STREAM | KNFL_PIPE)))
+            (src->kn_flags & (KNFL_SOCKET_STREAM | KNFL_PIPE))) {
             dst->flags |= EV_EOF;
+            if (src->kn_flags & KNFL_SOCKET_STREAM) {
+                int serr = 0;
+                socklen_t slen = sizeof(serr);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &serr, &slen) == 0 && serr != 0)
+                    dst->fflags = (unsigned int) serr;
+            }
+        }
     }
 
     /*

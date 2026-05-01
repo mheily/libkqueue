@@ -861,11 +861,13 @@ test_evfilt_read(struct test_context *ctx)
 #if !defined(__sun) && !defined(__linux__) && !defined(__APPLE__)
     /*
      * SO_SNDLOWAT setsockopt is unsupported on Linux (socket(7): present
-     * for BSD compat only).  On macOS the kernel silently clamps
-     * SO_SNDLOWAT to the actual buffer size, so a threshold set above
-     * SO_SNDBUF still fires - the "unreachable threshold" invariant this
-     * test relies on does not hold there.
-     * Test only meaningful on platforms with a faithful implementation.
+     * for BSD compat only).
+     *
+     * On macOS, XNU clamps SO_SNDLOWAT to sb_hiwat (SO_SNDBUF) in
+     * setsockopt and again in EVFILT_WRITE.  A threshold above SO_SNDBUF
+     * is silently treated as SO_SNDBUF, and sbspace() on an idle socket
+     * equals SO_SNDBUF, so the "threshold > buffer = never fire" invariant
+     * this test relies on is impossible to express on macOS.
      */
     test(kevent_socket_lowat_write, ctx);
 #endif
