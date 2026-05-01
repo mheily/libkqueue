@@ -78,7 +78,7 @@ case "$(uname -s)" in
         fi
         exec gdb -batch -ex 'set pagination off' -ex 'thread apply all bt' -p "$pid"
         ;;
-    FreeBSD|OpenBSD)
+    FreeBSD|OpenBSD|NetBSD)
         exec gdb -batch -ex 'set pagination off' -ex 'thread apply all bt' -p "$pid"
         ;;
     Darwin)

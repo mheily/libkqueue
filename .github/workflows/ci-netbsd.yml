@@ -1,0 +1,50 @@
+name: CI tests NetBSD
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'test/*'
+      - 'tools/test-stack-dump.sh'
+      - '.github/workflows/ci-netbsd.yml'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'test/*'
+      - 'tools/test-stack-dump.sh'
+      - '.github/workflows/ci-netbsd.yml'
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  netbsd-tests:
+    timeout-minutes: ${{ github.event_name == 'schedule' && 60 || 10 }}
+    runs-on: ubuntu-latest
+    name: "NetBSD tests"
+    env:
+      KQUEUE_DEBUG: yes
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        path: libkqueue
+
+    - name: libkqueue test suite
+      uses: vmactions/netbsd-vm@v1
+      with:
+        usesh: true
+        sync: sshfs
+        prepare: |
+          /usr/sbin/pkg_add cmake gdb
+        envs: 'KQUEUE_DEBUG'
+        run: |
+          uname -sr
+          cd libkqueue/test
+          cmake .
+          make
+          ./libkqueue-test \
+            --watchdog-timeout=120 \
+            --watchdog-cmd=../tools/test-stack-dump.sh \
+            -n ${{ github.event_name == 'schedule' && 50 || 1 }}
