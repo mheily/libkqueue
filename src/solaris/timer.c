@@ -107,9 +107,12 @@ evfilt_timer_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
      * Solaris collapses repeated SIGEV_PORT timer firings into a
      * single port_event_t whose portev_events field carries the
      * total number of expirations since the last delivery (a
-     * single tick reports 1, two ticks 2, etc.).
+     * single tick reports 1, two ticks 2, etc.).  portev_events is
+     * unsigned int; kev.data is intptr_t per the BSD spec, so widen
+     * before assignment to avoid negative-on-overflow when overrun
+     * exceeds INT_MAX.
      */
-    dst->data = (int) pe->portev_events;
+    dst->data = (intptr_t) (unsigned int) pe->portev_events;
 
     if (knote_copyout_flag_actions(filt, src) < 0) return -1;
 
