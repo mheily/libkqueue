@@ -106,6 +106,58 @@ BSD's native kqueue stores the threshold in `kn_sdata` and gates
 delivery in `filt_soread` / `filt_sowrite`, so each knote has its
 own independent threshold and the socket option is untouched.
 
+## `EVFILT_READ` / `EVFILT_WRITE` on regular files broken on Solaris
+
+`solaris_get_descriptor_type` (`src/solaris/socket.c`) accepts `S_IFREG`
+and tags `KNFL_FILE`, then `evfilt_socket_knote_create` routes through
+`port_associate(PORT_SOURCE_FD, fd, POLLIN/POLLOUT)`.  illumos's
+`PORT_SOURCE_FD` is poll(2)-driven; regular files are always
+poll-ready, so this either fires a storm of events or never wakes.
+There's also no equivalent of Linux's "compute offset-to-EOF" path
+for `EVFILT_READ` on regular files; `FIONREAD` on a regular fd
+doesn't return that.
+
+Linux uses a per-knote surrogate `eventfd` to represent regular-file
+readiness; Solaris would need an equivalent (a sub-port that we
+trigger after fstat says the file grew, or fall back to PORT_SOURCE_FILE
++ fobj baseline).  Untested in current tree.
+
+## `EV_CLEAR` doesn't re-arm on Solaris
+
+`PORT_SOURCE_FD` is one-shot per delivery (kernel auto-dissociates
+on each fire).  `solaris_kevent_copyout` deliberately skips re-arm
+for `EV_CLEAR` knotes (`src/solaris/platform.c`), so after the first
+event an `EV_CLEAR` knote is permanently silent.
+
+BSD's `EV_CLEAR` is edge-triggered: the knote still fires on
+subsequent edges, just doesn't repeat for the same edge.  Linux
+gets it right via `EPOLLET`.
+
+Emulating this on Solaris would mean re-associating after each
+delivery and suppressing duplicate fires for a still-ready fd,
+but `port_associate` fires immediately if the condition is already
+true, so a level-true fd would refire.  No clean fix without
+tracking last-delivered state per knote.
+
+## `EVFILT_VNODE` follows path, not fd, on Solaris
+
+`src/solaris/vnode.c` resolves `/proc/self/path/<fd>` into a string
+at arm time and watches the path via `PORT_SOURCE_FILE`.  If the
+file is renamed after arm, re-arm uses the cached old path which
+no longer exists and `port_associate` fails.  Unlinked-but-still-open
+fds also don't resolve through `/proc/self/path`.
+
+BSD's `EVFILT_VNODE` follows the inode through the fd; rename
+keeps the watch alive.  illumos has no fd-based file-watch
+primitive, so this is structural.
+
+## Listening-socket `data` is hardcoded `1` on Solaris
+
+`evfilt_socket_copyout` (`src/solaris/socket.c`) reports
+`dst->data = 1` for `KNFL_SOCKET_PASSIVE` instead of the listen
+backlog depth.  illumos has no accept-queue-depth ioctl.  BSD
+reports the actual backlog.
+
 ## `kqops.filter_init` takes non-const filter pointer
 
 `src/common/filter.c:filter_register` casts away `const` from `src`
