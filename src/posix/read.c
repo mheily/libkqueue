@@ -185,12 +185,49 @@ evfilt_read_knote_create(struct filter *filt, struct knote *kn)
     /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     if (posix_read_descriptor_type(kn) < 0)
         return (-1);
+
+    /*
+     * NOTE_LOWAT: BSD kqueue gates the read knote on at least
+     * kev.data bytes being available.  We push the threshold to
+     * the kernel via SO_RCVLOWAT so select(2) won't report the
+     * fd readable until the byte count crosses kev.data; the
+     * dispatch path doesn't have to know about it.
+     *
+     * Stream sockets only - SO_RCVLOWAT on dgram sockets is
+     * undefined, on pipes / regular files it's not a concept,
+     * and Solaris' illumos returns ENOPROTOOPT regardless.
+     * Failure to set the option is non-fatal: if the kernel
+     * declines we fall back to the default 1-byte threshold.
+     */
+    if ((kn->kev.fflags & NOTE_LOWAT) &&
+        (kn->kn_flags & KNFL_SOCKET_STREAM)) {
+        int lowat = (int) kn->kev.data;
+        if (lowat < 1) lowat = 1;
+        if (setsockopt((int)kn->kev.ident, SOL_SOCKET, SO_RCVLOWAT,
+                       &lowat, sizeof(lowat)) < 0)
+            dbg_perror("setsockopt(SO_RCVLOWAT)");
+    }
+
     return posix_read_arm(filt, kn);
 }
 
 int
 evfilt_read_knote_delete(struct filter *filt, struct knote *kn)
 {
+    /*
+     * Restore the default 1-byte SO_RCVLOWAT we may have raised in
+     * knote_create.  The same fd is often reused by the next knote
+     * registered against it; without this, the previous threshold
+     * lingers and silently gates that knote too.  Failure is benign
+     * (caller may have already closed the fd).
+     */
+    if ((kn->kev.fflags & NOTE_LOWAT) &&
+        (kn->kn_flags & KNFL_SOCKET_STREAM)) {
+        int lowat = 1;
+        if (setsockopt((int)kn->kev.ident, SOL_SOCKET, SO_RCVLOWAT,
+                       &lowat, sizeof(lowat)) < 0)
+            dbg_perror("setsockopt(SO_RCVLOWAT, restore)");
+    }
     posix_read_disarm(filt, kn);
     return (0);
 }
