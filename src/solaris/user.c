@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2026 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
  * Copyright (c) 2009 Mark Heily <mark@heily.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -14,23 +15,26 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+/*
+ * EVFILT_USER on illumos.
+ *
+ * Each knote owns a private sub-port.  NOTE_TRIGGER port_sends into
+ * the sub-port; the sub-port is associated with the main kqueue port
+ * as PORT_SOURCE_FD so the wake reaches the kqueue's waiter.  EV_DELETE
+ * port_dissociates and close()s the sub-port, which is the revocation
+ * port_send itself lacks: queued events vanish with the port.
+ *
+ * Per-knote kn_user_ctr coalesces NOTE_TRIGGERs (0->1 transition is the
+ * only one that issues a port_send), mirroring Linux's eventfd counter.
+ */
+
 #include "private.h"
 
 int
 evfilt_user_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
     struct knote *src, void *ptr UNUSED)
 {
-    /*
-     * Drain the per-knote trigger counter atomically.  Coalesces
-     * concurrent NOTE_TRIGGERs the same way Linux's per-knote
-     * eventfd does: producers fetch_add+conditionally-port_send
-     * on the 0->1 transition, the consumer xchg-to-zero here
-     * picks up everything accumulated since the last drain.
-     *
-     * Zero means a spurious wake (another consumer thread already
-     * drained, or the port_event arrived after the producer's
-     * accumulated triggers were folded into a previous emit).
-     */
+    /* xchg-to-zero drains the trigger counter; 0 means spurious wake. */
     if (atomic_exchange(&src->kn_user_ctr, 0) == 0)
         return (0);
 
@@ -47,22 +51,38 @@ evfilt_user_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
 
 
 int
-evfilt_user_knote_create(struct filter *filt UNUSED, struct knote *kn)
+evfilt_user_knote_create(struct filter *filt, struct knote *kn)
 {
-#if TODO
-    unsigned int ffctrl;
+    int sub_fd;
 
-    //determine if EV_ADD + NOTE_TRIGGER in the same kevent will cause a trigger */
-    if ((!(dst->kev.flags & EV_DISABLE)) && src->fflags & NOTE_TRIGGER) {
-        dst->kev.fflags |= NOTE_TRIGGER;
-        eventfd_raise(filt->kf_pfd);
-    }
+    /*
+     * knote_new calloc'd this to 0, but 0 is stdin.  Use -1 as the
+     * "no sub-port yet" sentinel for the kn_delete teardown check.
+     */
+    kn->kn_user_subport = -1;
 
-#endif
     if (kn->kn_udata == NULL && KN_UDATA_ALLOC(kn) == NULL) {
         dbg_puts("port_udata_alloc");
         return (-1);
     }
+
+    sub_fd = port_create();
+    if (sub_fd < 0) {
+        dbg_perror("port_create(sub)");
+        KN_UDATA_FREE(kn);
+        return (-1);
+    }
+
+    if (port_associate(filter_epoll_fd(filt), PORT_SOURCE_FD,
+                       sub_fd, POLLIN, kn->kn_udata) < 0) {
+        dbg_perror("port_associate(sub)");
+        if (close(sub_fd) < 0)
+            dbg_perror("close(sub_fd) on cleanup");
+        KN_UDATA_FREE(kn);
+        return (-1);
+    }
+
+    kn->kn_user_subport = sub_fd;
     return (0);
 }
 
@@ -93,7 +113,7 @@ evfilt_user_knote_modify(struct filter *filt, struct knote *kn,
             break;
 
         default:
-            /* XXX Return error? */
+            /* unreachable: NOTE_FFCTRLMASK covers all four values above. */
             break;
     }
 
@@ -103,25 +123,32 @@ evfilt_user_knote_modify(struct filter *filt, struct knote *kn,
     kn->kev.fflags |= NOTE_TRIGGER;
 
     /*
-     * Bump the per-knote counter unconditionally and only port_send
-     * on the 0->1 transition.  fetch_add (vs CAS-on-flag) so a
-     * producer that observes a non-zero counter still leaves its
-     * increment visible to whichever consumer drains next - a CAS
-     * racing the consumer's exchange-to-zero would silently drop
-     * the trigger.
-     *
-     * portev_events carries the filter id; the platform copyout
-     * dispatcher uses it to filter_lookup back to EVFILT_USER.
-     * portev_user is the triggering knote.
+     * fetch_add (not CAS) so a racing producer's increment is never
+     * dropped by the consumer's exchange-to-zero.  Only the 0->1
+     * transition issues a port_send.
      */
     if (atomic_fetch_add(&kn->kn_user_ctr, 1) == 0)
-        return (port_send(filter_epoll_fd(filt), filt->kf_id, kn->kn_udata));
+        return (port_send(kn->kn_user_subport, EVFILT_USER, NULL));
     return (0);
 }
 
 int
 evfilt_user_knote_delete(struct filter *filt, struct knote *kn)
 {
+    /*
+     * port_dissociate drains the pending FD event from the main port;
+     * close drops events still queued in the sub-port.  Callers mid-
+     * port_getn are covered by the deferred-free epoch fence.
+     */
+    if (kn->kn_user_subport >= 0) {
+        if (port_dissociate(filter_epoll_fd(filt), PORT_SOURCE_FD,
+                            kn->kn_user_subport) < 0)
+            dbg_perror("port_dissociate(sub)");
+        if (close(kn->kn_user_subport) < 0)
+            dbg_perror("close(sub_port)");
+        kn->kn_user_subport = -1;
+    }
+
     if (kn->kn_udata != NULL)
         KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
     return (0);
@@ -130,8 +157,11 @@ evfilt_user_knote_delete(struct filter *filt, struct knote *kn)
 int
 evfilt_user_knote_enable(struct filter *filt UNUSED, struct knote *kn UNUSED)
 {
-    /* FIXME: what happens if NOTE_TRIGGER is in fflags?
-       should the event fire? */
+    /*
+     * EV_ENABLE | NOTE_TRIGGER is handled by kevent_copyin_one: it
+     * calls knote_enable here and then falls through to kn_modify,
+     * which fires the trigger.  Nothing for this side to do.
+     */
     return (0);
 }
 

@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2026 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
  * Copyright (c) 2011 Mark Heily <mark@heily.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -148,7 +149,8 @@ solaris_kqueue_free(struct kqueue *kq)
      */
 }
 
-/** Allocate a fresh port_udata bound to a knote.
+/*
+ * Allocate fresh port_udata bound to a knote.
  *
  * @param[in] kn    knote the udata is paired with.  Aliased via ud_kn.
  * @return the new udata, or NULL on allocation failure.
@@ -162,7 +164,8 @@ port_udata_alloc(struct knote *kn)
     return u;
 }
 
-/** Mark a udata as stale and queue it for deferred reclamation.
+/*
+ * Mark a udata as stale and queue it for deferred reclamation.
  *
  * Called under kq_mtx by EV_DELETE (or any other path that's about
  * to free the containing knote).  After port_udata_defer_free
@@ -185,14 +188,15 @@ port_udata_defer_free(struct kqueue *kq, struct port_udata *u)
                kq, u, u->ud_boundary_epoch);
 }
 
-/** Sweep the deferred-free list, reclaiming eligible udatas.
+/*
+ * Sweep the deferred-free list, reclaiming eligible udatas.
  *
  * A deferred udata is eligible for free once every still-in-flight
  * kevent() caller has an entry epoch strictly greater than the
  * udata's boundary epoch.
  */
 static void
-solaris_kqueue_sweep_deferred(struct kqueue *kq)
+solaris_kqueue_deferred_sweep(struct kqueue *kq)
 {
     struct port_udata          *u;
     struct kqueue_kevent_state *oldest;
@@ -209,6 +213,11 @@ solaris_kqueue_sweep_deferred(struct kqueue *kq)
         return;
     }
 
+    /*
+     * Safe because every filter revokes via the kernel on EV_DELETE:
+     * port_dissociate for FD/FILE/TIMER, close-of-sub-port for
+     * EVFILT_USER.  Once observers have exited, the ud is unreachable.
+     */
     while ((u = TAILQ_FIRST(&kq->ud_deferred_free)) && (u->ud_boundary_epoch < oldest->epoch)) {
         dbg_printf("kq=%p udata=%p - reclaiming, boundary=%" PRIu64 " min_inflight=%" PRIu64,
                    kq, u, u->ud_boundary_epoch, oldest->epoch);
@@ -217,7 +226,8 @@ solaris_kqueue_sweep_deferred(struct kqueue *kq)
     }
 }
 
-/** Rebase the epoch counter to head off uint64 wrap.  See linux/platform.c
+/*
+ * Rebase the epoch counter to head off uint64 wrap.  See linux/platform.c
  * for the full rationale; in practice this never runs.
  */
 static void
@@ -262,20 +272,17 @@ solaris_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state)
     TAILQ_REMOVE(&kq->kq_inflight, state, entry);
     dbg_printf("kq=%p - kevent_exit epoch=%" PRIu64, kq, state->epoch);
 
-    solaris_kqueue_sweep_deferred(kq);
+    solaris_kqueue_deferred_sweep(kq);
 }
 
-/** Wake every thread parked in port_getn on this kqueue.
+/*
+ * Wake every thread parked in port_getn on this kqueue.
  *
- * port_alert(3C) with PORT_ALERT_SET puts the port into alert mode:
- * every current and subsequent port_getn returns immediately with a
- * PORT_SOURCE_ALERT event in evbuf.  We don't bother clearing the
- * alert (PORT_ALERT_UPDATE 0) because by the time this is called the
- * kqueue is already unreachable - new kevent() callers fail at
- * kqueue_lookup with ENOENT, so future port_getn calls on this fd
- * shouldn't happen.  In-flight callers exit, the last one out runs
- * kqueue_complete_deferred_free, and the port fd is closed by the
- * user (or leaked to process exit, the same as today).
+ * PORT_ALERT_SET makes every port_getn return immediately with a
+ * PORT_SOURCE_ALERT event.  Not cleared: by the time this runs the
+ * kqueue is already unreachable (map_remove ran), so no new callers
+ * can land here.  In-flight callers drain and exit; the last one
+ * runs kqueue_complete_deferred_free.
  */
 static void
 solaris_kqueue_interrupt(struct kqueue *kq)
@@ -315,18 +322,21 @@ solaris_kevent_wait(
     nget = 1;
 
     reset_errno();
-    dbg_puts("waiting for events");
+    if (ts == NULL)
+        dbg_printf("waiting for events (no timeout)");
+    else
+        dbg_printf("waiting for events (timeout %ld.%09lds)",
+                   (long) ts->tv_sec, (long) ts->tv_nsec);
     rv = port_getn(kq->kq_id, evbuf, max, &nget, (struct timespec *) ts);
 
     dbg_printf("rv=%d errno=%d (%s) nget=%d", rv, errno, strerror(errno), nget);
 
     /*
-     * Verified against illumos usr/src/uts/common/fs/portfs/port.c:
-     * port_getn() doesn't update *nget on any error path, and the
-     * portfs() syscall wrapper skips the nget copyout when returning
-     * an error.  So on rv != 0 the post-call nget is just our
-     * pre-call sentinel (1) lingering - it does NOT mean the kernel
-     * wrote an event.  Treat any non-zero rv as "no events written".
+     * port_getn uses *nget as both input (wait for *nget events to be
+     * delivered) and output (count delivered).  On error the kernel
+     * skips the output write (verified in illumos uts/common/fs/portfs/
+     * port.c), leaving our input value of 1 in place - which is also a
+     * valid output for "one event delivered".  Check rv to disambiguate.
      */
     if (rv != 0) {
         if (errno == ETIME) {
@@ -364,33 +374,18 @@ solaris_kevent_copyout(struct kqueue *kq, int nready,
         skip_event = 0;
         dbg_printf("event=%s", port_event_dump(evt));
 
-        /*
-         * Resolve the knote via the heap-allocated port_udata that
-         * was passed to port_associate / port_send.  If the udata is
-         * marked stale, the EV_DELETE that retired it ran while we
-         * were blocked in port_getn; the knote is gone and any
-         * dispatch would dereference freed memory.  Skip the slot.
-         *
-         * EVFILT_SIGNAL is the exception - it port_sends the FILTER
-         * pointer (filters live as long as the kqueue), not a knote
-         * udata, so the PORT_SOURCE_USER case below sets `kn` for it
-         * after dispatching by portev_events filter id.
-         */
         ud = NULL;
         kn = NULL;
+
         /*
-         * PORT_SOURCE_ALERT events are raised by solaris_kqueue_interrupt
-         * to wake parked waiters when a deferred kqueue_free is pending.
-         * The portev_user field is whatever we passed to port_alert
-         * (NULL); skip the slot silently and let the caller exit so
-         * the deferred free can complete.
+         * portev_user holds a port_udata*, not the knote.  A port event
+         * can outlive its knote: EV_DELETE may free the knote while events
+         * for it sit queued in the port.  The udata is heap-allocated and
+         * defer-freed so we always have a live struct to test.  ud_stale
+         * = true means the knote is gone; skip dispatch.  PORT_SOURCE_USER
+         * uses a filter pointer instead, handled in the switch.
          */
-        if (evt->portev_source == PORT_SOURCE_ALERT) {
-            dbg_printf("kq=%p - PORT_SOURCE_ALERT, skipping", kq);
-            continue;
-        }
-        if (evt->portev_source != PORT_SOURCE_USER ||
-            evt->portev_events == EVFILT_USER) {
+        if (evt->portev_source != PORT_SOURCE_USER) {
             ud = (struct port_udata *) evt->portev_user;
             if (ud == NULL || ud->ud_stale) {
                 dbg_printf("kq=%p ud=%p - stale udata, skipping", kq, ud);
@@ -400,6 +395,15 @@ solaris_kevent_copyout(struct kqueue *kq, int nready,
         }
 
         switch (evt->portev_source) {
+            case PORT_SOURCE_ALERT:
+                /*
+                 * Raised by solaris_kqueue_interrupt during deferred kqueue_free.
+                 * Skip so the caller exits and the last one out runs
+                 * kqueue_complete_deferred_free.
+                 */
+                dbg_printf("kq=%p - PORT_SOURCE_ALERT, skipping", kq);
+                continue;
+
             case PORT_SOURCE_FD:
                 /*
                  * portev_user is the knote's udata (set by the
@@ -414,34 +418,56 @@ solaris_kevent_copyout(struct kqueue *kq, int nready,
                     rv = -1;
                     break;
                 }
+
+                /*
+                 * PORT_SOURCE_FD on the sub-port fired because the sub-port
+                 * has a queued event.  Drain it via port_getn so the sub-port
+                 * fd is no longer POLLIN-readable.  PORT_SOURCE_FD is one-shot,
+                 * so we re-associate before dispatch to keep watching.  The
+                 * drain buffer is sized 1 because evfilt_user_knote_modify
+                 * coalesces triggers at the producer side: at most one event
+                 * is ever queued.
+                 */
+                if (kn->kev.filter == EVFILT_USER) {
+                    port_event_t    sub_buf[1];
+                    uint_t          sub_max = 1;
+                    uint_t          sub_nget = 0;
+                    struct timespec zero = { 0, 0 };
+
+                    if (port_getn(kn->kn_user_subport, sub_buf, sub_max, &sub_nget, &zero) < 0
+                        && errno != ETIME) {
+                        dbg_perror("port_getn(sub)");
+                    }
+                    if (port_associate(kq->kq_id, PORT_SOURCE_FD,
+                                       kn->kn_user_subport, POLLIN,
+                                       kn->kn_udata) < 0) {
+                        dbg_perror("port_associate(re-arm sub)");
+                        rv = -1;
+                        break;
+                    }
+                    rv = filt->kf_copyout(eventlist, remaining, filt, kn, evt);
+                    /*
+                     * The copyout already disabled or deleted the knote per
+                     * EV_DISPATCH/EV_ONESHOT.  The post-switch block runs them
+                     * again unless we null out kn (it's conditional on kn != NULL).
+                     */
+                    kn = NULL;
+                    break;
+                }
+
                 rv = filt->kf_copyout(eventlist, remaining, filt, kn, evt);
 
                 /*
-                 * Solaris event ports are one-shot per association
-                 * (port_associate(3C): "When an event for a
-                 * PORT_SOURCE_FD object is retrieved, the object no
-                 * longer has an association with the port").  We
-                 * have to re-associate after retrieval to keep
-                 * watching - the kernel won't fire again on its own.
-                 *
-                 * Skip re-arm for:
-                 *  - EV_ONESHOT, EV_DISPATCH: the dispatcher tail
-                 *    will tear down or disable the knote anyway.
-                 *  - EV_CLEAR: edge-triggered semantics.  BSD/Linux
-                 *    EV_CLEAR fires only on transitions, not on
-                 *    every check.  Re-associating immediately on a
-                 *    still-readable socket would generate a second
-                 *    event that EV_CLEAR consumers don't expect
-                 *    (test_kevent_socket_clear's test_no_kevents
-                 *    after a partial drain).  Approximation: fire
-                 *    once per EV_ADD; user re-adds or EV_ENABLEs
-                 *    to re-arm.
-                 *
-                 * For default (level-triggered) EV_ADD knotes we
-                 * always re-arm so subsequent kevent()s keep seeing
-                 * readiness.  This is what test_kevent_socket_eof
-                 * needs: EV_EOF redelivered on every check until
-                 * the knote is deleted.
+                 * PORT_SOURCE_FD is one-shot: port_associate auto-removes the
+                 * watch on delivery, so we have to re-associate to keep getting
+                 * events.  Skip re-arm for:
+                 *   EV_ONESHOT/EV_DISPATCH - the post-switch block will delete
+                 *     or disable the knote anyway.
+                 *   EV_CLEAR - edge-triggered: re-arming on a still-ready fd
+                 *     would fire a duplicate the consumer doesn't expect.
+                 * Default (level-triggered) re-arms so subsequent kevent()s
+                 * keep seeing persistent readiness (e.g. EV_EOF redelivered on
+                 * every check until EV_DELETE).
                  */
                 if (rv > 0 && !(kn->kev.flags &
                                  (EV_CLEAR | EV_DISPATCH | EV_ONESHOT))) {
@@ -450,17 +476,13 @@ solaris_kevent_copyout(struct kqueue *kq, int nready,
                 }
 
                 /*
-                 * EVFILT_READ only: if FIONREAD reported 0 bytes
-                 * pending and the filter didn't flag EOF/ERROR, we
-                 * raced a reader, skip to preserve "exactly one
-                 * event per readable burst" semantics.  EV_EOF/
-                 * EV_ERROR are real terminal events that legitimately
-                 * have data=0 (peer shutdown, socket error).
-                 *
-                 * EVFILT_WRITE legitimately reports data=0 (e.g.
-                 * regular files always claim infinite writability,
-                 * the filter just returns the SO_SNDBUF or 0), so
-                 * don't apply the FIONREAD heuristic there.
+                 * EVFILT_READ: data=0 with no EOF/ERROR means another reader drained
+                 * the bytes between our wake and the FIONREAD check.  Skip the
+                 * event to avoid delivering a spurious zero-data wake.  EOF and
+                 * ERROR are real terminal events where data=0 is correct (peer
+                 * shutdown, socket error), so we let them through.  EVFILT_WRITE
+                 * isn't checked because data=0 is normal there (regular files
+                 * claim infinite writability).
                  */
                 if (kn->kev.filter == EVFILT_READ &&
                     eventlist->data == 0 &&
@@ -508,48 +530,37 @@ solaris_kevent_copyout(struct kqueue *kq, int nready,
 
             case PORT_SOURCE_USER:
                 /*
-                 * PORT_SOURCE_USER wakeups carry the originating
-                 * filter id in portev_events (set by
-                 * solaris_eventfd_raise / evfilt_user's port_send).
-                 * That doubles as our dispatch discriminator -
-                 * filter_lookup by id and call its kf_copyout.
+                 * The only consumer of PORT_SOURCE_USER on the main
+                 * port is solaris_eventfd_raise, which port_sends
+                 * the filter pointer (lives as long as the kqueue,
+                 * no per-knote ud lifetime to manage).  EVFILT_USER
+                 * triggers go through their per-knote sub-port and
+                 * surface as PORT_SOURCE_FD (handled above).
                  *
-                 * Per-filter cookie semantics differ:
-                 *  - EVFILT_SIGNAL is doorbell-only; portev_user
-                 *    is the filter pointer and the copyout walks
-                 *    sigtbl[] to find what fired.  rv == 0 means
-                 *    spurious wakeup, mark the slot to skip and
-                 *    knote_lookup the real knote by signum (the
-                 *    copyout populated eventlist->ident) for the
-                 *    dispatcher tail.
-                 *  - EVFILT_USER carries the triggering knote in
-                 *    portev_user, which we feed straight in.
+                 * portev_events carries the originating filter id;
+                 * rv == 0 means a spurious wakeup (no enabled knote
+                 * with a pending count), mark skip and let
+                 * knote_copyout_flag_actions inside the copyout
+                 * drive the dispatcher tail.
                  */
                 if (filter_lookup(&filt, kq, evt->portev_events) < 0) {
                     dbg_printf("unsupported filter id in portev_events: %d",
                                evt->portev_events);
                     abort();
                 }
-                rv = filt->kf_copyout(eventlist, remaining, filt, kn, evt);
                 /*
-                 * Both EVFILT_SIGNAL and EVFILT_USER call
-                 * knote_copyout_flag_actions inside their own
-                 * copyout, so null kn unconditionally to skip the
-                 * post-switch dispatcher tail (which would
-                 * double-apply EV_ONESHOT/EV_DISPATCH on the
-                 * just-deleted/disabled knote).
-                 *
-                 * For EVFILT_SIGNAL, rv == 0 also indicates a
-                 * spurious wakeup (no enabled knote with pending
-                 * count) - mark the slot to skip.
+                 * No per-knote ud here; both consumers
+                 * (evfilt_signal_copyout, evfilt_proc_knote_copyout)
+                 * walk filter-level state to find what fired and mark
+                 * their src param UNUSED.  Pass NULL explicitly.
                  */
-                if (filt->kf_id == EVFILT_SIGNAL && rv == 0)
+                rv = filt->kf_copyout(eventlist, remaining, filt, NULL, evt);
+                if (rv == 0)
                     skip_event = 1;
-                kn = NULL;
                 break;
 
             default:
-                dbg_puts("unsupported source");
+                dbg_printf("unsupported source portev_source=%u", evt->portev_source);
                 abort();
         }
 

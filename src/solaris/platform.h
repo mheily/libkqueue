@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2026 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
  * Copyright (c) 2011 Mark Heily <mark@heily.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -53,7 +54,7 @@ struct filter;
 #define atomic_inc(p)                 (atomic_fetch_add((p), 1) + 1)
 #define atomic_dec(p)                 (atomic_fetch_sub((p), 1) - 1)
 
-/* We use compound literals here to stop the 'expected' values from being overwritten */
+/* Compound literal so atomic_compare_exchange_strong's failure-write doesn't clobber the caller's value. */
 #define atomic_cas(p, oval, nval)     atomic_compare_exchange_strong(p, &(__typeof__(oval)){ oval }, nval)
 #define atomic_ptr_cas(p, oval, nval) atomic_compare_exchange_strong(p, (&(uintptr_t){ (uintptr_t)oval }), (uintptr_t)nval)
 #define atomic_ptr_swap(p, nval)      atomic_exchange(p, (uintptr_t)nval)
@@ -65,10 +66,9 @@ struct filter;
 #include <port.h>
 
 /*
- * For PORT_SOURCE_USER wakeups (signal + user filter), portev_events
- * carries the originating filter id (EVFILT_*).  solaris_kevent_copyout
- * does filter_lookup(kq, evt->portev_events) to dispatch.  No parallel
- * X_PORT_SOURCE_* constant set required.
+ * PORT_SOURCE_USER on the main port comes from solaris_eventfd_raise
+ * (signal/proc).  portev_events is the originating filter id, used as
+ * the filter_lookup key in solaris_kevent_copyout.
  */
 
 /* Convenience macros to access the event port descriptor for the kqueue */
@@ -84,32 +84,23 @@ struct filter;
 void    solaris_kqueue_free(struct kqueue *);
 int     solaris_kqueue_init(struct kqueue *);
 
-/** Common structure passed as port_associate's user pointer (and as
- * port_send's user argument for EVFILT_USER).
+/*
+ * Cookie passed as port_associate's user pointer; returned via the
+ * portev_user field when an event is ready.  Heap-allocated so it can
+ * outlive the knote: a port_getn may return an event whose portev_user
+ * points here after another thread has run EV_DELETE and freed the kn.
  *
- * The kernel returns this pointer via `port_event_t::portev_user`
- * whenever an associated registration becomes ready.  The udata is
- * heap-allocated independently of the containing knote so its
- * lifetime can outlive the knote across the kevent_wait window: a
- * thread may hold a stale portev_user in its TLS port_event_t buffer
- * (the per-thread `evbuf[]` in solaris_kevent_wait) between port_getn
- * returning and solaris_kevent_copyout running, even after another
- * thread has run EV_DELETE on the registration and freed the knote.
+ * EV_DELETE protocol:
+ *   1. Remove the kernel registration (port_dissociate for FD/FILE/
+ *      TIMER, close(sub-port) for EVFILT_USER) - no new events queue.
+ *   2. Mark ud_stale = true and queue on kq->ud_deferred_free with
+ *      the epoch boundary.
+ *   3. Free only once every kevent() caller that could have observed
+ *      this ud (entry epoch <= boundary) has exited.
  *
- * Once EV_DELETE runs, port_dissociate stops the kernel queuing new
- * events for the udata, but pre-existing ready events may still
- * surface in some other thread's TLS buffer.  EV_DELETE marks the
- * udata stale, queues it on kq->ud_deferred_free with the current
- * epoch as a boundary, and the deferred udata is reclaimed only
- * once every kevent() caller that could have observed the udata
- * (every caller whose entry epoch is <= the boundary) has exited.
- *
- * Copyout always checks ud_stale before dereferencing ud_kn - the
- * back-pointer is dangling once stale is set.
- *
- * Filter-pointer port_sends (EVFILT_SIGNAL via solaris_eventfd_raise)
- * don't go through port_udata: filter pointers live as long as the
- * containing kqueue, no indirection required.
+ * Copyout checks ud_stale before reading ud_kn (dangling once stale).
+ * Filter-pointer port_sends from solaris_eventfd_raise (signal/proc)
+ * don't use port_udata - filter pointers live as long as the kqueue.
  */
 struct port_udata {
     struct knote            *ud_kn;             //!< Pointer back to the containing knote.
@@ -124,7 +115,8 @@ struct port_udata {
 
 TAILQ_HEAD(port_udata_head, port_udata);
 
-/** Per-kevent() in-flight tracking.
+/*
+ * Per-kevent() in-flight tracking.
  *
  * Stack-allocated in the common kevent() entry path; linked into the
  * kqueue's kq_inflight list under kq_mtx for the duration of the
@@ -148,15 +140,11 @@ void    solaris_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state
 #define kqueue_kevent_enter(_kq, _state) solaris_kevent_enter((_kq), (_state))
 #define kqueue_kevent_exit(_kq, _state)  solaris_kevent_exit((_kq), (_state))
 
-/** Allocate the kn_udata for a knote.
- *
- * The udata is heap-allocated so its lifetime can outlive the knote
- * across the kevent_wait window.  See @ref port_udata for the full
- * lifetime model.
- */
+/** Allocate the kn_udata for a knote.  See @ref port_udata. */
 #define KN_UDATA_ALLOC(_kn) ((_kn)->kn_udata = port_udata_alloc(_kn))
 
-/** Immediately free a knote's udata and null the field.
+/*
+ * Immediately free a knote's udata and null the field.
  *
  * Use only on paths where the udata was allocated but never
  * successfully passed to port_associate (e.g. kn_create failure).
@@ -182,29 +170,24 @@ struct event_buf {
 };
 
 /*
- * Per-(knote, EVFILT_VNODE) state for the PORT_SOURCE_FILE watcher.
- * The fobj.fo_name pointer references kn_vnode_path, which is
- * heap-allocated and owned by the knote for the lifetime of the
- * association; we cache the FILE_* mask in kn_vnode_events for
- * re-arm after the kernel auto-dissociates on event delivery.
+ * Per-knote state for EVFILT_VNODE / PORT_SOURCE_FILE.  kn_vnode_path
+ * is heap-owned by the knote (fobj.fo_name aliases it).  See
+ * src/solaris/vnode.c for the protocol.
  */
 #define SOLARIS_KNOTE_VNODE_PLATFORM_SPECIFIC \
     struct { \
         struct file_obj kn_vnode_fobj; \
         char           *kn_vnode_path; \
         unsigned int    kn_vnode_events; \
+        nlink_t         kn_vnode_nlink; \
+        off_t           kn_vnode_size; \
     }
 
 #define KNOTE_PLATFORM_SPECIFIC \
     timer_t         kn_timerid; \
-    atomic_uint     kn_user_ctr;     /* EVFILT_USER trigger counter; \
-                                      * 0->1 transitions port_send.  \
-                                      * fetch_add by producer, \
-                                      * exchange-to-zero by copyout. */ \
-    struct port_udata *kn_udata;     /* Heap-allocated demux header.  Lifecycle \
-                                      * is independent of the knote so the \
-                                      * udata can outlive EV_DELETE across \
-                                      * the kevent_wait window. */ \
+    atomic_uint     kn_user_ctr;     /* EVFILT_USER trigger counter; only 0->1 triggers port_send. */ \
+    int             kn_user_subport; /* EVFILT_USER per-knote sub-port fd; see solaris/user.c. */ \
+    struct port_udata *kn_udata;     /* See @ref port_udata. */ \
     union { \
         POSIX_KNOTE_PROC_PLATFORM_SPECIFIC; \
         SOLARIS_KNOTE_VNODE_PLATFORM_SPECIFIC; \
@@ -215,22 +198,16 @@ struct event_buf {
     void           *kf_signal_state; /* posix/signal.c per-filter heap state */ \
     POSIX_FILTER_PROC_PLATFORM_SPECIFIC
 
-/** Per-kqueue deferred-free bookkeeping.
+/*
+ * Per-kqueue deferred-free bookkeeping.
  *
  * kq_next_epoch + kq_inflight + ud_deferred_free implement the
  * deferred-free scheme that keeps a port_udata alive across the
  * kevent_wait window.  See @ref port_udata for the full protocol.
  */
 #define KQUEUE_PLATFORM_SPECIFIC \
-    uint64_t        kq_next_epoch;                    /* Monotonic counter; bumped on every */ \
-                                                      /* kevent() entry.  Rebased toward 0 by */ \
-                                                      /* solaris_kqueue_epoch_rebase if it */ \
-                                                      /* approaches UINT64_MAX. */ \
-    struct kqueue_kevent_state_head kq_inflight;      /* Callers currently inside kevent(). */ \
-                                                      /* Tail-inserted, head = oldest = lowest */ \
-                                                      /* still-active epoch. */ \
-    struct port_udata_head          ud_deferred_free  /* Stale udatas waiting for safe */ \
-                                                      /* reclamation.  Tail-inserted, head = */ \
-                                                      /* smallest boundary epoch. */
+    uint64_t        kq_next_epoch;                    /* Monotonic kevent() entry counter; rebased at UINT64_MAX. */ \
+    struct kqueue_kevent_state_head kq_inflight;      /* In-flight kevent() callers; head = oldest. */ \
+    struct port_udata_head          ud_deferred_free  /* Stale udatas; head = smallest boundary. */
 
 #endif  /* ! _KQUEUE_SOLARIS_PLATFORM_H */

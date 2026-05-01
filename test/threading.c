@@ -17,6 +17,7 @@
 #include "common.h"
 #include <semaphore.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <sys/wait.h>
 #include <time.h>
 
@@ -970,10 +971,10 @@ test_kevent_threading_write_delete_race(struct test_context *ctx)
  */
 struct count_waiter_args {
     int                  kqfd;
-    atomic_int           stop;
     sem_t               *ready;
     sem_t               *events;
     int                  errors;
+    uintptr_t            stop_ident;  /* shared EVFILT_USER stop sentinel */
 };
 
 static void *
@@ -981,20 +982,54 @@ _count_waiter(void *arg)
 {
     struct count_waiter_args   *a = arg;
     struct kevent               ret[8];
-    struct timespec             timeout = { 0, 50L * 1000L * 1000L };  /* 50ms */
     int                         n;
 
-    if (a->ready && sem_post(a->ready) != 0) die("sem_post(ready)");
+    if (sem_post(a->ready) != 0) die("sem_post(ready)");
 
-    while (!a->stop) {
-        n = kevent(a->kqfd, NULL, 0, ret, NUM_ELEMENTS(ret), &timeout);
+    for (;;) {
+        /*
+         * Block; the caller wakes us either by firing the test event
+         * or by triggering the stop sentinel.  No timeout = no busy
+         * poll, which mattered under helgrind where the previous
+         * 50ms-poll loop produced thousands of empty wakeups per
+         * test class.
+         */
+        n = kevent(a->kqfd, NULL, 0, ret, NUM_ELEMENTS(ret), NULL);
         if (n < 0) {
             if (errno == EINTR) continue;
             a->errors++;
             break;
         }
+
+        bool saw_stop = false;
         for (int i = 0; i < n; i++) {
+            if (ret[i].filter == EVFILT_USER &&
+                (uintptr_t) ret[i].ident == a->stop_ident) {
+                saw_stop = true;
+                continue;
+            }
             if (sem_post(a->events) != 0) die("sem_post(events)");
+        }
+
+        if (saw_stop) {
+            /*
+             * Pass the baton: re-trigger the sentinel so the next
+             * waiter parked on this kq wakes too.  port_getn (and
+             * any kqueue-shaped wait) hands a single delivery to
+             * whichever waiter the kernel picks; without this
+             * chain, only one of the N waiters would ever exit.
+             *
+             * The last waiter out re-triggers a knote no one is
+             * waiting on; the caller's EV_DELETE in cleanup
+             * discards the pending state.
+             */
+            struct kevent stop_kev;
+            EV_SET(&stop_kev, a->stop_ident, EVFILT_USER, 0,
+                   NOTE_TRIGGER, 0, NULL);
+            if (kevent(a->kqfd, &stop_kev, 1, NULL, 0, NULL) < 0) {
+                a->errors++;
+            }
+            return NULL;
         }
     }
 
@@ -1044,18 +1079,30 @@ run_single_delivery(int kqfd, int n_waiters, int expected_deliveries,
     sem_t                      *ready, *events;
     int                         i;
 
+    struct kevent  stop_kev;
+    /*
+     * One stop sentinel shared by all waiters.  Use the address of
+     * the local wargs array as the EVFILT_USER ident: unique within
+     * the process and distinct from any test-supplied ident.
+     */
+    uintptr_t      stop_ident = (uintptr_t) wargs;
+
     if (n_waiters > (int) NUM_ELEMENTS(waiters))
         die("n_waiters=%d exceeds local buffer", n_waiters);
 
     ready  = sem_open_anon("ready");
     events = sem_open_anon("events");
 
+    EV_SET(&stop_kev, stop_ident, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(kqfd, &stop_kev, 1, NULL, 0, NULL) < 0)
+        die("kevent (stop sentinel add)");
+
     for (i = 0; i < n_waiters; i++) {
-        wargs[i].kqfd = kqfd;
-        atomic_init(&wargs[i].stop, 0);
-        wargs[i].ready = ready;
-        wargs[i].events = events;
-        wargs[i].errors = 0;
+        wargs[i].kqfd       = kqfd;
+        wargs[i].ready      = ready;
+        wargs[i].events     = events;
+        wargs[i].errors     = 0;
+        wargs[i].stop_ident = stop_ident;
         if (pthread_create(&waiters[i], NULL, _count_waiter, &wargs[i]) != 0)
             die("pthread_create");
     }
@@ -1075,12 +1122,24 @@ run_single_delivery(int kqfd, int n_waiters, int expected_deliveries,
         die("%s: spurious extra delivery (expected %d)",
             label, expected_deliveries);
 
-    for (i = 0; i < n_waiters; i++) wargs[i].stop = 1;
+    /*
+     * Trigger the sentinel once.  The waiter that wakes re-triggers
+     * for the next, chaining through all n_waiters until none are
+     * left.
+     */
+    EV_SET(&stop_kev, stop_ident, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+    if (kevent(kqfd, &stop_kev, 1, NULL, 0, NULL) < 0)
+        die("kevent (stop sentinel trigger)");
+
     for (i = 0; i < n_waiters; i++) {
         if (pthread_join(waiters[i], NULL) != 0) die("pthread_join");
         if (wargs[i].errors > 0)
             die("waiter %d reported %d errors", i, wargs[i].errors);
     }
+
+    /* Tidy: remove the sentinel knote so the caller's kq is unchanged. */
+    EV_SET(&stop_kev, stop_ident, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    (void) kevent(kqfd, &stop_kev, 1, NULL, 0, NULL);
 
     sem_close_anon(ready);
     sem_close_anon(events);
