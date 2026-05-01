@@ -145,7 +145,14 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
     se.sigev_notify = SIGEV_PORT;
     se.sigev_value.sival_ptr = &pn;
 
-    if (timer_create (CLOCK_MONOTONIC, &se, &timerid) < 0) {
+    /*
+     * NOTE_ABSOLUTE: BSD spec says the deadline is "milliseconds since
+     * the Epoch", i.e. CLOCK_REALTIME.  Anything else gets CLOCK_MONOTONIC
+     * so relative timers are immune to wall-clock retunes / NTP.
+     */
+    clockid_t clk = (kn->kev.fflags & NOTE_ABSOLUTE) ? CLOCK_REALTIME
+                                                     : CLOCK_MONOTONIC;
+    if (timer_create(clk, &se, &timerid) < 0) {
         dbg_perror("timer_create(2)");
         if (fresh_udata)
             KN_UDATA_FREE(kn);

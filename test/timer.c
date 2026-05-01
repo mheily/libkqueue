@@ -329,10 +329,10 @@ test_kevent_timer_note_absolute(struct test_context *ctx)
     struct timespec  now;
     intptr_t         deadline_ms;
 
-    if (clock_gettime(CLOCK_MONOTONIC, &now) < 0)
+    /* BSD: NOTE_ABSOLUTE deadlines are milliseconds since the Epoch
+     * (CLOCK_REALTIME).  100ms in the future, expressed that way. */
+    if (clock_gettime(CLOCK_REALTIME, &now) < 0)
         die("clock_gettime");
-    /* 100ms in the future, expressed as absolute ms since epoch on
-     * the same clock the backend uses (CLOCK_MONOTONIC). */
     deadline_ms = (intptr_t)(now.tv_sec) * 1000
                 + (intptr_t)(now.tv_nsec / 1000000)
                 + 100;
