@@ -180,8 +180,17 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
      * "another thread already drained me" via EAGAIN rather than
      * blocking forever.  See evfilt_timer_copyout() for the consumer
      * side.
+     *
+     * NOTE_ABSOLUTE: BSD spec says the deadline is "milliseconds since
+     * the Epoch", i.e. CLOCK_REALTIME.  Anything else gets
+     * CLOCK_MONOTONIC so relative timers are immune to wall-clock
+     * retunes / NTP.
      */
-    tfd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
+    {
+        clockid_t clk = (kn->kev.fflags & NOTE_ABSOLUTE) ? CLOCK_REALTIME
+                                                         : CLOCK_MONOTONIC;
+        tfd = timerfd_create(clk, TFD_CLOEXEC | TFD_NONBLOCK);
+    }
     if (tfd < 0) {
         if ((errno == EMFILE) || (errno == ENFILE)) {
             dbg_perror("timerfd_create(2) fd_used=%u fd_max=%u", get_fd_used(), get_fd_limit());
