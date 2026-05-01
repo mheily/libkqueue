@@ -476,17 +476,18 @@ solaris_kevent_copyout(struct kqueue *kq, int nready,
                 }
 
                 /*
-                 * EVFILT_READ: data=0 with no EOF/ERROR means another reader drained
-                 * the bytes between our wake and the FIONREAD check.  Skip the
-                 * event to avoid delivering a spurious zero-data wake.  EOF and
-                 * ERROR are real terminal events where data=0 is correct (peer
-                 * shutdown, socket error), so we let them through.  EVFILT_WRITE
-                 * isn't checked because data=0 is normal there (regular files
-                 * claim infinite writability).
+                 * EVFILT_READ: data=0 with no EOF/ERROR is treated as a
+                 * spurious wake on stream sockets (drain race) and on
+                 * regular files (poll-always-ready).  Datagram/raw
+                 * sockets carry real zero-length payloads, so we let
+                 * them through.  EOF and ERROR are terminal events where
+                 * data=0 is correct (peer shutdown, socket error).
                  */
                 if (kn->kev.filter == EVFILT_READ &&
                     eventlist->data == 0 &&
-                    !(eventlist->flags & (EV_EOF | EV_ERROR)))
+                    !(eventlist->flags & (EV_EOF | EV_ERROR)) &&
+                    !(kn->kn_flags & (KNFL_SOCKET_DGRAM | KNFL_SOCKET_RDM |
+                                      KNFL_SOCKET_SEQPACKET | KNFL_SOCKET_RAW)))
                     skip_event = 1;
 
                 break;
