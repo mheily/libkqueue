@@ -208,18 +208,10 @@ evfilt_timer_knote_modify(struct filter *filt UNUSED, struct knote *kn,
 int
 evfilt_timer_knote_delete(struct filter *filt, struct knote *kn)
 {
-    int rv = 0;
+    int rv;
 
-    /*
-     * If the knote is already disabled the kernel timer is gone (knote_disable
-     * deleted it), so don't call timer_delete again.  Hand the udata to
-     * cleanup regardless: a timer fire could have queued a port event whose
-     * portev_user references this knote (see port_udata in platform.h).
-     */
-    if (!(kn->kev.flags & EV_DISABLE)) {
-        dbg_printf("th=%d - deleting timer", kn->kn_timerid);
-        rv = timer_delete(kn->kn_timerid);
-    }
+    dbg_printf("th=%d - deleting timer", kn->kn_timerid);
+    rv = timer_delete(kn->kn_timerid);
 
     if (kn->kn_udata != NULL)
         KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
@@ -228,21 +220,42 @@ evfilt_timer_knote_delete(struct filter *filt, struct knote *kn)
 }
 
 int
-evfilt_timer_knote_enable(struct filter *filt, struct knote *kn)
+evfilt_timer_knote_enable(struct filter *filt UNUSED, struct knote *kn)
 {
-    return evfilt_timer_knote_create(filt, kn);
+    struct itimerspec ts;
+    int abstime;
+
+    /*
+     * Re-arm the existing timer rather than recreating it - timer_create
+     * would zero the kernel's overrun counter, losing any expirations
+     * accumulated while the knote was disabled.
+     */
+    convert_timedata_to_itimerspec(&ts, kn->kev.data, kn->kev.fflags,
+                                   kn->kev.flags & EV_ONESHOT);
+    abstime = (kn->kev.fflags & NOTE_ABSOLUTE) ? TIMER_ABSTIME : 0;
+    if (timer_settime(kn->kn_timerid, abstime, &ts, NULL) < 0) {
+        dbg_perror("timer_settime(2)");
+        return (-1);
+    }
+    return (0);
 }
 
 int
 evfilt_timer_knote_disable(struct filter *filt UNUSED, struct knote *kn)
 {
+    struct itimerspec stop = { { 0, 0 }, { 0, 0 } };
+
     /*
-     * Stop the kernel timer but keep the udata: a re-enable reuses it,
-     * and an in-flight port event queued just before this call can still
-     * resolve to a live knote.  EV_DELETE handles the udata cleanup.
+     * Stop the kernel timer firing without destroying it: a re-enable
+     * picks up the kernel-side overrun counter, matching BSD's
+     * EV_DISABLE-then-EV_ENABLE semantics.
      */
-    dbg_printf("th=%d - deleting timer", kn->kn_timerid);
-    return timer_delete(kn->kn_timerid);
+    dbg_printf("th=%d - stopping timer", kn->kn_timerid);
+    if (timer_settime(kn->kn_timerid, 0, &stop, NULL) < 0) {
+        dbg_perror("timer_settime(2)");
+        return (-1);
+    }
+    return (0);
 }
 
 const struct filter evfilt_timer = {
