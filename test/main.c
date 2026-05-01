@@ -20,7 +20,7 @@
 #include <getopt.h>
 #endif
 
-#if defined(__linux__) || defined(__FreeBSD__) || defined(__sun) || defined(__APPLE__)
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__sun) || defined(__APPLE__)
 #include <sys/time.h>
 #include <sys/resource.h>
 #endif

@@ -470,7 +470,7 @@ test_evfilt_timer(struct test_context *ctx)
 #ifdef NOTE_SECONDS
     test(kevent_timer_note_seconds, ctx);
 #endif
-#ifdef NOTE_ABSOLUTE
+#if defined(NOTE_ABSOLUTE) && !defined(__APPLE__)
     test(kevent_timer_note_absolute, ctx);
     test(kevent_timer_note_absolute_after_modify, ctx);
 #endif

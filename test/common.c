@@ -86,54 +86,69 @@ kevent_get_hires(struct kevent kev[], int numevents, int kqfd, struct timespec *
         die("kevent(2)");
 }
 
+/*
+ * This was originally an O(1) array lookup using designated initialisers of
+ * the form [~EVFILT_READ] = "EVFILT_READ".  The trick relies on EVFILT_SYSCOUNT
+ * being >= the absolute value of every defined EVFILT_ constant.  NetBSD
+ * defines EVFILT_FS = -9 but EVFILT_SYSCOUNT = 8, so ~EVFILT_FS = 8 exceeds
+ * the array bound and the compiler rejects it.  Switch is good enough for a
+ * diagnostic helper.
+ */
 static const char *
 filter_name(short filt)
 {
-    int id;
-    const char *fname[EVFILT_SYSCOUNT] = {
+    switch (filt) {
 #ifdef EVFILT_READ
-        [~EVFILT_READ] = "EVFILT_READ",
+    case EVFILT_READ:
+        return "EVFILT_READ";
 #endif
 #ifdef EVFILT_WRITE
-        [~EVFILT_WRITE] = "EVFILT_WRITE",
+    case EVFILT_WRITE:
+        return "EVFILT_WRITE";
 #endif
 #ifdef EVFILT_AIO
-        [~EVFILT_AIO] = "EVFILT_AIO",
+    case EVFILT_AIO:
+        return "EVFILT_AIO";
 #endif
 #ifdef EVFILT_VNODE
-        [~EVFILT_VNODE] = "EVFILT_VNODE",
+    case EVFILT_VNODE:
+        return "EVFILT_VNODE";
 #endif
 #ifdef EVFILT_PROC
-        [~EVFILT_PROC] = "EVFILT_PROC",
+    case EVFILT_PROC:
+        return "EVFILT_PROC";
 #endif
 #ifdef EVFILT_SIGNAL
-        [~EVFILT_SIGNAL] = "EVFILT_SIGNAL",
+    case EVFILT_SIGNAL:
+        return "EVFILT_SIGNAL";
 #endif
 #ifdef EVFILT_TIMER
-        [~EVFILT_TIMER] = "EVFILT_TIMER",
+    case EVFILT_TIMER:
+        return "EVFILT_TIMER";
 #endif
 #ifdef EVFILT_NETDEV
-        [~EVFILT_NETDEV] = "EVFILT_NETDEV",
+    case EVFILT_NETDEV:
+        return "EVFILT_NETDEV";
 #endif
 #ifdef EVFILT_FS
-        [~EVFILT_FS] = "EVFILT_FS",
+    case EVFILT_FS:
+        return "EVFILT_FS";
 #endif
 #ifdef EVFILT_LIO
-        [~EVFILT_LIO] = "EVFILT_LIO",
+    case EVFILT_LIO:
+        return "EVFILT_LIO";
 #endif
 #ifdef EVFILT_USER
-        [~EVFILT_USER] = "EVFILT_USER",
+    case EVFILT_USER:
+        return "EVFILT_USER";
 #endif
 #ifdef EVFILT_LIBKQUEUE
-        [~EVFILT_LIBKQUEUE] = "EVFILT_LIBKQUEUE",
+    case EVFILT_LIBKQUEUE:
+        return "EVFILT_LIBKQUEUE";
 #endif
-    };
-
-    id = ~filt;
-    if (id < 0 || id >= NUM_ELEMENTS(fname))
+    default:
         return "EVFILT_INVALID";
-    else
-        return fname[id];
+    }
 }
 
 static const char *

@@ -325,6 +325,19 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents,
                     dst->fflags = (unsigned int) serr;
             }
         }
+
+        /*
+         * NOTE_LOWAT: suppress the event if fewer bytes are queued than
+         * the threshold.  EV_EOF bypasses the check (no more data will
+         * arrive, so deliver whatever is there).  SO_RCVLOWAT gates this
+         * at the select(2) level on most platforms; this check catches
+         * platforms (e.g. Linux Unix-domain sockets) where select does
+         * not honour the option.
+         */
+        if ((src->kev.fflags & NOTE_LOWAT) &&
+            !(dst->flags & EV_EOF) &&
+            (dst->data < src->kev.data))
+            return (0);
     }
 
     /*
