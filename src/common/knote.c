@@ -20,10 +20,9 @@
 
 #include "alloc.h"
 
-/** Comparator for the knote_index
- *
- * FIXME - Should respect EV_UDATA_SPECIFIC but that's a whole
- * lot of additional work.
+/** Comparator for the knote_index.  Keys on kev.ident only;
+ * EV_UDATA_SPECIFIC support (key on (ident, udata)) is a known
+ * gap, see TODO.md.
  *
  * @param[in] a    First knote to compare.
  * @param[in] b    Second knote to compare.

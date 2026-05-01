@@ -76,6 +76,7 @@ done:
 int
 evfilt_write_knote_create(struct filter *filt, struct knote *kn)
 {
+    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     if (linux_get_descriptor_type(kn) < 0)
         return (-1);
 

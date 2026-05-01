@@ -96,7 +96,8 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
             src->kn_registered = 0;
 
 #if FIXME
-            /* XXX-FIXME Switch to using kn_vnode.inotifyfd to monitor for IN_ATTRIB events
+            /*
+             * XXX-FIXME Switch to using kn_vnode.inotifyfd to monitor for IN_ATTRIB events
                          that may signify the file size has changed.
 
                          This code is not tested.
@@ -152,12 +153,14 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
     }
 
     if (src->kn_flags & KNFL_SOCKET_PASSIVE) {
-        /* On return, data contains the length of the
+        /*
+         * On return, data contains the length of the
            socket backlog. This is not available under Linux.
          */
         dst->data = 1;
     } else {
-        /* On return, data contains the number of bytes of protocol
+        /*
+         * On return, data contains the number of bytes of protocol
            data available to read.
          */
         int i;
@@ -180,6 +183,7 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
 int
 evfilt_read_knote_create(struct filter *filt, struct knote *kn)
 {
+    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     if (linux_get_descriptor_type(kn) < 0)
         return (-1);
 
@@ -270,9 +274,11 @@ evfilt_read_knote_delete(struct filter *filt, struct knote *kn)
         }
         kn->kn_registered = 0;
 
-        /* KNFL_FILE path uses a per-knote eventfd registration with
+        /*
+         * KNFL_FILE path uses a per-knote eventfd registration with
          * its own kn_udata.  The shared-fd_state path below uses
-         * fds_udata, which is freed inside epoll_fd_state_del. */
+         * fds_udata, which is freed inside epoll_fd_state_del.
+         */
         KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
 
         (void) close(kn->kn_eventfd);

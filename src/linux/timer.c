@@ -32,7 +32,8 @@
 #define SYS_timerfd_gettime __NR_timerfd_gettime
 #endif /* ! SYS_timerfd_create */
 
-/* XXX-FIXME
+/*
+ * XXX-FIXME
    These are horrible hacks that are only known to be true on RHEL 5 x86.
  */
 #ifndef SYS_timerfd_settime
@@ -137,15 +138,18 @@ evfilt_timer_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
     if (ev->events & EPOLLERR)
         dst->fflags = 1; /* FIXME: Return the actual timer error */
 
-    /* On return, data contains the number of times the
+    /*
+     * On return, data contains the number of times the
        timer has been trigered.
      */
     n = read(src->kn_timerfd, &expired, sizeof(expired));
     if (n < 0 && errno == EAGAIN) {
-        /* Another waiter on the same kq already drained the
+        /*
+         * Another waiter on the same kq already drained the
          * timerfd; skip dispatch.  Without TFD_NONBLOCK + this
          * short-circuit, the losing read would block forever in
-         * multi-waiter setups. */
+         * multi-waiter setups.
+         */
         return (0);
     }
     if (n != sizeof(expired)) {
@@ -167,6 +171,7 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
     int flags;
     int events;
 
+    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     kn->kev.flags |= EV_CLEAR;
 
     /*

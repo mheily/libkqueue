@@ -68,7 +68,8 @@ sleeper_thread(void *arg)
 
     /* Block all signals */
     sigfillset(&mask);
-    (void) pthread_sigmask(SIG_BLOCK, &mask, NULL);
+    if (pthread_sigmask(SIG_BLOCK, &mask, NULL) != 0)
+        dbg_perror("pthread_sigmask(SIG_BLOCK)");
 
     for (;;) {
 
@@ -177,8 +178,10 @@ _timer_create(struct filter *filt, struct knote *kn)
     }
 
 #ifdef __linux__
-    /* Set the thread's name to something descriptive so it shows up in gdb,
-     * etc. Max name length is 16 bytes. */
+    /*
+     * Set the thread's name to something descriptive so it shows up in gdb,
+     * etc. Max name length is 16 bytes.
+     */
     prctl(PR_SET_NAME, "libkqueue_sleep", 0, 0, 0);
 #endif
 
@@ -229,8 +232,10 @@ evfilt_timer_init(struct filter *filt)
 void
 evfilt_timer_destroy(struct filter *filt)
 {
-    (void) close(filt->kf_wfd);
-    (void) close(filt->kf_pfd);
+    if (close(filt->kf_wfd) < 0)
+        dbg_perror("close(kf_wfd)");
+    if (close(filt->kf_pfd) < 0)
+        dbg_perror("close(kf_pfd)");
 }
 
 int
@@ -267,8 +272,10 @@ evfilt_timer_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
 
     kn = knote_lookup(filt, si.ident);
 
-    /* Race condition: timer events remain queued even after
-       the knote is deleted. Ignore these events */
+    /*
+     * Race condition: timer events remain queued even after
+     * the knote is deleted. Ignore these events
+     */
     if (kn == NULL)
         return (0);
 
@@ -295,6 +302,7 @@ evfilt_timer_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
 int
 evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
 {
+    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     return _timer_create(filt, kn);
 }
 

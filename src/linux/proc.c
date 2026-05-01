@@ -15,7 +15,8 @@
  */
 #include "private.h"
 
-/* We depend on the SYS_pidfd_open call to determine when a process has exited
+/*
+ * We depend on the SYS_pidfd_open call to determine when a process has exited
  *
  * The SYS_pidfd_open call is only available in Kernels >= 5.3.  If this call
  * isn't available there's currently no good fallback.
@@ -123,7 +124,8 @@ evfilt_proc_knote_disable(struct filter *filt, struct knote *kn)
     return (0);
 }
 
-/** Open the pidfd, allocate udata, register in epoll.
+/*
+ * Open the pidfd, allocate udata, register in epoll.
  *
  * Mirrors posix/proc.c's proc_pid_arm in shape: a single "start
  * watching this pid" entry point used by kn_create and kn_modify's
@@ -171,7 +173,8 @@ linux_proc_arm(struct filter *filt, struct knote *kn)
     return (0);
 }
 
-/** Detach pidfd from epoll, defer-free udata, close pidfd.
+/*
+ * Detach pidfd from epoll, defer-free udata, close pidfd.
  *
  * Mirrors posix/proc.c's proc_pid_disarm.  Idempotent on a knote
  * that was never armed (kn_procfd < 0).  The udata is defer-freed
@@ -193,6 +196,7 @@ linux_proc_disarm(struct filter *filt, struct knote *kn)
 int
 evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
 {
+    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     /* No NOTE_* in fflags = registered but won't deliver. */
     if (!(kn->kev.fflags & NOTE_EXIT)) {
         dbg_printf("not monitoring pid=%u as no NOTE_* fflags set", (unsigned int)kn->kev.ident);

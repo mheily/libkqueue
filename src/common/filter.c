@@ -80,11 +80,6 @@ filter_register(struct kqueue *kq, const struct filter *src)
     dst->kf_kqueue = kq;
     RB_INIT(&dst->kf_index);
 
-    if (src->kf_id == 0) {
-        dbg_puts("filter is not implemented");
-        return (0);
-    }
-
     assert(src->kf_copyout);
     assert(src->kn_create);
     assert(src->kn_modify);
@@ -102,7 +97,9 @@ filter_register(struct kqueue *kq, const struct filter *src)
         }
     }
 
-    /* FIXME: should totally remove const from src */
+    /* kqops.filter_init's signature takes non-const; cast is safe
+     * here (we're the only caller) but the vtable should take
+     * const - see TODO.md. */
     if ((kqops.filter_init != NULL) && (kqops.filter_init(kq, dst) < 0))
         return (-1);
 
@@ -150,7 +147,8 @@ filter_unregister_all(struct kqueue *kq)
     memset(&kq->kq_filt[0], 0, sizeof(kq->kq_filt));
 }
 
-/** Lookup filters in the array of filters registered for kq
+/*
+ * Lookup filters in the array of filters registered for kq
  *
  * @param[out] filt    the specified ID resolves to.
  * @param[in] kq       to lookup the filter in.

@@ -39,7 +39,8 @@
 
 #include "../common/private.h"
 
-/** An entry in the proc_pid tree
+/*
+ * An entry in the proc_pid tree
  *
  * This contains a list of PIDs all kqueues are interested in
  * and a list of knotes that are waiting on notifications for
@@ -51,7 +52,8 @@ struct proc_pid {
     LIST_HEAD(pid_waiters, knote) ppd_proc_waiters; //!< knotes that are waiting on this PID.
 };
 
-/** Synchronisation for wait thread information
+/*
+ * Synchronisation for wait thread information
  *
  * This ensures that the number of process being monitored is correct
  * and stops multiple threads attempting to start a monitor thread
@@ -62,15 +64,18 @@ static int                 proc_count = 0;
 static pthread_t           proc_wait_thread;
 static pid_t               proc_wait_tid; /* Monitoring thread; set inside wait_thread_loop. */
 static bool                proc_wait_thread_created;
-                                          /* Set true after pthread_create succeeds; reset
+                                          /*
+                                           * Set true after pthread_create succeeds; reset
                                            * after pthread_join in destroy.  Protected by
                                            * proc_init_mtx.  Distinguishes "thread alive,
                                            * needs join" from "thread never started" so
                                            * destroy doesn't pthread_cancel garbage and
                                            * fork-child can clear it without leaving stale
-                                           * state. */
+                                           * state.
+                                           */
 
-/** Synchronisation for thread start
+/*
+ * Synchronisation for thread start
  *
  * This prevents any threads from continuing whilst the wait thread
  * is started.  proc_wait_thread_started is the loop predicate the
@@ -82,7 +87,8 @@ static pthread_mutex_t     proc_wait_thread_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t      proc_wait_thread_cond = PTHREAD_COND_INITIALIZER;
 static bool                proc_wait_thread_started;   /* protected by proc_wait_thread_mtx */
 
-/** The global PID tree
+/*
+ * The global PID tree
  *
  * Contains all the PIDs any kqueue is interested in waiting on
  */
@@ -100,7 +106,8 @@ proc_pid_cmp(struct proc_pid *a, struct proc_pid *b)
 
 RB_GENERATE(pid_index, proc_pid, ppd_entry, proc_pid_cmp)
 
-/** Notify all the waiters on a PID
+/*
+ * Notify all the waiters on a PID
  *
  * @note This must be called with the proc_pid_index_mtx held
  *       to prevent knotes/filters/kqueues being freed out from
@@ -163,7 +170,8 @@ waiter_notify_error(struct proc_pid *ppd, int wait_errno)
     free(ppd);
 }
 
-/** Convert a CLD_* siginfo into the waitpid-style status word.
+/*
+ * Convert a CLD_* siginfo into the waitpid-style status word.
  *
  * Reconstructs the status code waitpid would have returned for the
  * same exit, matching what the OpenBSD man pages document and what
@@ -204,7 +212,8 @@ waiter_siginfo_to_status(int *status_out, siginfo_t *info)
     return (0);
 }
 
-/** This waiter thread serves all kqueues in a given process
+/*
+ * This waiter thread serves all kqueues in a given process
  *
  */
 static void *
@@ -217,8 +226,10 @@ wait_thread_loop(UNUSED void *arg)
     struct proc_pid *ppd, *ppd_tmp;
 
 #ifdef __linux__
-    /* Set the thread's name to something descriptive so it shows up in gdb,
-     * etc. Max name length is 16 bytes. */
+    /*
+     * Set the thread's name to something descriptive so it shows up in gdb,
+     * etc. Max name length is 16 bytes.
+     */
     prctl(PR_SET_NAME, "libkqueue_wait", 0, 0, 0);
     proc_wait_tid = syscall(SYS_gettid);
 #else
@@ -324,6 +335,9 @@ wait_thread_loop(UNUSED void *arg)
     pthread_cond_signal(&proc_wait_thread_cond);
     pthread_mutex_unlock(&proc_wait_thread_mtx);
     do {
+        if (ret > 0)
+            dbg_printf("sigwaitinfo() returned signo=%d si_pid=%u si_code=%d",
+                       ret, (unsigned int) info.si_pid, info.si_code);
         /*
          * Check for errors before altering the cancellation
          * state, so we don't end up calling sigwaitinfo
@@ -560,7 +574,8 @@ evfilt_proc_destroy(struct filter *filt)
     kqops.eventfd_close(&filt->kf_proc_eventfd);
 }
 
-/** Begin watching a pid for exit on behalf of a knote.
+/*
+ * Begin watching a pid for exit on behalf of a knote.
  *
  * Inserts the knote onto the pid's waiter list (creating the
  * proc_pid entry if no other knote was already watching), then
@@ -642,14 +657,17 @@ proc_pid_arm(struct filter *filt, struct knote *kn)
          * wait thread handle the eventual exit normally.
          */
     }
-    /* else: alive, never-our-child, or already reaped - all
-     * indistinguishable from waitid here.  Stay registered. */
+    /*
+     * else: alive, never-our-child, or already reaped - all
+     * indistinguishable from waitid here.  Stay registered.
+     */
 
     tracing_mutex_unlock(&proc_pid_index_mtx);
     return (0);
 }
 
-/** Stop watching a pid for the given knote.
+/*
+ * Stop watching a pid for the given knote.
  *
  * Removes the knote from its waiter list and frees the proc_pid
  * entry if no other knote was watching the same pid.  Idempotent
@@ -678,6 +696,7 @@ proc_pid_disarm(struct knote *kn)
 static int
 evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
 {
+    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     /*
      * Match native kqueue and the Linux pidfd backend: only register
      * if the caller asked for at least one event we can deliver.

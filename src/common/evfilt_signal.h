@@ -105,13 +105,15 @@ static pthread_mutex_t sig_init_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int             sig_filter_count = 0;
 static pthread_t       sig_dispatch_thread;
 static bool            sig_dispatch_thread_created;
-                                          /* Set true after pthread_create succeeds; reset
+                                          /*
+                                           * Set true after pthread_create succeeds; reset
                                            * after pthread_join in sig_dispatch_stop.
                                            * Protected by sig_init_mtx.  Distinguishes
                                            * "thread alive, needs join" from "never started"
                                            * so destroy doesn't pthread_join garbage and
                                            * fork-child can clear without leaving stale
-                                           * state. */
+                                           * state.
+                                           */
 static bool            sig_dispatch_started;       /* protected by sig_dispatch_thread_mtx */
 
 /*
@@ -124,7 +126,8 @@ static int             sig_pipe[2] = { -1, -1 };
 static pthread_mutex_t sig_dispatch_thread_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  sig_dispatch_thread_cond = PTHREAD_COND_INITIALIZER;
 
-/** @name Platform-layer hooks
+/*
+ * @name Platform-layer hooks
  *
  * Provided by the includer (src/posix/signal.c for sigaction-based
  * delivery, src/solaris/signal.c for signalfd-based delivery).  All
@@ -134,7 +137,8 @@ static pthread_cond_t  sig_dispatch_thread_cond = PTHREAD_COND_INITIALIZER;
  * @{
  */
 
-/** Initialise the platform layer (e.g., create signalfd).
+/*
+ * Initialise the platform layer (e.g., create signalfd).
  *
  * Called once under sig_init_mtx before the dispatch thread is
  * started.
@@ -143,14 +147,16 @@ static pthread_cond_t  sig_dispatch_thread_cond = PTHREAD_COND_INITIALIZER;
  */
 static int  sig_platform_init(void);
 
-/** Tear down the platform layer.
+/*
+ * Tear down the platform layer.
  *
  * Called once under sig_init_mtx after the dispatch thread has
  * joined.
  */
 static void sig_platform_destroy(void);
 
-/** Begin observing a signal number.
+/*
+ * Begin observing a signal number.
  *
  * Called with sigtbl_mtx held when the first knote across all
  * kqueues registers for this signum.
@@ -160,7 +166,8 @@ static void sig_platform_destroy(void);
  */
 static int  sig_platform_add(int sig);
 
-/** Stop observing a signal number.
+/*
+ * Stop observing a signal number.
  *
  * Called with sigtbl_mtx held when the last knote across all
  * kqueues for this signum goes away.
@@ -170,7 +177,8 @@ static int  sig_platform_add(int sig);
  */
 static int  sig_platform_remove(int sig);
 
-/** Block until at least one signal arrives (or shutdown), then
+/*
+ * Block until at least one signal arrives (or shutdown), then
  * dispatch the arrivals via sig_dispatch_handle.
  *
  * The implementation takes/releases sigtbl_mtx around the
@@ -182,7 +190,8 @@ static int  sig_platform_remove(int sig);
  */
 static int  sig_platform_wait_dispatch(void);
 
-/** Reset platform-layer state in the forked child.
+/*
+ * Reset platform-layer state in the forked child.
  *
  * The child inherits any fds the parent opened (signalfd, etc.)
  * but the parent's dispatch thread is gone, so those fds are
@@ -195,7 +204,8 @@ static void sig_platform_reset_after_fork(void);
 
 /** @} */
 
-/** @name Common dispatch machinery
+/*
+ * @name Common dispatch machinery
  *
  * Identical across the sigaction and signalfd platform layers.
  * Each platform's signal.c picks these up by including this
@@ -287,8 +297,10 @@ sig_dispatch_start(void)
         dbg_perror("socketpair");
         return (-1);
     }
-    (void) fcntl(sig_pipe[0], F_SETFL, O_NONBLOCK);
-    (void) fcntl(sig_pipe[1], F_SETFL, O_NONBLOCK);
+    if (fcntl(sig_pipe[0], F_SETFL, O_NONBLOCK) < 0)
+        dbg_perror("fcntl(sig_pipe[0], O_NONBLOCK)");
+    if (fcntl(sig_pipe[1], F_SETFL, O_NONBLOCK) < 0)
+        dbg_perror("fcntl(sig_pipe[1], O_NONBLOCK)");
 
     if (sig_platform_init() < 0) {
         close(sig_pipe[0]);
@@ -387,7 +399,8 @@ sl_has_no_knotes(struct sig_link *sl)
     return LIST_EMPTY(&sl->kn_enabled) && LIST_EMPTY(&sl->kn_disabled);
 }
 
-/** libkqueue_fork hook: invoked in the child after fork().
+/*
+ * libkqueue_fork hook: invoked in the child after fork().
  *
  * The dispatch thread isn't duplicated by fork, so the child
  * inherits stale globals (sig_filter_count, sig_dispatch_thread,
@@ -495,6 +508,7 @@ evfilt_signal_knote_create(struct filter *filt, struct knote *kn)
     int first;
     int rv = 0;
 
+    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     if (sig <= 0 || sig >= SIGNAL_MAX) {
         dbg_printf("unsupported signal number %u",
                    (unsigned int) kn->kev.ident);
@@ -610,8 +624,8 @@ evfilt_signal_knote_delete(struct filter *filt, struct knote *kn)
      * on whichever thread(s) catch_signal blocked it on - we don't
      * undo that, see BUGS.md.
      */
-    if (LIST_EMPTY(&sigtbl[sig].s_links))
-        (void) sig_platform_remove(sig);
+    if (LIST_EMPTY(&sigtbl[sig].s_links) && sig_platform_remove(sig) < 0)
+        dbg_perror("sig_platform_remove(%d)", sig);
     pthread_mutex_unlock(&sigtbl_mtx);
 
     return (0);

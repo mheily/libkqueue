@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2026 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
  * Copyright (c) 2009 Mark Heily <mark@heily.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -165,7 +166,8 @@ kevent_dump(const struct kevent *kev)
     return ((const char *) buf);
 }
 
-/** Process a single entry in the changelist
+/*
+ * Process a single entry in the changelist
  *
  * @param[out] out    The knote the src kevent resolved to (if any).
  * @param[in] kq      to apply the change against.
@@ -224,7 +226,14 @@ kevent_copyin_one(const struct knote **out, struct kqueue *kq, const struct keve
             dbg_printf("kn=%p - created knote %s", kn, kevent_dump(src));
             *out = kn;
 
-/* XXX- FIXME Needs to be handled in kn_create() to prevent races */
+/*
+ * EV_ADD | EV_DISABLE race: most filters' kn_create registers with the
+ * kernel (port_associate, epoll_ctl, etc.) and may deliver events
+ * before this kn_disable runs, so a knote registered "disabled" can
+ * still fire briefly.  Only EVFILT_USER avoids this (kn_create doesn't
+ * arm; the trigger path in kn_modify checks EV_DISABLE).  Real fix is
+ * a starts-disabled flag on kn_create across all filters.
+ */
             if (src->flags & EV_DISABLE) {
                 kn->kev.flags |= EV_DISABLE;
                 return filt->kn_disable(filt, kn);
@@ -262,8 +271,6 @@ kevent_copyin_one(const struct knote **out, struct kqueue *kq, const struct keve
          * kn_modify implementations reject modifies that don't look
          * like a full re-declaration (e.g. evfilt_read_knote_modify
          * returns -1 for sockets unless EV_CLEAR is set).
-         *
-         * This mirrors the earlier EV_RECEIPT fix in commit 1bda040.
          */
         if (src->flags & EV_ENABLE) {
             rv = knote_enable(filt, kn);
@@ -484,13 +491,9 @@ kevent(int kqfd,
 #endif
 
     /*
-     * Platform hook: register this caller as in-flight before we run
-     * any copyin work.  EV_DELETE in our own changelist may need to
-     * see this caller's epoch in the in-flight set so the deferred
-     * udata it queues is not freed before our copyout completes.
-     *
-     * On platforms that don't need this (everything but Linux), the
-     * macro expands to a no-op.
+     * Platform hook: register this caller as in-flight (no-op on platforms
+     * without deferred-free tracking).  Must run before copyin so EV_DELETE
+     * in our own changelist sees this caller's epoch when it queues a udata.
      */
     kqueue_kevent_enter(kq, &state);
 
@@ -607,11 +610,8 @@ out:
 #endif
 
     /*
-     * Pair with kevent_enter above.  Removes us from the in-flight
-     * set and runs the deferred-free sweep so any udata whose
-     * boundary epoch is now strictly less than the lowest still-
-     * in-flight epoch can be reclaimed.  No-op on platforms that
-     * don't track in-flight callers (everything but Linux/Solaris).
+     * Pair with kevent_enter: remove from in-flight and run the deferred-free
+     * sweep.  No-op on platforms without deferred-free tracking.
      */
     kqueue_kevent_exit(kq, &state);
 

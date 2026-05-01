@@ -182,6 +182,7 @@ posix_read_disarm(struct filter *filt, struct knote *kn)
 int
 evfilt_read_knote_create(struct filter *filt, struct knote *kn)
 {
+    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     if (posix_read_descriptor_type(kn) < 0)
         return (-1);
     return posix_read_arm(filt, kn);

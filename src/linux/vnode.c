@@ -104,8 +104,10 @@ get_one_event(struct inotify_event *dst, size_t len, int inofd)
                 continue;
 
             case EAGAIN:
-                /* Another waiter on the same kq already consumed
-                 * the inotify event. */
+                /*
+                 * Another waiter on the same kq already consumed
+                 * the inotify event.
+                 */
                 return (0);
             }
 
@@ -193,10 +195,12 @@ errout:
     inotify_rm_watch(ifd, kn->kev.data);
     kn->kn_vnode.inotifyfd = -1;
     (void) close(ifd);
-    /* If we reached here from the post-KN_UDATA epoll_ctl failure,
+    /*
+     * If we reached here from the post-KN_UDATA epoll_ctl failure,
      * the kernel never accepted the udata - free direct.  If we came
      * from the pre-KN_UDATA inotify_add_watch failure, kn_udata is
-     * still NULL and KN_UDATA_FREE is a no-op. */
+     * still NULL and KN_UDATA_FREE is a no-op.
+     */
     KN_UDATA_FREE(kn);
     return (-1);
 }
@@ -238,9 +242,11 @@ evfilt_vnode_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
     {
         int rv = get_one_event(evt, sizeof(buf), src->kn_vnode.inotifyfd);
         if (rv < 0) return (-1);
-        /* Another waiter drained the inotify fd before us; skip
+        /*
+         * Another waiter drained the inotify fd before us; skip
          * dispatch.  Without IN_NONBLOCK + this short-circuit, the
-         * losing read would block forever in multi-waiter setups. */
+         * losing read would block forever in multi-waiter setups.
+         */
         if (rv == 0) return (0);
     }
 
@@ -251,10 +257,11 @@ evfilt_vnode_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
         return (0);
     }
 
-    /* Check if the watched file has been closed, and
+    /*
+     * Check if the watched file has been closed, and
        XXX-this may not exactly match the kevent() behavior if multiple file de
 scriptors reference the same file.
-    */
+     */
     if (evt->mask & IN_CLOSE_WRITE || evt->mask & IN_CLOSE_NOWRITE) {
         src->kev.flags |= EV_ONESHOT; /* KLUDGE: causes the knote to be deleted */
         dst->filter = 0; /* KLUDGE: causes the event to be discarded */
@@ -308,6 +315,7 @@ evfilt_vnode_knote_create(struct filter *filt, struct knote *kn)
 {
     struct stat sb;
 
+    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     if (fstat(kn->kev.ident, &sb) < 0) {
         dbg_puts("fstat failed");
         return (-1);

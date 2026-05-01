@@ -103,6 +103,7 @@ posix_write_descriptor_type(struct knote *kn)
 int
 evfilt_write_knote_create(struct filter *filt, struct knote *kn)
 {
+    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
     if (posix_write_descriptor_type(kn) < 0)
         return (-1);
     return posix_write_arm(filt, kn);
