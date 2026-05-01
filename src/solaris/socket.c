@@ -187,11 +187,21 @@ evfilt_socket_knote_modify(struct filter *filt, struct knote *kn,
     /*
      * port_associate doubles as update: a second call on an already-
      * associated source replaces events and user, so we just call
-     * knote_create again.  No need to mutate kn - kevent_copyin
-     * copies kev into kn->kev after we return success.
+     * knote_create again to re-arm.
      */
-    (void) kev;
-    return evfilt_socket_knote_create(filt, kn);
+    if (evfilt_socket_knote_create(filt, kn) < 0)
+        return (-1);
+
+    /*
+     * Common code only copies udata (and conditionally EV_DISPATCH)
+     * after kn_modify.  Sync fflags/data (NOTE_LOWAT and friends are
+     * caller-mutable), but leave kev.flags alone: BSD treats EV_CLEAR
+     * as register-only on sockets and EV_RECEIPT is sticky.  Touching
+     * flags here would clobber both invariants.
+     */
+    kn->kev.fflags = kev->fflags;
+    kn->kev.data   = kev->data;
+    return (0);
 }
 
 int
