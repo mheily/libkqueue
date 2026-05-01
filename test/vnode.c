@@ -247,10 +247,15 @@ test_kevent_vnode_note_link(struct test_context *ctx)
 
 /*
  * Subscribe to NOTE_TRUNCATE alone and shrink the file via ftruncate;
- * expect a NOTE_TRUNCATE delivery.  illumos has a dedicated FILE_TRUNC
- * kernel event so this is a direct mapping; Linux's vnode synthesis
- * only catches truncate-to-zero (a known limitation).
+ * expect a NOTE_TRUNCATE delivery.  NOTE_TRUNCATE is an OpenBSD
+ * extension to BSD kqueue (sys/event.h:107, fires only when
+ * vap->va_size < oldsize in ufs_setattr); illumos has a dedicated
+ * FILE_TRUNC kernel event so this is a direct mapping; Linux's vnode
+ * synthesises from st_size shrinkage.  FreeBSD/macOS native kqueue
+ * don't define NOTE_TRUNCATE - the gate keeps this test buildable
+ * there.
  */
+#ifdef NOTE_TRUNCATE
 static void
 test_kevent_vnode_note_truncate(struct test_context *ctx)
 {
@@ -273,6 +278,7 @@ test_kevent_vnode_note_truncate(struct test_context *ctx)
         die("NOTE_TRUNCATE not delivered: %s",
             kevent_to_str(&ret[0]));
 }
+#endif
 
 void
 test_kevent_vnode_disable_and_enable(struct test_context *ctx)
@@ -342,12 +348,7 @@ test_kevent_vnode_dispatch(struct test_context *ctx)
 
 /* ============================================================
  * Flag-behaviour tests
- *
- * Solaris-only because Linux's evfilt_vnode_knote_modify is a stub
- * returning -1; macOS uses native kqueue so this code path doesn't
- * run there.
  * ============================================================ */
-#ifdef __sun
 
 /*
  * BSD overwrites kn->kev.udata on every modify.
@@ -433,7 +434,6 @@ test_kevent_vnode_delete_drains(struct test_context *ctx)
                EV_DELETE, 0, 0, NULL);
     test_no_kevents(ctx->kqfd);
 }
-#endif  /* __sun */
 
 void
 test_evfilt_vnode(struct test_context *ctx)
@@ -463,7 +463,6 @@ test_evfilt_vnode(struct test_context *ctx)
     test(kevent_vnode_note_write, ctx);
     test(kevent_vnode_note_attrib, ctx);
     test(kevent_vnode_note_rename, ctx);
-    test(kevent_vnode_note_delete, ctx);
 #ifdef NOTE_EXTEND
     test(kevent_vnode_note_extend, ctx);
 #endif
@@ -473,12 +472,19 @@ test_evfilt_vnode(struct test_context *ctx)
 #ifdef NOTE_TRUNCATE
     test(kevent_vnode_note_truncate, ctx);
 #endif
-#ifdef __sun
+    /* Flag-behaviour group - run before note_delete so the file
+     * (and the path /proc/self/fd/N points at) still exists. */
     test(kevent_vnode_modify_clobbers_udata, ctx);
     test(kevent_vnode_modify_disarms, ctx);
     test(kevent_vnode_disable_drains, ctx);
     test(kevent_vnode_delete_drains, ctx);
-#endif
+    /*
+     * note_delete must run last: it unlinks ctx->testfile and the
+     * Linux backend resolves the watched path each EV_ADD/EV_MODIFY
+     * via /proc/self/fd/N, which after unlink reports
+     * "<path> (deleted)" and inotify_add_watch fails.
+     */
+    test(kevent_vnode_note_delete, ctx);
     /* TODO: test r590 corner case where a descriptor is closed and
              the associated knote is automatically freed. */
     unlink(ctx->testfile);

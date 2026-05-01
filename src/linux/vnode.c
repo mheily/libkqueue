@@ -146,6 +146,8 @@ add_watch(struct filter *filt, struct knote *kn)
         mask |= IN_MODIFY | IN_ATTRIB;
     if (kn->kev.fflags & NOTE_EXTEND)
         mask |= IN_MODIFY | IN_ATTRIB;
+    if (kn->kev.fflags & NOTE_TRUNCATE)
+        mask |= IN_MODIFY | IN_ATTRIB;
     if ((kn->kev.fflags & NOTE_ATTRIB) ||
             (kn->kev.fflags & NOTE_LINK))
         mask |= IN_ATTRIB;
@@ -284,12 +286,26 @@ scriptors reference the same file.
             if (sb.st_nlink != src->kn_vnode.nlink &&
                 src->kev.fflags & NOTE_LINK)
                 dst->fflags |= NOTE_LINK;
-#if HAVE_NOTE_TRUNCATE
-            if (sb.st_nsize == 0 && src->kev.fflags & NOTE_TRUNCATE)
+            /*
+             * NOTE_TRUNCATE is an OpenBSD extension to BSD kqueue
+             * (sys/event.h:107, ufs_setattr fires it only when
+             * vap->va_size < oldsize).  Inotify delivers IN_MODIFY
+             * for truncate(2) but doesn't distinguish it from a
+             * write, so we synthesise from st_size shrinkage to match
+             * OpenBSD's "shrink only" semantic.
+             */
+            if (sb.st_size < src->kn_vnode.size &&
+                src->kev.fflags & NOTE_TRUNCATE)
                 dst->fflags |= NOTE_TRUNCATE;
-#endif
+            /*
+             * BSD libkqueue convention: a write that extends the file
+             * delivers NOTE_EXTEND alongside NOTE_WRITE - so register
+             * either to receive it.  Linux's inotify reports IN_MODIFY
+             * for both append and overwrite; we synthesise NOTE_EXTEND
+             * by comparing st_size against the cached baseline.
+             */
             if (sb.st_size > src->kn_vnode.size &&
-                src->kev.fflags & NOTE_WRITE)
+                src->kev.fflags & (NOTE_EXTEND | NOTE_WRITE))
                 dst->fflags |= NOTE_EXTEND;
             src->kn_vnode.nlink = sb.st_nlink;
             src->kn_vnode.size = sb.st_size;
@@ -328,13 +344,60 @@ evfilt_vnode_knote_create(struct filter *filt, struct knote *kn)
 }
 
 int
-evfilt_vnode_knote_modify(struct filter *filt, struct knote *kn,
+evfilt_vnode_knote_modify(struct filter *filt UNUSED, struct knote *kn,
         const struct kevent *kev)
 {
-    (void)filt;
-    (void)kn;
-    (void)kev;
-    return (-1); /* FIXME - STUB */
+    char path[PATH_MAX];
+    uint32_t mask;
+    int wd;
+
+    if (kn->kn_vnode.inotifyfd < 0) {
+        /*
+         * Knote was disabled or never armed; nothing to update on
+         * the kernel side.  Common code stamps the new fflags into
+         * kn->kev itself before kn_enable runs, so there's nothing
+         * for us to do here.  Leave kev.fflags alone - common code
+         * doesn't sync it post-modify.
+         */
+        kn->kev.fflags = kev->fflags;
+        return (0);
+    }
+
+    if (linux_fd_to_path(path, sizeof(path), kn->kev.ident) < 0)
+        return (-1);
+
+    /*
+     * Recompute the inotify mask from the new fflags and replace
+     * the existing watch.  inotify_add_watch with the same (fd,
+     * path) pair updates the mask of the existing watch in place
+     * and returns the same wd, so we don't need to remove the old
+     * watch first.
+     */
+    mask = IN_CLOSE;
+    if (kev->fflags & NOTE_DELETE)
+        mask |= IN_ATTRIB | IN_DELETE_SELF;
+    if (kev->fflags & NOTE_WRITE)
+        mask |= IN_MODIFY | IN_ATTRIB;
+    if (kev->fflags & NOTE_EXTEND)
+        mask |= IN_MODIFY | IN_ATTRIB;
+    if ((kev->fflags & NOTE_ATTRIB) || (kev->fflags & NOTE_LINK))
+        mask |= IN_ATTRIB;
+    if (kev->fflags & NOTE_RENAME)
+        mask |= IN_MOVE_SELF;
+    if (kn->kev.flags & EV_ONESHOT)
+        mask |= IN_ONESHOT;
+
+    dbg_printf("inotify_add_watch(2) replace; inofd=%d flags=%s path=%s",
+               kn->kn_vnode.inotifyfd, inotify_mask_dump(mask), path);
+    wd = inotify_add_watch(kn->kn_vnode.inotifyfd, path, mask);
+    if (wd < 0) {
+        dbg_perror("inotify_add_watch(2) on EV_MODIFY");
+        return (-1);
+    }
+
+    kn->kev.fflags = kev->fflags;
+    kn->kev.data   = wd;
+    return (0);
 }
 
 int
