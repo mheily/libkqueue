@@ -323,6 +323,7 @@ test_kevent_timer_note_seconds(struct test_context *ctx)
     _timer_unit_check(ctx, 1L, NOTE_SECONDS, "NOTE_SECONDS");
 }
 
+#ifdef NOTE_ABSOLUTE
 static void
 test_kevent_timer_note_absolute(struct test_context *ctx)
 {
@@ -379,6 +380,7 @@ test_kevent_timer_note_absolute_after_modify(struct test_context *ctx)
 
     /* EV_ONESHOT auto-deleted the knote; no explicit EV_DELETE needed. */
 }
+#endif /* NOTE_ABSOLUTE */
 
 /*
  * Flag-behaviour tests.
