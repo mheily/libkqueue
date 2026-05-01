@@ -70,7 +70,13 @@ convert_timedata_to_itimerspec(struct itimerspec *dst, long src,
         nsec = (src % 1000) * 1000000;
     }
 
-    if (oneshot) {
+    /*
+     * NOTE_ABSOLUTE is inherently one-shot: kev.data is a deadline,
+     * not a period.  Force it_interval to 0 even if EV_ONESHOT isn't
+     * set, otherwise the timer would re-arm using the deadline value
+     * as a period and refire <deadline> seconds later.
+     */
+    if (oneshot || (flags & NOTE_ABSOLUTE)) {
         dst->it_interval.tv_sec = 0;
         dst->it_interval.tv_nsec = 0;
     } else {
