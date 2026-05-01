@@ -191,7 +191,6 @@ struct kevent {
  * @{
  */
 #define NOTE_LOWAT      0x0001         //!< Low water mark.
-#undef  NOTE_LOWAT      /* Not supported on Linux */
 /** @} */
 
 /** @name Data/hint flags for EVFILT_VNODE

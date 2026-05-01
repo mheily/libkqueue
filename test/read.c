@@ -498,6 +498,81 @@ test_kevent_socket_so_error(struct test_context *ctx)
 }
 
 /*
+ * NOTE_LOWAT: register EVFILT_READ with a low-water mark in kev.data.
+ * Send fewer bytes than the threshold and confirm no event fires; send
+ * enough to clear it and confirm one does.  Backend translates to
+ * SO_RCVLOWAT setsockopt; the kernel does the gating.
+ */
+void
+test_kevent_socket_lowat_read(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    struct timespec timeout = { 0, 100L * 1000L * 1000L };  /* 100ms */
+    int n;
+
+    kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ,
+               EV_ADD | EV_CLEAR, NOTE_LOWAT, 16, &ctx->client_fd);
+    test_no_kevents(ctx->kqfd);
+
+    /* 8 bytes: below threshold, no event. */
+    kevent_socket_fill(ctx, 8);
+    n = kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout);
+    if (n != 0)
+        die("expected no event with 8 bytes < threshold 16, got %d", n);
+
+    /* 16 more bytes (24 total): above threshold, fires. */
+    kevent_socket_fill(ctx, 16);
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 1)
+        die("expected event after crossing threshold");
+    if (ret[0].data < 16)
+        die("expected data >= 16, got %ld", (long) ret[0].data);
+
+    /* Drain the 24 bytes we sent. */
+    {
+        char drain[64];
+        ssize_t got = recv(ctx->client_fd, drain, sizeof(drain), MSG_DONTWAIT);
+        if (got < 0)
+            die("recv");
+    }
+
+    kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+}
+
+/*
+ * NOTE_LOWAT for EVFILT_WRITE: setting the threshold above SO_SNDBUF
+ * makes the threshold structurally unreachable (free space can never
+ * exceed buffer size).  Verify no event fires while it's set, then
+ * lower the threshold and verify we get one.
+ */
+void
+test_kevent_socket_lowat_write(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    struct timespec timeout = { 0, 100L * 1000L * 1000L };  /* 100ms */
+    int sndbuf;
+    socklen_t slen = sizeof(sndbuf);
+    int n;
+
+    if (getsockopt(ctx->server_fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, &slen) < 0)
+        die("getsockopt(SO_SNDBUF)");
+
+    /* Threshold larger than the buffer ever has: cannot fire. */
+    kevent_add(ctx->kqfd, &kev, ctx->server_fd, EVFILT_WRITE,
+               EV_ADD | EV_CLEAR, NOTE_LOWAT, sndbuf + 4096, &ctx->server_fd);
+    n = kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout);
+    if (n != 0)
+        die("expected no event with NOTE_LOWAT > SO_SNDBUF, got %d", n);
+
+    /* Threshold = 1: fires immediately (buffer is empty / fully free). */
+    kevent_add(ctx->kqfd, &kev, ctx->server_fd, EVFILT_WRITE,
+               EV_ADD | EV_CLEAR, NOTE_LOWAT, 1, &ctx->server_fd);
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 1)
+        die("expected event with NOTE_LOWAT=1");
+
+    kevent_add(ctx->kqfd, &kev, ctx->server_fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+}
+
+/*
  * Different from the socket eof test, as we get EPOLLHUP with no EPOLLIN on close
  * on Linux.
  */
@@ -684,6 +759,22 @@ test_evfilt_read(struct test_context *ctx)
     test(kevent_socket_eof_clear, ctx);
     test(kevent_socket_eof, ctx);
     test(kevent_socket_so_error, ctx);
+#ifndef __sun
+    /*
+     * SO_RCVLOWAT setsockopt works on Linux glibc; not on Solaris
+     * (illumos returns ENOPROTOOPT for both lowat options).
+     */
+    test(kevent_socket_lowat_read, ctx);
+#endif
+#if !defined(__sun) && !defined(__linux__)
+    /*
+     * SO_SNDLOWAT setsockopt is unsupported on Linux too: per
+     * socket(7), 'On Linux, the socket layer does not support these
+     * options.  They are just present for compatibility with BSD.'
+     * Test only meaningful on platforms with a real implementation.
+     */
+    test(kevent_socket_lowat_write, ctx);
+#endif
     test(kevent_pipe_eof, ctx);
     test(kevent_pipe_eof_multi, ctx);
     test(kevent_regular_file, ctx);

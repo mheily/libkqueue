@@ -149,6 +149,14 @@ evfilt_write_knote_create(struct filter *filt, struct knote *kn)
     if (kn->kev.flags & EV_CLEAR)
         kn->epoll_events |= EPOLLET;
 
+    /*
+     * NOTE_LOWAT on the write side is not honoured: setsockopt(SO_SNDLOWAT)
+     * returns ENOPROTOOPT on Linux (socket(7): "On Linux, the socket layer
+     * does not support these options.  They are just present for
+     * compatibility with BSD.") and on illumos.  Silently ignored;
+     * userspace gating in copyout would busy-loop on level-triggered EPOLL.
+     */
+
     return epoll_update(EPOLL_CTL_ADD, filt, kn, kn->epoll_events, false);
 }
 
@@ -164,8 +172,20 @@ evfilt_write_knote_modify(UNUSED struct filter *filt, struct knote *kn,
          * With the native kqueue implementations it
          * basically does nothing.
          */
-        if ((kev->flags & EV_CLEAR))
+        if ((kev->flags & EV_CLEAR)) {
+            /* SO_SNDLOWAT not supported on Linux, see knote_create. */
+
+            /*
+             * Common code only copies udata (and conditionally
+             * EV_DISPATCH) after kn_modify.  Sync fflags/data
+             * (NOTE_LOWAT and friends are caller-mutable), but
+             * leave kev.flags alone: BSD treats EV_CLEAR as
+             * register-only on sockets and EV_RECEIPT is sticky.
+             */
+            kn->kev.fflags = kev->fflags;
+            kn->kev.data   = kev->data;
             return (0);
+        }
         return (-1);
     }
 
@@ -175,6 +195,17 @@ evfilt_write_knote_modify(UNUSED struct filter *filt, struct knote *kn,
 int
 evfilt_write_knote_delete(struct filter *filt, struct knote *kn)
 {
+    /*
+     * Restore the default SO_SNDLOWAT on socket fds the knote bumped.
+     * Skipped for KNFL_FILE because the kn->kev.ident there is the
+     * watched file, not a socket.
+     */
+    if ((kn->kev.fflags & NOTE_LOWAT) && (kn->kn_flags & KNFL_SOCKET)) {
+        const int one = 1;
+        if (setsockopt(kn->kev.ident, SOL_SOCKET, SO_SNDLOWAT, &one, sizeof(one)) < 0)
+            dbg_perror("setsockopt(restore SO_SNDLOWAT) on EV_DELETE");
+    }
+
     if ((kn->kn_flags & KNFL_FILE) && (kn->kn_eventfd != -1)) {
         if (kn->kn_registered && epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kn_eventfd, NULL) < 0) {
             dbg_perror("epoll_ctl(2)");

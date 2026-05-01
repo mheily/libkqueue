@@ -16,6 +16,8 @@
 
 #include "common.h"
 
+#include <sys/wait.h>
+
 static int sigusr1_caught = 0;
 static pid_t pid;
 

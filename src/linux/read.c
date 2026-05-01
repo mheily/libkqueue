@@ -196,6 +196,18 @@ evfilt_read_knote_create(struct filter *filt, struct knote *kn)
     if (kn->kev.flags & EV_CLEAR)
         kn->epoll_events |= EPOLLET;
 
+    /*
+     * NOTE_LOWAT: kernel-level threshold via SO_RCVLOWAT.  Per-socket,
+     * not per-knote; sharing an fd between knotes with different
+     * thresholds gets last-writer-wins.  BSD does this per-knote in
+     * the filter; we accept the divergence to avoid userspace gating.
+     */
+    if ((kn->kev.fflags & NOTE_LOWAT) && !(kn->kn_flags & KNFL_FILE)) {
+        const int lwm = (int) kn->kev.data;
+        if (setsockopt(kn->kev.ident, SOL_SOCKET, SO_RCVLOWAT, &lwm, sizeof(lwm)) < 0)
+            dbg_perror("setsockopt(SO_RCVLOWAT)");
+    }
+
     /* Special case: for regular files, add a surrogate eventfd that is always readable */
     if (kn->kn_flags & KNFL_FILE) {
         int evfd;
@@ -256,8 +268,34 @@ evfilt_read_knote_modify(UNUSED struct filter *filt, struct knote *kn,
          * With the native kqueue implementations it
          * basically does nothing.
          */
-        if ((kev->flags & EV_CLEAR))
+        if ((kev->flags & EV_CLEAR)) {
+            /*
+             * Sync SO_RCVLOWAT against the new fflags.  The kernel
+             * setting is per-socket and survives across knotes; if
+             * the modify clears NOTE_LOWAT or changes the threshold
+             * we have to push the new value (or restore the default
+             * 1) so the kernel gate matches the knote.
+             */
+            if (kn->kn_flags & KNFL_SOCKET) {
+                int new_lwm = (kev->fflags & NOTE_LOWAT) ? (int) kev->data : 1;
+                int old_lwm = (kn->kev.fflags & NOTE_LOWAT) ? (int) kn->kev.data : 1;
+                if (new_lwm != old_lwm &&
+                    setsockopt(kn->kev.ident, SOL_SOCKET, SO_RCVLOWAT,
+                               &new_lwm, sizeof(new_lwm)) < 0)
+                    dbg_perror("setsockopt(SO_RCVLOWAT) on EV_MODIFY");
+            }
+
+            /*
+             * Common code only copies udata (and conditionally
+             * EV_DISPATCH) after kn_modify.  Sync fflags/data
+             * (NOTE_LOWAT and friends are caller-mutable), but
+             * leave kev.flags alone: BSD treats EV_CLEAR as
+             * register-only on sockets and EV_RECEIPT is sticky.
+             */
+            kn->kev.fflags = kev->fflags;
+            kn->kev.data   = kev->data;
             return (0);
+        }
         return (-1);
     }
 
@@ -267,6 +305,17 @@ evfilt_read_knote_modify(UNUSED struct filter *filt, struct knote *kn,
 int
 evfilt_read_knote_delete(struct filter *filt, struct knote *kn)
 {
+    /*
+     * Restore the default SO_RCVLOWAT on socket fds the knote bumped.
+     * Skipped for KNFL_FILE because the kn->kev.ident there is the
+     * watched file, not a socket.
+     */
+    if ((kn->kev.fflags & NOTE_LOWAT) && (kn->kn_flags & KNFL_SOCKET)) {
+        const int one = 1;
+        if (setsockopt(kn->kev.ident, SOL_SOCKET, SO_RCVLOWAT, &one, sizeof(one)) < 0)
+            dbg_perror("setsockopt(restore SO_RCVLOWAT) on EV_DELETE");
+    }
+
     if ((kn->kn_flags & KNFL_FILE) && (kn->kn_eventfd != -1)) {
         if (kn->kn_registered && epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kn_eventfd, NULL) < 0) {
             dbg_perror("epoll_ctl(2)");

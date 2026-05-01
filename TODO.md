@@ -86,6 +86,26 @@ distinct registrations.  Implementing it requires:
 
 Not a small change - parked here.
 
+## `NOTE_LOWAT` divergence from BSD
+
+Linux (`src/linux/read.c`, `src/linux/write.c`) implements `NOTE_LOWAT`
+via `setsockopt(SO_RCVLOWAT|SO_SNDLOWAT)`.  That is a socket-wide
+setting, so two knotes on the same fd with different thresholds will
+clobber each other (last writer wins) and the threshold lingers on
+the socket between unrelated knote registrations until `EV_DELETE`
+restores it to 1.
+
+Solaris does not implement `NOTE_LOWAT` at all.  illumos rejects
+`setsockopt(SO_RCVLOWAT|SO_SNDLOWAT)` with `ENOPROTOOPT`, and
+`PORT_SOURCE_FD` is level-triggered, so userspace gating in
+`copyout` would busy-loop (re-arm wakes immediately because data
+is still queued).  `evfilt_socket_knote_create` silently ignores
+the flag.
+
+BSD's native kqueue stores the threshold in `kn_sdata` and gates
+delivery in `filt_soread` / `filt_sowrite`, so each knote has its
+own independent threshold and the socket option is untouched.
+
 ## `kqops.filter_init` takes non-const filter pointer
 
 `src/common/filter.c:filter_register` casts away `const` from `src`

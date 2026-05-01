@@ -156,6 +156,15 @@ evfilt_socket_knote_create(struct filter *filt, struct knote *kn)
         fresh_udata = true;
     }
 
+    /*
+     * NOTE_LOWAT is not implemented on Solaris.  illumos rejects
+     * setsockopt(SO_RCVLOWAT|SO_SNDLOWAT) with ENOPROTOOPT, and
+     * PORT_SOURCE_FD is level-triggered, so userspace gating would
+     * busy-loop: kernel wakes on every byte, we suppress, re-arm,
+     * kernel wakes again immediately because data is still queued.
+     * The flag is silently ignored.
+     */
+
     dbg_printf("port_associate kq fd=%d with actual fd %ld kn_flags=0x%x",
                filter_epoll_fd(filt), kn->kev.ident, kn->kn_flags);
 
@@ -188,7 +197,6 @@ evfilt_socket_knote_modify(struct filter *filt, struct knote *kn,
 int
 evfilt_socket_knote_delete(struct filter *filt, struct knote *kn)
 {
-
     /*
      * port_dissociate may fail if a prior delivery auto-removed the
      * association (PORT_SOURCE_FD is one-shot per delivery).  EV_DELETE
