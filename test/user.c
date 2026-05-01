@@ -369,9 +369,9 @@ test_kevent_user_trigger_from_thread(struct test_context *ctx)
     test_no_kevents(ctx->kqfd);
 }
 
-/* ============================================================
- * Flag-behaviour tests
- * ============================================================ */
+/*
+ * Flag-behaviour tests.
+ */
 
 /*
  * EV_DISABLE drops pending events on EVFILT_USER: a NOTE_TRIGGER

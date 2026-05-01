@@ -346,9 +346,9 @@ test_kevent_vnode_dispatch(struct test_context *ctx)
 }
 #endif     /* EV_DISPATCH */
 
-/* ============================================================
- * Flag-behaviour tests
- * ============================================================ */
+/*
+ * Flag-behaviour tests.
+ */
 
 /*
  * BSD overwrites kn->kev.udata on every modify.

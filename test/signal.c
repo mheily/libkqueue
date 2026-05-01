@@ -401,15 +401,15 @@ test_kevent_signal_rt_late_register(struct test_context *ctx)
 }
 #endif
 
-/* ============================================================
- * Flag-behaviour tests
+/*
+ * Flag-behaviour tests.
  *
  * EV_DISABLE/EV_DELETE pending-drain tests aren't included here:
  * the dispatcher thread populates sfs_pending asynchronously after
  * kill(), and there's no in-API barrier that says "dispatcher has
  * processed signal X" without also draining it.  Determinism would
  * need a test-only hook into the dispatcher.
- * ============================================================ */
+ */
 
 /*
  * BSD overwrites kn->kev.udata on every modify.  Verifies the signal

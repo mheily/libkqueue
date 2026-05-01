@@ -380,15 +380,15 @@ test_kevent_timer_note_absolute_after_modify(struct test_context *ctx)
     /* EV_ONESHOT auto-deleted the knote; no explicit EV_DELETE needed. */
 }
 
-/* ============================================================
- * Flag-behaviour tests
+/*
+ * Flag-behaviour tests.
  *
  * EV_DISABLE/EV_DELETE pending-drain tests aren't included here:
  * the timer event is kernel-buffered, so detecting "fired but not
  * yet drained" requires either nanosleep (banned per project sync
  * rules) or a multi-threaded harness exploiting the
  * KEVENT_WAIT_DROP_LOCK race window.
- * ============================================================ */
+ */
 
 /*
  * BSD overwrites kn->kev.udata on every modify, including the timer

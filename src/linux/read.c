@@ -94,36 +94,11 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
                 return (-1);
             }
             src->kn_registered = 0;
-
-#if FIXME
             /*
-             * XXX-FIXME Switch to using kn_vnode.inotifyfd to monitor for IN_ATTRIB events
-                         that may signify the file size has changed.
-
-                         This code is not tested.
+             * TODO: when EOF is reported once, switch to monitoring
+             * IN_ATTRIB on the file via inotify so a subsequent size
+             * change re-arms delivery.  Currently we just stop firing.
              */
-            int inofd;
-            char path[PATH_MAX];
-
-            inofd = inotify_init();
-            if (inofd < 0) {
-                dbg_perror("inotify_init(2)");
-                (void) close(inofd);
-                return (-1);
-            }
-            src->kn_vnode.inotifyfd = inofd;
-            if (linux_fd_to_path(path, sizeof(path), src->kev.ident) < 0)
-                return (-1);
-            if (inotify_add_watch(inofd, path, IN_ATTRIB) < 0) {
-                dbg_perror("inotify_add_watch");
-                return (-1);
-            }
-            if (epoll_ctl(src->kn_epollfd, EPOLL_CTL_ADD, src->kn_vnode.inotifyfd, NULL) < 0) {
-                dbg_perror("epoll_ctl(2)");
-                return (-1);
-            }
-            /* FIXME: race here, should we check the EOF status again ? */
-#endif
         }
 
         return (1);

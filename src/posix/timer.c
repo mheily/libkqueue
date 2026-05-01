@@ -58,10 +58,6 @@ sleeper_thread(void *arg)
     char            buf[1];
     int rv;
 
-#if 0
-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-#endif
-
     /* Initialize the response */
     si.ident = sr->ident;
     si.counter = 0;
@@ -283,16 +279,6 @@ evfilt_timer_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
     memcpy(dst, &kn->kev, sizeof(*dst));
 
     dst->data = si.counter;
-
-#if DEADWOOD
-    if (kn->kev.flags & EV_DISPATCH) {
-        KNOTE_DISABLE(kn);
-        _timer_delete(kn);
-    } else if (kn->kev.flags & EV_ONESHOT) {
-        _timer_delete(kn);
-        knote_delete(filt, kn);
-    }
-#endif
 
     if (knote_copyout_flag_actions(filt, src) < 0) return -1;
 

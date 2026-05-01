@@ -69,16 +69,6 @@ posix_evfilt_user_copyout(struct kevent *dst, UNUSED int nevents, struct filter 
 int
 posix_evfilt_user_knote_create(struct filter *filt, struct knote *kn)
 {
-#if TODO
-    u_int ffctrl;
-
-    //determine if EV_ADD + NOTE_TRIGGER in the same kevent will cause a trigger */
-    if ((!(dst->kev.flags & EV_DISABLE)) && src->fflags & NOTE_TRIGGER) {
-        dst->kev.fflags |= NOTE_TRIGGER;
-        eventfd_raise(filt->kf_pfd);
-    }
-
-#endif
     return (0);
 }
 

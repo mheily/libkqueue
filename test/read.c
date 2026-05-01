@@ -740,9 +740,9 @@ test_transition_from_write_to_read(struct test_context *ctx)
     close(kqfd);
 }
 
-/* ============================================================
- * Flag-behaviour tests for EVFILT_READ on sockets
- * ============================================================ */
+/*
+ * Flag-behaviour tests for EVFILT_READ on sockets.
+ */
 
 /*
  * EV_DISABLE drops pending fires: write data so the kernel marks the
