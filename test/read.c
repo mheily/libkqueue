@@ -858,12 +858,14 @@ test_evfilt_read(struct test_context *ctx)
      */
     test(kevent_socket_lowat_read, ctx);
 #endif
-#if !defined(__sun) && !defined(__linux__)
+#if !defined(__sun) && !defined(__linux__) && !defined(__APPLE__)
     /*
-     * SO_SNDLOWAT setsockopt is unsupported on Linux too: per
-     * socket(7), 'On Linux, the socket layer does not support these
-     * options.  They are just present for compatibility with BSD.'
-     * Test only meaningful on platforms with a real implementation.
+     * SO_SNDLOWAT setsockopt is unsupported on Linux (socket(7): present
+     * for BSD compat only).  On macOS the kernel silently clamps
+     * SO_SNDLOWAT to the actual buffer size, so a threshold set above
+     * SO_SNDBUF still fires - the "unreachable threshold" invariant this
+     * test relies on does not hold there.
+     * Test only meaningful on platforms with a faithful implementation.
      */
     test(kevent_socket_lowat_write, ctx);
 #endif
