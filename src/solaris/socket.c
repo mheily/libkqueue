@@ -1,4 +1,5 @@
 /*
+ * Copyright (c) 2026 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
  * Copyright (c) 2009 Mark Heily <mark@heily.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -273,10 +274,26 @@ evfilt_socket_copyout(struct kevent *dst, UNUSED int nevents, struct filter *fil
      * socket also indicates EOF on illumos (POLLHUP isn't always
      * delivered).
      */
-    if (pe->portev_events & POLLHUP)
+    if (pe->portev_events & (POLLHUP | POLLERR)) {
+        /*
+         * RST can arrive as POLLHUP on illumos without POLLERR set, so
+         * check SO_ERROR on either path.  Normal FIN-close leaves
+         * SO_ERROR == 0 and fflags stays 0.
+         */
+        int       serr = 0;
+        socklen_t slen = sizeof(serr);
         dst->flags |= EV_EOF;
-    if (pe->portev_events & POLLERR)
-        dst->fflags = 1; /* FIXME: surface the real SO_ERROR value */
+        if (getsockopt(pe->portev_object, SOL_SOCKET, SO_ERROR, &serr, &slen) < 0) {
+            dbg_perror("getsockopt(SO_ERROR)");
+            if (pe->portev_events & POLLERR)
+                dst->fflags = errno;
+        } else if (serr) {
+            dst->fflags = (unsigned int) serr;
+        } else if (pe->portev_events & POLLERR) {
+            /* POLLERR but SO_ERROR clear - shouldn't happen, stamp EIO. */
+            dst->fflags = EIO;
+        }
+    }
 
     if (pe->portev_events & POLLIN) {
         if (src->kn_flags & KNFL_SOCKET_PASSIVE) {

@@ -449,6 +449,55 @@ test_kevent_socket_eof(struct test_context *ctx)
 }
 
 /*
+ * Trigger TCP RST on the peer and confirm the kevent surfaces the
+ * actual SO_ERROR value (not just a stamped 1) in fflags.
+ *
+ * SO_LINGER {l_onoff=1, l_linger=0} + close sends a RST instead of
+ * a FIN, which raises POLLERR on the surviving end and sets
+ * SO_ERROR to ECONNRESET (or similar, depending on kernel timing).
+ * A correct backend reads SO_ERROR and propagates it as fflags.
+ */
+void
+test_kevent_socket_so_error(struct test_context *ctx)
+{
+    struct kevent     kev, ret[1];
+    struct linger     lin;
+
+    kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ, EV_ADD, 0, 0, &ctx->client_fd);
+    test_no_kevents(ctx->kqfd);
+
+    /* Force RST instead of graceful FIN on close. */
+    lin.l_onoff = 1;
+    lin.l_linger = 0;
+    if (setsockopt(ctx->server_fd, SOL_SOCKET, SO_LINGER, &lin, sizeof(lin)) < 0)
+        die("setsockopt(SO_LINGER)");
+    if (close(ctx->server_fd) < 0)
+        die("close(server_fd)");
+    ctx->server_fd = -1;
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+
+    if (!(ret[0].flags & EV_EOF))
+        die("expected EV_EOF on RST, got flags=0x%x", ret[0].flags);
+    if (ret[0].fflags == 0)
+        die("expected non-zero fflags (SO_ERROR) on RST, got 0");
+    if (ret[0].fflags == 1)
+        die("fflags is the placeholder 1; backend isn't reading SO_ERROR");
+    /* Most kernels report ECONNRESET; some report EPIPE.  Accept any
+     * real errno.  Just verify it's plausible. */
+    if (ret[0].fflags != ECONNRESET && ret[0].fflags != EPIPE)
+        printf("note: SO_ERROR reported as %u (%s); test passes anyway\n",
+               (unsigned int) ret[0].fflags, strerror(ret[0].fflags));
+
+    kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    close(ctx->client_fd);
+    close(ctx->listen_fd);
+
+    /* Recreate the socket pair for subsequent tests. */
+    create_socket_connection(&ctx->client_fd, &ctx->server_fd, &ctx->listen_fd);
+}
+
+/*
  * Different from the socket eof test, as we get EPOLLHUP with no EPOLLIN on close
  * on Linux.
  */
@@ -634,6 +683,7 @@ test_evfilt_read(struct test_context *ctx)
     test(kevent_socket_listen_backlog, ctx);
     test(kevent_socket_eof_clear, ctx);
     test(kevent_socket_eof, ctx);
+    test(kevent_socket_so_error, ctx);
     test(kevent_pipe_eof, ctx);
     test(kevent_pipe_eof_multi, ctx);
     test(kevent_regular_file, ctx);
