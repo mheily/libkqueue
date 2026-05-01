@@ -369,6 +369,110 @@ test_kevent_user_trigger_from_thread(struct test_context *ctx)
     test_no_kevents(ctx->kqfd);
 }
 
+/* ============================================================
+ * Flag-behaviour tests
+ * ============================================================ */
+
+/*
+ * EV_DISABLE drops pending events on EVFILT_USER: a NOTE_TRIGGER
+ * issued before EV_DISABLE must not be delivered after the disable.
+ */
+static void
+test_kevent_user_disable_drains(struct test_context *ctx)
+{
+    struct kevent kev, tmp;
+
+    test_no_kevents(ctx->kqfd);
+
+    kevent_add(ctx->kqfd, &kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+
+    /* Disable BEFORE draining the trigger. */
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_DISABLE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
+
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
+}
+
+/*
+ * EV_DELETE drops pending events on EVFILT_USER: a NOTE_TRIGGER
+ * issued before EV_DELETE must not surface after.  Also exercises
+ * the freed-knote-on-pending-list class of UAF (the analogous
+ * EVFILT_PROC bug we fixed in posix/proc.c).
+ */
+static void
+test_kevent_user_delete_drains(struct test_context *ctx)
+{
+    struct kevent kev, tmp;
+
+    test_no_kevents(ctx->kqfd);
+
+    kevent_add(ctx->kqfd, &kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
+}
+
+/*
+ * EV_RECEIPT is sticky on BSD: a knote registered with the bit reports
+ * it on every subsequent event until EV_DELETE.  Verifies the
+ * preserve-EV_RECEIPT branch in EVFILT_USER's kn_modify isn't wiped
+ * by a bare NOTE_TRIGGER.
+ */
+static void
+test_kevent_user_receipt_preserved(struct test_context *ctx)
+{
+    struct kevent kev, tmp, receipt, ret[1];
+
+    test_no_kevents(ctx->kqfd);
+
+    /* EV_RECEIPT on registration: the kevent() call returns immediately
+     * with EV_ERROR | EV_RECEIPT as the receipt confirmation. */
+    EV_SET(&kev, 1, EVFILT_USER, EV_ADD | EV_RECEIPT | EV_CLEAR, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, &receipt, 1, NULL) != 1)
+        die("expected EV_RECEIPT confirmation");
+
+    /* Bare NOTE_TRIGGER modify; must not clobber EV_RECEIPT. */
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (!(ret[0].flags & EV_RECEIPT))
+        die("EV_RECEIPT lost after bare NOTE_TRIGGER, flags=0x%x", ret[0].flags);
+
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
+}
+
+/*
+ * BSD overwrites kn->kev.udata on every successful modify, even on a
+ * bare NOTE_TRIGGER with udata=NULL.  Verifies the udata-clobber line
+ * in common/kevent.c (line ~303) actually behaves that way end-to-end.
+ */
+static void
+test_kevent_user_modify_clobbers_udata(struct test_context *ctx)
+{
+    struct kevent kev, tmp, ret[1];
+    int           marker = 0xabc;
+
+    test_no_kevents(ctx->kqfd);
+
+    /* Register with non-NULL udata. */
+    kevent_add(ctx->kqfd, &kev, 1, EVFILT_USER,
+               EV_ADD | EV_CLEAR, 0, 0, &marker);
+
+    /* Bare NOTE_TRIGGER passing udata=NULL must overwrite. */
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].udata != NULL)
+        die("expected udata clobbered to NULL, got %p", ret[0].udata);
+
+    kevent_add(ctx->kqfd, &tmp, 1, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
+}
+
 void
 test_evfilt_user(struct test_context *ctx)
 {
@@ -376,6 +480,11 @@ test_evfilt_user(struct test_context *ctx)
     test(kevent_user_get, ctx);
     test(kevent_user_get_hires, ctx);
     test(kevent_user_disable_and_enable, ctx);
+    /* Flag-behaviour group */
+    test(kevent_user_disable_drains, ctx);
+    test(kevent_user_delete_drains, ctx);
+    test(kevent_user_receipt_preserved, ctx);
+    test(kevent_user_modify_clobbers_udata, ctx);
 #if !defined(LIBKQUEUE_BACKEND_POSIX)
     /*
      * EV_ONESHOT / multi-trigger / EV_DISPATCH paths exercise USER

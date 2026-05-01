@@ -340,6 +340,32 @@ test_kevent_vnode_dispatch(struct test_context *ctx)
 }
 #endif     /* EV_DISPATCH */
 
+/*
+ * BSD overwrites kn->kev.udata on every modify.  Solaris-only because
+ * Linux's evfilt_vnode_knote_modify is a stub returning -1; macOS uses
+ * native kqueue so this code path doesn't run there.
+ */
+#ifdef __sun
+static void
+test_kevent_vnode_modify_clobbers_udata(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    int           marker = 0xab;
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_ADD | EV_ONESHOT, NOTE_WRITE, 0, &marker);
+    /* Re-EV_ADD modify with udata=NULL. */
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_ADD | EV_ONESHOT, NOTE_WRITE, 0, NULL);
+
+    testfile_write(ctx->testfile);
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].udata != NULL)
+        die("expected udata clobbered to NULL, got %p", ret[0].udata);
+}
+#endif
+
 void
 test_evfilt_vnode(struct test_context *ctx)
 {
@@ -377,6 +403,9 @@ test_evfilt_vnode(struct test_context *ctx)
 #endif
 #ifdef NOTE_TRUNCATE
     test(kevent_vnode_note_truncate, ctx);
+#endif
+#ifdef __sun
+    test(kevent_vnode_modify_clobbers_udata, ctx);
 #endif
     /* TODO: test r590 corner case where a descriptor is closed and
              the associated knote is automatically freed. */

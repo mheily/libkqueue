@@ -281,6 +281,122 @@ test_kevent_proc_disable_drains(struct test_context *ctx)
 }
 
 /*
+ * BSD overwrites kn->kev.udata on every modify.  PROC's kn_modify
+ * doesn't touch udata itself; the common-code clobber line at
+ * src/common/kevent.c handles it.  Test here so a refactor that
+ * accidentally short-circuits the common path gets caught.
+ */
+static void
+test_kevent_proc_modify_clobbers_udata(struct test_context *ctx)
+{
+    struct kevent kev, buf[2];
+    int sync_pipe[2];
+    char go = 'g';
+    int fflags;
+    int marker = 0xab;
+
+#ifdef __APPLE__
+    fflags = NOTE_EXIT | NOTE_EXITSTATUS;
+#else
+    fflags = NOTE_EXIT;
+#endif
+
+    if (pipe(sync_pipe) < 0)
+        die("pipe");
+
+    pid = fork();
+    if (pid == 0) {
+        char b;
+        close(sync_pipe[1]);
+        if (read(sync_pipe[0], &b, 1) != 1)
+            _exit(127);
+        testing_end_quiet();
+        exit(0);
+    }
+    close(sync_pipe[0]);
+
+    test_no_kevents(ctx->kqfd);
+
+    /* Initial registration with udata=&marker. */
+    kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_ADD, fflags, 0, &marker);
+
+    /* Re-EV_ADD modify with udata=NULL.  Common code overwrites. */
+    kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
+
+    if (write(sync_pipe[1], &go, 1) != 1)
+        die("write(sync_pipe)");
+    close(sync_pipe[1]);
+
+    kevent_get(buf, NUM_ELEMENTS(buf), ctx->kqfd, 1);
+    if (buf[0].udata != NULL)
+        die("expected udata clobbered to NULL, got %p", buf[0].udata);
+}
+
+/*
+ * Regression test for the EV_DELETE-before-drain UAF in posix/proc.c
+ * (the Solaris EVFILT_PROC backend).
+ *
+ * Sequence: child exits -> wait thread runs waiter_notify which inserts
+ * the knote onto filt->kf_ready -> the app calls EV_DELETE before the
+ * next kevent() drain.  Pre-fix, evfilt_proc_knote_delete only
+ * unlinked the waiter list; the knote stayed on kf_ready while
+ * knote_release freed it, and the next copyout walked a freed pointer.
+ *
+ * The fix unlinks kn_ready in knote_delete under proc_pid_index_mtx.
+ * Without it, valgrind/ASAN would catch the free-after-free; without
+ * those, this test still asserts the consumer-visible "no spurious
+ * delivery" outcome.
+ */
+static void
+test_kevent_proc_delete_drains(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    int             sync_pipe[2];
+    char            go = 'g';
+    int             fflags;
+    struct timespec timeout = { 0, 100L * 1000L * 1000L }; /* 100ms */
+    int             got;
+
+#ifdef __APPLE__
+    fflags = NOTE_EXIT | NOTE_EXITSTATUS;
+#else
+    fflags = NOTE_EXIT;
+#endif
+
+    if (pipe(sync_pipe) < 0)
+        die("pipe");
+
+    pid = fork();
+    if (pid == 0) {
+        char b;
+        close(sync_pipe[1]);
+        if (read(sync_pipe[0], &b, 1) != 1)
+            _exit(127);
+        testing_end_quiet();
+        exit(0);
+    }
+    close(sync_pipe[0]);
+
+    test_no_kevents(ctx->kqfd);
+
+    kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
+
+    /* Release child to exit and queue the event internally. */
+    if (write(sync_pipe[1], &go, 1) != 1)
+        die("write(sync_pipe)");
+    close(sync_pipe[1]);
+    if (waitpid(pid, NULL, 0) != pid)
+        die("waitpid");
+
+    /* Delete before drain - knote may already be on kf_ready. */
+    kevent_add(ctx->kqfd, &kev, pid, EVFILT_PROC, EV_DELETE, fflags, 0, NULL);
+
+    got = kevent_get_timeout(ret, NUM_ELEMENTS(ret), ctx->kqfd, &timeout);
+    if (got != 0)
+        die("expected 0 events after EV_DELETE, got %d", got);
+}
+
+/*
  * Regression test for the "EV_ADD with no NOTE_* fflags then later
  * re-EV_ADD with NOTE_EXIT" path in the Linux pidfd backend.
  *
@@ -717,6 +833,8 @@ test_evfilt_proc(struct test_context *ctx)
     test(kevent_proc_modify_arms_late, ctx);
     test(kevent_proc_modify_disarms, ctx);
     test(kevent_proc_disable_drains, ctx);
+    test(kevent_proc_delete_drains, ctx);
+    test(kevent_proc_modify_clobbers_udata, ctx);
     test(kevent_proc_already_exited, ctx);
     test(kevent_proc_multiple_kqueue, ctx);
 

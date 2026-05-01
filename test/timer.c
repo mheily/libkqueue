@@ -380,6 +380,69 @@ test_kevent_timer_note_absolute_after_modify(struct test_context *ctx)
     /* EV_ONESHOT auto-deleted the knote; no explicit EV_DELETE needed. */
 }
 
+/* ============================================================
+ * Flag-behaviour tests
+ *
+ * EV_DISABLE/EV_DELETE pending-drain tests aren't included here:
+ * the timer event is kernel-buffered, so detecting "fired but not
+ * yet drained" requires either nanosleep (banned per project sync
+ * rules) or a multi-threaded harness exploiting the
+ * KEVENT_WAIT_DROP_LOCK race window.
+ * ============================================================ */
+
+/*
+ * BSD overwrites kn->kev.udata on every modify, including the timer
+ * re-arm via EV_ADD.
+ */
+static void
+test_kevent_timer_modify_clobbers_udata(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    struct timespec timeout = { 1, 0 };
+    int             marker  = 0xab;
+
+    kevent_add(ctx->kqfd, &kev, 80, EVFILT_TIMER,
+               EV_ADD | EV_ONESHOT, 0, 60L * 60L * 1000L, &marker);
+    /* Modify to a short period with udata=NULL. */
+    kevent_add(ctx->kqfd, &kev, 80, EVFILT_TIMER,
+               EV_ADD | EV_ONESHOT, 0, 50, NULL);
+
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 1)
+        die("expected timer fire");
+    if (ret[0].udata != NULL)
+        die("expected udata clobbered to NULL, got %p", ret[0].udata);
+}
+
+/*
+ * EV_RECEIPT is sticky on BSD: a knote registered with the bit keeps
+ * it across modifies and reports it in every subsequent event until
+ * EV_DELETE.  Catches the regression where a filter's kn_modify did
+ * `kn->kev.flags = kev->flags | EV_CLEAR` and clobbered EV_RECEIPT.
+ */
+static void
+test_kevent_timer_modify_preserves_ev_receipt(struct test_context *ctx)
+{
+    struct kevent   kev, receipt, ret[1];
+    struct timespec timeout = { 1, 0 };
+
+    /* Register with EV_RECEIPT and a 1h deadline so the only event we
+     * see comes from the modify-driven fire below, not the original. */
+    EV_SET(&kev, 77, EVFILT_TIMER,
+           EV_ADD | EV_RECEIPT | EV_ONESHOT, 0, 60L * 60L * 1000L, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, &receipt, 1, NULL) != 1)
+        die("expected immediate EV_RECEIPT confirmation");
+
+    /* Modify to fire in 100ms, no EV_RECEIPT on the change. */
+    EV_SET(&kev, 77, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 100, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) != 0)
+        die("kevent modify failed");
+
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 1)
+        die("expected timer to fire after modify");
+    if (!(ret[0].flags & EV_RECEIPT))
+        die("EV_RECEIPT was clobbered by kn_modify, flags=0x%x", ret[0].flags);
+}
+
 void
 test_evfilt_timer(struct test_context *ctx)
 {
@@ -409,4 +472,6 @@ test_evfilt_timer(struct test_context *ctx)
     test(kevent_timer_note_absolute, ctx);
     test(kevent_timer_note_absolute_after_modify, ctx);
 #endif
+    test(kevent_timer_modify_preserves_ev_receipt, ctx);
+    test(kevent_timer_modify_clobbers_udata, ctx);
 }

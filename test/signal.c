@@ -401,6 +401,78 @@ test_kevent_signal_rt_late_register(struct test_context *ctx)
 }
 #endif
 
+/* ============================================================
+ * Flag-behaviour tests
+ *
+ * EV_DISABLE/EV_DELETE pending-drain tests aren't included here:
+ * the dispatcher thread populates sfs_pending asynchronously after
+ * kill(), and there's no in-API barrier that says "dispatcher has
+ * processed signal X" without also draining it.  Determinism would
+ * need a test-only hook into the dispatcher.
+ * ============================================================ */
+
+/*
+ * BSD overwrites kn->kev.udata on every modify.  Verifies the signal
+ * filter's modify (which only updates flags) still lets common code
+ * clobber udata.
+ */
+void
+test_kevent_signal_modify_clobbers_udata(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    int           marker = 0xab;
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, &marker);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) != 0)
+        die("kevent add failed");
+
+    /* Re-EV_ADD with udata=NULL. */
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) != 0)
+        die("kevent modify failed");
+
+    if (kill(getpid(), SIGUSR1) < 0)
+        die("kill");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].udata != NULL)
+        die("expected udata clobbered to NULL, got %p", ret[0].udata);
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+    kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
+}
+
+/*
+ * EV_RECEIPT is sticky on BSD: a knote registered with the bit
+ * reports it on every subsequent event until EV_DELETE.  Verifies
+ * the (kn->kev.flags & EV_RECEIPT) preserve term in the signal
+ * filter's kn_modify isn't dropped.
+ */
+void
+test_kevent_signal_receipt_preserved(struct test_context *ctx)
+{
+    struct kevent kev, receipt, ret[1];
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD | EV_RECEIPT, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, &receipt, 1, NULL) != 1)
+        die("expected EV_RECEIPT confirmation");
+
+    /* Re-EV_ADD modify without EV_RECEIPT - sticky bit must survive. */
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) != 0)
+        die("kevent modify failed");
+
+    if (kill(getpid(), SIGUSR1) < 0)
+        die("kill");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (!(ret[0].flags & EV_RECEIPT))
+        die("EV_RECEIPT lost across modify, flags=0x%x", ret[0].flags);
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+    kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
+}
+
 void
 test_evfilt_signal(struct test_context *ctx)
 {
@@ -421,6 +493,8 @@ test_evfilt_signal(struct test_context *ctx)
     test(kevent_signal_multi_kqueue, ctx);
 #endif
     test(kevent_signal_multi_signum, ctx);
+    test(kevent_signal_receipt_preserved, ctx);
+    test(kevent_signal_modify_clobbers_udata, ctx);
     /*
      * RT-signal queueing: the kernel queues N copies of the same
      * RT signum and the test expects the knote to fire N times.

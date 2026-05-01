@@ -740,6 +740,98 @@ test_transition_from_write_to_read(struct test_context *ctx)
     close(kqfd);
 }
 
+/* ============================================================
+ * Flag-behaviour tests for EVFILT_READ on sockets
+ * ============================================================ */
+
+/*
+ * EV_DISABLE drops pending fires: write data so the kernel marks the
+ * socket readable, then EV_DISABLE before the drain.  No event must
+ * surface.
+ */
+static void
+test_kevent_socket_disable_drains(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    struct timespec timeout = { 0, 100L * 1000L * 1000L };
+
+    kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ,
+               EV_ADD, 0, 0, &ctx->client_fd);
+
+    /* Sync: write returns when data is in the receiver's kernel buffer. */
+    kevent_socket_fill(ctx, 1);
+
+    kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ,
+               EV_DISABLE, 0, 0, &ctx->client_fd);
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 0)
+        die("expected 0 events after EV_DISABLE on socket");
+
+    /* Cleanup: drain the byte and remove the knote. */
+    {
+        char drain;
+        (void) recv(ctx->client_fd, &drain, 1, MSG_DONTWAIT);
+    }
+    kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ,
+               EV_DELETE, 0, 0, NULL);
+}
+
+/*
+ * EV_DELETE drops pending fires: same shape via delete.
+ */
+static void
+test_kevent_socket_delete_drains(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    struct timespec timeout = { 0, 100L * 1000L * 1000L };
+
+    kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ,
+               EV_ADD, 0, 0, &ctx->client_fd);
+    kevent_socket_fill(ctx, 1);
+
+    kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ,
+               EV_DELETE, 0, 0, &ctx->client_fd);
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 0)
+        die("expected 0 events after EV_DELETE on socket");
+
+    /* Cleanup: drain the byte. */
+    {
+        char drain;
+        (void) recv(ctx->client_fd, &drain, 1, MSG_DONTWAIT);
+    }
+}
+
+/*
+ * BSD overwrites kn->kev.udata on every modify.  Socket modify is
+ * gated on EV_CLEAR being set.
+ */
+static void
+test_kevent_socket_modify_clobbers_udata(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    int           marker = 0xab;
+
+    /* Initial registration with EV_CLEAR + udata=&marker. */
+    kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ,
+               EV_ADD | EV_CLEAR, 0, 0, &marker);
+
+    /* Modify with udata=NULL.  EV_CLEAR required for socket modify. */
+    kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ,
+               EV_ADD | EV_CLEAR, 0, 0, NULL);
+
+    kevent_socket_fill(ctx, 1);
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].udata != NULL)
+        die("expected udata clobbered to NULL, got %p", ret[0].udata);
+
+    /* Cleanup. */
+    {
+        char drain;
+        (void) recv(ctx->client_fd, &drain, 1, MSG_DONTWAIT);
+    }
+    kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ,
+               EV_DELETE, 0, 0, NULL);
+}
+
 void
 test_evfilt_read(struct test_context *ctx)
 {
@@ -775,6 +867,11 @@ test_evfilt_read(struct test_context *ctx)
      */
     test(kevent_socket_lowat_write, ctx);
 #endif
+    /* Flag-behaviour group */
+    test(kevent_socket_disable_drains, ctx);
+    test(kevent_socket_delete_drains, ctx);
+    test(kevent_socket_modify_clobbers_udata, ctx);
+
     test(kevent_pipe_eof, ctx);
     test(kevent_pipe_eof_multi, ctx);
     test(kevent_regular_file, ctx);
