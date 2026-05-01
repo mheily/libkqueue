@@ -173,6 +173,107 @@ test_kevent_vnode_del(struct test_context *ctx)
     kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE, EV_DELETE, 0, 0, NULL);
 }
 
+/*
+ * Subscribe to NOTE_EXTEND alone and grow the file by appending a
+ * byte; expect a NOTE_EXTEND delivery.  Linux/Solaris synthesise
+ * NOTE_EXTEND from a fstat size delta on the underlying file event
+ * (IN_MODIFY / FILE_MODIFIED).
+ */
+static void
+test_kevent_vnode_note_extend(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_ADD | EV_ONESHOT, NOTE_EXTEND, 0, NULL);
+
+    /* Append: opens for write, writes one byte, closes.  Native
+     * BSDs report NOTE_EXTEND for any size growth. */
+    int wfd = open(ctx->testfile, O_WRONLY | O_APPEND);
+    if (wfd < 0) die("open(O_APPEND)");
+    if (write(wfd, "x", 1) != 1) die("write");
+    if (close(wfd) < 0) die("close(O_APPEND)");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].ident != (uintptr_t) ctx->vnode_fd ||
+        ret[0].filter != EVFILT_VNODE ||
+        !(ret[0].fflags & NOTE_EXTEND))
+        die("NOTE_EXTEND not delivered: %s", kevent_to_str(&ret[0]));
+}
+
+/*
+ * Subscribe to NOTE_LINK alone and add then remove a hardlink.  Both
+ * st_nlink-changing operations should fire NOTE_LINK; backends that
+ * piggy-back on FILE_ATTRIB / IN_ATTRIB synthesise this from a delta.
+ */
+static void
+test_kevent_vnode_note_link(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    char          link_path[1024];
+
+    snprintf(link_path, sizeof(link_path), "%s.link", ctx->testfile);
+    (void) unlink(link_path);  /* tolerate leftover from a prior run */
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_ADD, NOTE_LINK, 0, NULL);
+
+    if (link(ctx->testfile, link_path) < 0)
+        die("link(%s, %s)", ctx->testfile, link_path);
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].ident != (uintptr_t) ctx->vnode_fd ||
+        ret[0].filter != EVFILT_VNODE ||
+        !(ret[0].fflags & NOTE_LINK))
+        die("NOTE_LINK not delivered on link: %s",
+            kevent_to_str(&ret[0]));
+
+    if (unlink(link_path) < 0)
+        die("unlink(%s)", link_path);
+
+    /* Backends auto-disarm on delivery: re-add (the modify path
+     * re-arms with the original fflags). */
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_ADD, NOTE_LINK, 0, NULL);
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (!(ret[0].fflags & NOTE_LINK))
+        die("NOTE_LINK not delivered on unlink: %s",
+            kevent_to_str(&ret[0]));
+
+    /* Tidy: drop the watch. */
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_DELETE, 0, 0, NULL);
+}
+
+/*
+ * Subscribe to NOTE_TRUNCATE alone and shrink the file via ftruncate;
+ * expect a NOTE_TRUNCATE delivery.  illumos has a dedicated FILE_TRUNC
+ * kernel event so this is a direct mapping; Linux's vnode synthesis
+ * only catches truncate-to-zero (a known limitation).
+ */
+static void
+test_kevent_vnode_note_truncate(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+
+    /* Make sure there's something to truncate. */
+    if (ftruncate(ctx->vnode_fd, 4096) < 0)
+        die("ftruncate(grow)");
+
+    kevent_add(ctx->kqfd, &kev, ctx->vnode_fd, EVFILT_VNODE,
+               EV_ADD | EV_ONESHOT, NOTE_TRUNCATE, 0, NULL);
+
+    if (ftruncate(ctx->vnode_fd, 0) < 0)
+        die("ftruncate(shrink)");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].ident != (uintptr_t) ctx->vnode_fd ||
+        ret[0].filter != EVFILT_VNODE ||
+        !(ret[0].fflags & NOTE_TRUNCATE))
+        die("NOTE_TRUNCATE not delivered: %s",
+            kevent_to_str(&ret[0]));
+}
+
 void
 test_kevent_vnode_disable_and_enable(struct test_context *ctx)
 {
@@ -268,6 +369,15 @@ test_evfilt_vnode(struct test_context *ctx)
     test(kevent_vnode_note_attrib, ctx);
     test(kevent_vnode_note_rename, ctx);
     test(kevent_vnode_note_delete, ctx);
+#ifdef NOTE_EXTEND
+    test(kevent_vnode_note_extend, ctx);
+#endif
+#ifdef NOTE_LINK
+    test(kevent_vnode_note_link, ctx);
+#endif
+#ifdef NOTE_TRUNCATE
+    test(kevent_vnode_note_truncate, ctx);
+#endif
     /* TODO: test r590 corner case where a descriptor is closed and
              the associated knote is automatically freed. */
     unlink(ctx->testfile);
