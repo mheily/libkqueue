@@ -524,11 +524,9 @@ test_kevent_proc_already_exited(struct test_context *ctx)
 
     test_no_kevents(ctx->kqfd);
 
-#ifdef __APPLE__
-    /*
-     * macOS native kqueue rejects EVFILT_PROC registration for a zombie
-     * with ESRCH; it does not support register-after-exit.
-     */
+/* macOS, OpenBSD, and NetBSD reject EVFILT_PROC registration for a
+ * zombie with ESRCH; they do not support register-after-exit. */
+#if defined(__APPLE__) || defined(__OpenBSD__) || defined(__NetBSD__)
     EV_SET(&kev, early, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
     if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
         die("expected ESRCH registering EVFILT_PROC on zombie, got success");
