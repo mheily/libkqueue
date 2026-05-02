@@ -458,7 +458,12 @@ test_evfilt_timer(struct test_context *ctx)
     test(kevent_timer_periodic_to_oneshot, ctx);
 #endif
     test(kevent_timer_disable_and_enable, ctx);
-#ifdef EV_DISPATCH
+/*
+ * NetBSD doesn't disable the timer knote when EV_DISPATCH fires;
+ * OpenBSD delivers accumulated ticks immediately on re-enable.
+ * Both deviate enough that the test can't pass on either platform.
+ */
+#if defined(EV_DISPATCH) && !defined(__NetBSD__) && !defined(__OpenBSD__)
     test(kevent_timer_dispatch, ctx);
 #endif
 #ifdef NOTE_USECONDS
