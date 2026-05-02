@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
+ * Copyright (c) 2021,2026 Arran Cudbard-Bell <a.cudbardb@freeradius.org>
  * Copyright (c) 2009 Mark Heily <mark@heily.com>
  *
  * Permission to use, copy, modify, and distribute this software for any
