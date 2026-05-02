@@ -486,7 +486,10 @@ test_evfilt_signal(struct test_context *ctx)
     test(kevent_signal_enable, ctx);
     test(kevent_signal_oneshot, ctx);
     test(kevent_signal_modify, ctx);
-#ifdef EV_DISPATCH
+/* NetBSD native kqueue doesn't hold signals while a knote is
+ * EV_DISPATCH-disabled; the second kill() fires through immediately
+ * rather than being buffered for re-enable. */
+#if defined(EV_DISPATCH) && !defined(__NetBSD__)
     test(kevent_signal_dispatch, ctx);
 #endif
 #if !defined(LIBKQUEUE_BACKEND_POSIX)
