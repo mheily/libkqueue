@@ -485,21 +485,12 @@ test_evfilt_user(struct test_context *ctx)
     test(kevent_user_delete_drains, ctx);
     test(kevent_user_receipt_preserved, ctx);
     test(kevent_user_modify_clobbers_udata, ctx);
-#if !defined(LIBKQUEUE_BACKEND_POSIX)
-    /*
-     * EV_ONESHOT / multi-trigger / EV_DISPATCH paths exercise USER
-     * filter behaviour that the POSIX backend's shared-eventfd
-     * implementation doesn't drive correctly yet (eventfd doesn't
-     * fan back out to per-knote re-arm).  Skip these on POSIX
-     * until posix/user.c grows the proper rearm machinery.
-     */
     test(kevent_user_oneshot, ctx);
     test(kevent_user_multi_trigger_merged, ctx);
-# ifdef EV_DISPATCH
+#ifdef EV_DISPATCH
     test(kevent_user_dispatch, ctx);
     test(kevent_user_dispatch_durable, ctx);
     test(kevent_user_dispatch_enable_and_trigger_atomic, ctx);
-# endif
 #endif
 #ifdef NATIVE_KQUEUE
     test(kevent_user_trigger_from_thread, ctx);
