@@ -85,7 +85,7 @@ jobs:
       shell: pwsh
       run: |
         $project = [uri]::EscapeDataString($env:GITHUB_REPOSITORY)
-        $version = (Select-String -Path version.h -Pattern 'LIBKQUEUE_VERSION_STRING\s+"([^"]+)"').Matches[0].Groups[1].Value
+        $version = (Select-String -Path build_x64/version.h -Pattern 'LIBKQUEUE_VERSION_STRING\s+"([^"]+)"').Matches[0].Groups[1].Value
         tar -czf cov-int.tar.gz cov-int
         curl.exe `
           --form "token=$env:TOKEN" `
