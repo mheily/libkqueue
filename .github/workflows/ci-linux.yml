@@ -75,14 +75,32 @@ jobs:
         echo "GCC_VER=14" >> ${GITHUB_ENV}
         echo "MYREL=${MYREL}" >> ${GITHUB_ENV}
 
+    # Cache the apt signing keyrings.  Cache key is the
+    # fingerprint list, so a key rotation drops the cache
+    # naturally.  apt-key files are immutable in practice.
+    - name: Cache LLVM signing key
+      if: ${{ matrix.env.CC == 'clang' }}
+      uses: actions/cache@v4
+      id: cache-llvm-key
+      with:
+        path: llvm-snapshot.gpg
+        key: apt-key-llvm-snapshot-v1
+
+    - name: Fetch LLVM signing key
+      if: ${{ matrix.env.CC == 'clang' && steps.cache-llvm-key.outputs.cache-hit != 'true' }}
+      run: |
+        curl --retry 5 --retry-all-errors -fsSL \
+          https://apt.llvm.org/llvm-snapshot.gpg.key \
+          | gpg --dearmor -o llvm-snapshot.gpg
+
     - name: Add llvm source
       if: ${{ matrix.env.CC == 'clang' }}
-      uses: myci-actions/add-deb-repo@10
-      with:
-        repo: deb http://apt.llvm.org/${{ env.MYREL }}/ llvm-toolchain-${{ env.MYREL }}-${{ env.CLANG_VER }} main
-        repo-name: llvm-toolchain
-        keys-asc: https://apt.llvm.org/llvm-snapshot.gpg.key
-
+      run: |
+        sudo install -dm 0755 /etc/apt/keyrings
+        sudo cp llvm-snapshot.gpg /etc/apt/keyrings/llvm-snapshot.gpg
+        echo "deb [signed-by=/etc/apt/keyrings/llvm-snapshot.gpg] http://apt.llvm.org/${{ env.MYREL }}/ llvm-toolchain-${{ env.MYREL }}-${{ env.CLANG_VER }} main" \
+          | sudo tee /etc/apt/sources.list.d/llvm-toolchain.list
+        sudo apt-get update
 
     - name: Install LLVM ${{ env.CLANG_VER }}
       if: ${{ matrix.env.CC == 'clang' }}
@@ -91,19 +109,32 @@ jobs:
         sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ env.CLANG_VER }} 60 && sudo update-alternatives --set clang /usr/bin/clang-${{ env.CLANG_VER }}
         sudo update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer /usr/bin/llvm-symbolizer-${{ env.CLANG_VER }} 60 && sudo update-alternatives --set llvm-symbolizer /usr/bin/llvm-symbolizer-${{ env.CLANG_VER }}
 
-    - name: Add GCC source
+    - name: Cache GCC PPA signing keys
       if: ${{ matrix.env.CC == 'gcc' }}
+      uses: actions/cache@v4
+      id: cache-gcc-keys
+      with:
+        path: ubuntu-toolchain-r-test.gpg
+        # Bump the v<n> suffix when the PPA's key list changes.
+        key: apt-key-ubuntu-toolchain-r-test-1E9377A2BA9EF27F-2C277A0A352154E5-v1
+
+    - name: Fetch GCC PPA signing keys
+      if: ${{ matrix.env.CC == 'gcc' && steps.cache-gcc-keys.outputs.cache-hit != 'true' }}
       run: |
-        sudo install -dm 0755 /etc/apt/keyrings
-        # PPA is signed with two keys; concatenate both into one keyring.
         TMP=$(mktemp -d)
         for k in 1E9377A2BA9EF27F 2C277A0A352154E5; do
           curl --retry 5 --retry-all-errors -fsSL \
             "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${k}" \
             | gpg --dearmor -o "${TMP}/${k}.gpg"
         done
-        cat "${TMP}"/*.gpg | sudo tee /etc/apt/keyrings/ubuntu-toolchain-r-test.gpg >/dev/null
+        cat "${TMP}"/*.gpg > ubuntu-toolchain-r-test.gpg
         rm -rf "${TMP}"
+
+    - name: Add GCC source
+      if: ${{ matrix.env.CC == 'gcc' }}
+      run: |
+        sudo install -dm 0755 /etc/apt/keyrings
+        sudo cp ubuntu-toolchain-r-test.gpg /etc/apt/keyrings/
         echo "deb [signed-by=/etc/apt/keyrings/ubuntu-toolchain-r-test.gpg] https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu ${{ env.MYREL }} main" \
           | sudo tee /etc/apt/sources.list.d/ubuntu-toolchain-r-test.list
         sudo apt-get update
