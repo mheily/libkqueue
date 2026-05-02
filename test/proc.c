@@ -843,10 +843,10 @@ test_evfilt_proc(struct test_context *ctx)
     test(kevent_proc_exit_status_ok, ctx);
     test(kevent_proc_exit_status_error, ctx);
     test(kevent_proc_modify_arms_late, ctx);
-/* OpenBSD native kqueue fires EV_EOF on process exit regardless of
- * fflags, so clearing fflags via re-EV_ADD doesn't prevent the exit
- * event.  Skip the disarms test there. */
-#if !defined(__OpenBSD__)
+/* OpenBSD and NetBSD native kqueue fire EV_EOF on process exit
+ * regardless of fflags, so clearing fflags via re-EV_ADD doesn't
+ * prevent the exit event.  Skip the disarms test there. */
+#if !defined(__OpenBSD__) && !defined(__NetBSD__)
     test(kevent_proc_modify_disarms, ctx);
 #endif
     test(kevent_proc_disable_drains, ctx);
