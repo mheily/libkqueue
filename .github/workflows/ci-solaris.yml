@@ -1,4 +1,4 @@
-name: CI tests Solaris (OmniOS)
+name: CI Solaris (OmniOS)
 
 on:
   push:

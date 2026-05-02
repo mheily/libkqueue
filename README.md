@@ -7,8 +7,10 @@ libkqueue
 [![CI Solaris (OmniOS)](https://github.com/mheily/libkqueue/actions/workflows/ci-solaris.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-solaris.yml)
 [![Coverity](https://scan.coverity.com/projects/24822/badge.svg)](https://scan.coverity.com/projects/mheily-libkqueue)
 ### Test suite
-[![Test suite FreeBSD](https://github.com/mheily/libkqueue/actions/workflows/ci-freebsd.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-freebsd.yml)
-[![Test suite macOS](https://github.com/mheily/libkqueue/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-macos.yml)
+[![CI tests FreeBSD](https://github.com/mheily/libkqueue/actions/workflows/ci-freebsd.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-freebsd.yml)
+[![CI tests macOS](https://github.com/mheily/libkqueue/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-macos.yml)
+[![CI tests OpenBSD](https://github.com/mheily/libkqueue/actions/workflows/ci-openbsd.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-openbsd.yml)
+[![CI tests NetBSD](https://github.com/mheily/libkqueue/actions/workflows/ci-netbsd.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-netbsd.yml)
 
 Overview
 --------
