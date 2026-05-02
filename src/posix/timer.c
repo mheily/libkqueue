@@ -83,7 +83,12 @@ posix_timer_cmp(const struct posix_timer *a, const struct posix_timer *b)
     return 0;
 }
 
-RB_GENERATE_STATIC(posix_timer_tree, posix_timer, entry, posix_timer_cmp)
+/*
+ * RB_GENERATE_STATIC uses BSD-ism `__unused` (not defined under
+ * -std=gnu11 + _XOPEN_SOURCE on Linux glibc); spell it directly.
+ */
+RB_GENERATE_INTERNAL(posix_timer_tree, posix_timer, entry, posix_timer_cmp,
+                     __attribute__((unused)) static)
 
 static void
 ts_now(struct timespec *out)
