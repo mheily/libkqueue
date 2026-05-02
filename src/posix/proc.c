@@ -814,26 +814,61 @@ evfilt_proc_knote_disable(struct filter *filt, struct knote *kn)
 }
 
 static int
-evfilt_proc_knote_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
+evfilt_proc_knote_copyout(struct kevent *dst, int nevents, struct filter *filt,
     struct knote *kn, UNUSED void *ev)
 {
     /*
-     * Per-knote copyout, called once by the dispatcher for each
-     * knote it dequeues from kf_ready (the dispatcher detaches
-     * before invoking us, so we don't iterate kf_ready ourselves).
-     * proc_pid_index_mtx still protects kn_proc_status against the
-     * wait thread - waiter_notify writes it under the same mutex.
+     * Two dispatcher conventions converge here:
+     *
+     *  - POSIX backend (src/posix/platform.c): the dispatcher
+     *    detaches each knote from kf_ready before invoking us
+     *    and passes it as `kn`; we emit one kevent and return 1.
+     *
+     *  - Solaris backend (src/solaris/platform.c): the dispatcher
+     *    has no per-knote affinity (PORT_SOURCE_USER fires for
+     *    the filter as a whole), passes kn=NULL, and expects us
+     *    to drain kf_ready ourselves.
+     *
+     * proc_pid_index_mtx serialises kn_proc_status against the
+     * wait thread (waiter_notify writes it under the same mutex).
      */
-    tracing_mutex_lock(&proc_pid_index_mtx);
-    memcpy(dst, &kn->kev, sizeof(*dst));
-    dst->fflags = NOTE_EXIT;
-    dst->flags |= EV_EOF;
-    dst->data   = kn->kn_proc_status;
-    tracing_mutex_unlock(&proc_pid_index_mtx);
+    if (kn != NULL) {
+        tracing_mutex_lock(&proc_pid_index_mtx);
+        memcpy(dst, &kn->kev, sizeof(*dst));
+        dst->fflags = NOTE_EXIT;
+        dst->flags |= EV_EOF;
+        dst->data   = kn->kn_proc_status;
+        tracing_mutex_unlock(&proc_pid_index_mtx);
 
-    if (knote_copyout_flag_actions(filt, kn) < 0)
-        return (-1);
-    return (1);
+        if (knote_copyout_flag_actions(filt, kn) < 0)
+            return (-1);
+        return (1);
+    }
+
+    /*
+     * Drain-style (Solaris): walk kf_ready, emit up to nevents.
+     */
+    struct kevent *dst_p = dst, *dst_end = dst_p + nevents;
+    tracing_mutex_lock(&proc_pid_index_mtx);
+    while ((kn = LIST_FIRST(&filt->kf_ready)) != NULL) {
+        if (dst_p >= dst_end)
+            break;
+        LIST_REMOVE_ZERO(kn, kn_ready);
+        memcpy(dst_p, &kn->kev, sizeof(*dst_p));
+        dst_p->fflags = NOTE_EXIT;
+        dst_p->flags |= EV_EOF;
+        dst_p->data   = kn->kn_proc_status;
+        if (knote_copyout_flag_actions(filt, kn) < 0) {
+            LIST_INSERT_HEAD(&filt->kf_ready, kn, kn_ready);
+            tracing_mutex_unlock(&proc_pid_index_mtx);
+            return (-1);
+        }
+        dst_p++;
+    }
+    if (LIST_EMPTY(&filt->kf_ready))
+        kqops.eventfd_lower(&filt->kf_efd);
+    tracing_mutex_unlock(&proc_pid_index_mtx);
+    return (dst_p - dst);
 }
 
 const struct filter evfilt_proc = {
