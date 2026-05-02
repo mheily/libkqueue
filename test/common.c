@@ -356,24 +356,29 @@ _kevent_add_with_receipt(int kqfd, struct kevent *kev,
     }
 
 
-#ifdef __FreeBSD__
     /*
-     * FreeBSD doesn't return EV_RECEIPT in the receipt
-     * but does return it in all future kevents.
+     * BSD platforms vary in what flags the receipt event echoes back:
+     *   macOS / libkqueue: returns EV_ADD | EV_ERROR | EV_RECEIPT
+     *   FreeBSD:           returns EV_ADD | EV_ERROR (no EV_RECEIPT)
+     *   OpenBSD / NetBSD:  returns EV_ERROR only (no EV_ADD, no EV_RECEIPT)
+     * Adjust expected flags to match the platform before comparing, then
+     * restore them so callers can use kev for subsequent comparisons.
      */
-    kev->flags ^= EV_RECEIPT;
+#if defined(__FreeBSD__)
+    kev->flags &= ~EV_RECEIPT;
+#elif defined(__OpenBSD__) || defined(__NetBSD__)
+    kev->flags &= ~(EV_ADD | EV_RECEIPT);
 #endif
 
     kev->flags |= EV_ERROR;
     _kevent_cmp(kev, &receipt, file, line);
-    kev->flags ^= EV_ERROR; /* We don't expect this in future events */
+    kev->flags ^= EV_ERROR;
 
-#ifdef __FreeBSD__
-    /*
-     * Add this back as it'll be returned in future
-     * kevents.
-     */
+#if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
     kev->flags |= EV_RECEIPT;
+#endif
+#if defined(__OpenBSD__) || defined(__NetBSD__)
+    kev->flags |= EV_ADD;
 #endif
 }
 
