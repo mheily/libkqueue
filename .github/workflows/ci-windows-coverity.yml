@@ -1,0 +1,98 @@
+name: CI Windows Coverity
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'include/sys/*'
+      - 'src/common/*'
+      - 'src/windows/*'
+      - 'test/*'
+      - '.github/workflows/ci-windows-coverity.yml'
+
+jobs:
+  windows-coverity:
+    if: github.repository == 'mheily/libkqueue'
+    timeout-minutes: 20
+    runs-on: windows-2022
+    name: "ci-windows-coverity"
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Download coverity tool MD5
+      shell: pwsh
+      run: |
+        $project = [uri]::EscapeDataString($env:GITHUB_REPOSITORY)
+        Invoke-WebRequest `
+          -Uri "https://scan.coverity.com/download/win64" `
+          -Method Post `
+          -ContentType "application/x-www-form-urlencoded" `
+          -Body "token=$($env:TOKEN)&project=$project&md5=1" `
+          -OutFile coverity_tool.zip.md5
+      env:
+        TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
+
+    - name: Cache coverity tool
+      uses: actions/cache@v4
+      id: cache-coverity
+      with:
+        path: coverity_tool.zip
+        key: coverity-tool-win64-${{ hashFiles('coverity_tool.zip.md5') }}
+
+    - name: Download coverity tool
+      if: steps.cache-coverity.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $project = [uri]::EscapeDataString($env:GITHUB_REPOSITORY)
+        Invoke-WebRequest `
+          -Uri "https://scan.coverity.com/download/win64" `
+          -Method Post `
+          -ContentType "application/x-www-form-urlencoded" `
+          -Body "token=$($env:TOKEN)&project=$project" `
+          -OutFile coverity_tool.zip
+      env:
+        TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
+
+    - name: Extract coverity tool
+      shell: pwsh
+      run: |
+        Expand-Archive -Path coverity_tool.zip -DestinationPath coverity_tool_stage
+        $inner = Get-ChildItem -Path coverity_tool_stage -Directory | Select-Object -First 1
+        Move-Item -Path $inner.FullName -Destination coverity_tool
+
+    - name: Configure build system
+      shell: pwsh
+      run: |
+        cmake -S . -B build_x64 -A x64 -G "Visual Studio 17 2022" `
+          -DSTATICLIB=ON `
+          -DCMAKE_BUILD_TYPE=Debug `
+          -DCMAKE_VERBOSE_MAKEFILE=ON
+
+    - name: Build with coverity
+      shell: pwsh
+      run: |
+        $env:PATH = "$(Get-Location)\coverity_tool\bin;$env:PATH"
+        cov-configure --msvc
+        cov-build --dir cov-int cmake --build build_x64 --config Debug --parallel 1
+
+    - name: Display build result
+      shell: pwsh
+      run: |
+        Get-Content cov-int\build-log.txt
+
+    - name: Submit result
+      shell: pwsh
+      run: |
+        $project = [uri]::EscapeDataString($env:GITHUB_REPOSITORY)
+        $version = (Select-String -Path version.h -Pattern 'LIBKQUEUE_VERSION_STRING\s+"([^"]+)"').Matches[0].Groups[1].Value
+        tar -czf cov-int.tar.gz cov-int
+        curl.exe `
+          --form "token=$env:TOKEN" `
+          --form "email=a.cudbardb@freeradius.org" `
+          --form "file=@cov-int.tar.gz" `
+          --form "version=$version" `
+          --form "description=$env:GITHUB_REPOSITORY" `
+          "https://scan.coverity.com/builds?project=$project"
+      env:
+        TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
