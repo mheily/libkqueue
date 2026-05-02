@@ -216,8 +216,13 @@ if(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "posix")
   #
   #  Per-filter availability.  READ/WRITE/USER/SIGNAL ride on
   #  pselect+sigaction+a self-pipe and are enabled together when
-  #  those primitives are present.  TIMER, PROC, VNODE are
-  #  separately gated.
+  #  those primitives are present.  TIMER and PROC are
+  #  separately gated.  VNODE is not offered: portable POSIX has
+  #  no file-change notification primitive, and the only honest
+  #  fallback (periodic fstat polling) costs O(N) syscalls per
+  #  tick and still can't see RENAME/REVOKE through the watched
+  #  fd.  Systems that need vnode events have inotify/kqueue/
+  #  port_associate and use the matching native backend.
   #
   if(HAVE_PSELECT AND HAVE_SIGACTION)
     set(LIBKQUEUE_HAVE_FILT_READ   1)
@@ -238,12 +243,6 @@ if(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "posix")
   #  re-enable wants them.
   #
 
-  #
-  #  VNODE: fstat-polling implementation is on the roadmap but not
-  #  yet wired in for the POSIX backend.  Leaving it off causes the
-  #  generated public header to redact EVFILT_VNODE and the test
-  #  suite to skip vnode tests.
-  #
 else()
   #
   #  Native backends (linux, solaris, windows) ship complete filter
