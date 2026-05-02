@@ -45,6 +45,13 @@ posix_write_arm(struct filter *filt, struct knote *kn)
     FD_SET(fd, &kq->kq_wfds);
     if (fd >= kq->kq_nfds)
         kq->kq_nfds = fd + 1;
+    /*
+     * Wake parked pselects so they reload their fd_set snapshot.
+     * Mirrors evfilt_read's posix_read_arm; a cross-thread EV_ADD
+     * on an already-writable fd otherwise sits unnoticed until
+     * the parked caller's timeout.
+     */
+    posix_wake_kqueue(kq);
     return (0);
 }
 

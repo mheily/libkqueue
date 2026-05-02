@@ -32,7 +32,27 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "../common/queue.h"
+
+/*
+ * Per-caller in-flight tracker for KEVENT_WAIT_DROP_LOCK.  Each
+ * kevent() caller stack-allocates one of these, links it on
+ * kq->kq_inflight under kq_mtx in kqueue_kevent_enter, and unlinks
+ * in kqueue_kevent_exit.  Defined here (not in private.h) because
+ * the TAILQ macros in platform_ext.h's KQUEUE_PLATFORM_SPECIFIC
+ * need the tag visible.
+ */
+struct kqueue_kevent_state {
+    TAILQ_ENTRY(kqueue_kevent_state) entry;
+};
+
 #include "platform_ext.h"
+
+void    posix_kevent_enter(struct kqueue *kq, struct kqueue_kevent_state *state);
+void    posix_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state);
+#define kqueue_kevent_enter(_kq, _state) posix_kevent_enter((_kq), (_state))
+#define kqueue_kevent_exit(_kq, _state)  posix_kevent_exit((_kq), (_state))
+
+#define KEVENT_WAIT_DROP_LOCK 1
 
 #define EVENTFD_PLATFORM_SPECIFIC	POSIX_EVENTFD_PLATFORM_SPECIFIC
 #define KNOTE_PROC_PLATFORM_SPECIFIC	POSIX_KNOTE_PROC_PLATFORM_SPECIFIC
@@ -61,5 +81,7 @@ int     posix_kevent_copyout(struct kqueue *, int, struct kevent *, int);
 
 int     posix_eventfd_register(struct kqueue *, struct eventfd *);
 void    posix_eventfd_unregister(struct kqueue *, struct eventfd *);
+
+void    posix_wake_kqueue(struct kqueue *kq);
 
 #endif  /* ! _KQUEUE_POSIX_PLATFORM_H */

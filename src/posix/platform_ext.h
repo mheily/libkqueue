@@ -74,6 +74,14 @@
  * These should be included in the platform's KQUEUE_PLATFORM_SPECIFIC
  * macro definition.
  */
+/*
+ * In-flight tracking for KEVENT_WAIT_DROP_LOCK.  Each thread inside
+ * kevent() (between kqueue_kevent_enter and kqueue_kevent_exit)
+ * stack-allocates a kqueue_kevent_state and links it on this TAILQ.
+ * Empty TAILQ + kq_freeing == ready to complete deferred free.
+ */
+TAILQ_HEAD(posix_kqueue_kevent_state_head, kqueue_kevent_state);
+
 #define POSIX_KQUEUE_PLATFORM_SPECIFIC \
     fd_set          kq_fds;          /* watched-for-read fd set */ \
     fd_set          kq_rfds;         /* read-readable fds after last pselect */ \
@@ -81,9 +89,10 @@
     fd_set          kq_wrfds;        /* write-ready fds after last pselect */ \
     int             kq_nfds;         /* highest watched fd + 1, for pselect's nfds */ \
     int             kq_wake_wfd;     /* write end of the self-pipe used as kq_id */ \
-    int             kq_always_ready  /* count of "always-ready" knotes; non-zero \
+    int             kq_always_ready; /* count of "always-ready" knotes; non-zero \
                                       * forces pselect to a 0 timeout so file/etc \
-                                      * knotes get re-dispatched every wait */
+                                      * knotes get re-dispatched every wait */ \
+    struct posix_kqueue_kevent_state_head kq_inflight  /* kevent() callers in-flight */
 
 /** Additional members of 'struct knote'
  *

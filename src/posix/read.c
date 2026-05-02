@@ -105,29 +105,8 @@ posix_read_descriptor_type(struct knote *kn)
     }
 }
 
-/*
- * Wake the kqueue's pselect so the next wait observes a state
- * change.  Writing a byte to kq_wake_wfd makes its read-side
- * (kq_id, registered in kq_fds) readable.  errno is preserved on
- * EAGAIN since the wake-pipe filling up is fine: any byte in it
- * already does the job.
- */
-static void
-posix_wake_kqueue(struct kqueue *kq)
-{
-    ssize_t rv;
-
-    if (kq->kq_wake_wfd < 0)
-        return;
-    /*
-     * Wake byte: failure is benign (EAGAIN means the pipe is
-     * already primed, which is the state we wanted anyway).
-     * Assigning to rv silences glibc's warn_unused_result
-     * attribute on write(2); a bare (void) cast doesn't.
-     */
-    rv = write(kq->kq_wake_wfd, "K", 1);
-    (void) rv;
-}
+/* posix_wake_kqueue is shared with the WRITE filter; defined in
+ * src/posix/platform.c. */
 
 /*
  * Add fd to the kqueue's read fd_set so the next pselect picks up
@@ -157,6 +136,14 @@ posix_read_arm(struct filter *filt, struct knote *kn)
     FD_SET(fd, &kq->kq_fds);
     if (fd >= kq->kq_nfds)
         kq->kq_nfds = fd + 1;
+    /*
+     * Wake any thread currently parked in pselect with a stale
+     * fd_set snapshot so it re-reads kq_fds and picks up our new
+     * watch.  Without this, a cross-thread EV_ADD on an
+     * already-readable fd doesn't deliver until the parked
+     * caller times out for some other reason.
+     */
+    posix_wake_kqueue(kq);
     return (0);
 }
 

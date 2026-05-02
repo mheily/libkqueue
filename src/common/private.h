@@ -90,7 +90,8 @@ struct kqueue_kevent_state;
  * a state object and call the hooks unconditionally.  The compiler
  * inlines both away.
  */
-#if !defined(LIBKQUEUE_BACKEND_LINUX) && !defined(LIBKQUEUE_BACKEND_SOLARIS)
+#if !defined(LIBKQUEUE_BACKEND_LINUX) && !defined(LIBKQUEUE_BACKEND_SOLARIS) && \
+    !defined(LIBKQUEUE_BACKEND_POSIX)
 struct kqueue_kevent_state {
     char _unused;
 };

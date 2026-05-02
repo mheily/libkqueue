@@ -48,6 +48,44 @@ posix_self_pipe(int fd[2])
     return (0);
 }
 
+/*
+ * Wake any parked pselect on this kqueue.  Writing a byte to
+ * kq_wake_wfd makes its read-side (kq_id, registered in kq_fds)
+ * readable, so the parked caller's next pselect iteration sees
+ * the new fd_set state.  EAGAIN on a full pipe is benign - the
+ * pipe is already primed.
+ */
+void
+posix_wake_kqueue(struct kqueue *kq)
+{
+    ssize_t rv;
+
+    if (kq->kq_wake_wfd < 0)
+        return;
+    rv = write(kq->kq_wake_wfd, "K", 1);
+    (void) rv;                          /* silence -Wunused-result */
+}
+
+/*
+ * In-flight tracking for KEVENT_WAIT_DROP_LOCK.  Common code in
+ * kevent.c calls these around the kevent_wait/copyout pair so
+ * kqueue_free can defer destruction until the last in-flight
+ * caller drops out.
+ */
+void
+posix_kevent_enter(struct kqueue *kq, struct kqueue_kevent_state *state)
+{
+    kqueue_mutex_assert(kq, MTX_LOCKED);
+    TAILQ_INSERT_TAIL(&kq->kq_inflight, state, entry);
+}
+
+void
+posix_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state)
+{
+    kqueue_mutex_assert(kq, MTX_LOCKED);
+    TAILQ_REMOVE(&kq->kq_inflight, state, entry);
+}
+
 int
 posix_kqueue_init(struct kqueue *kq)
 {
@@ -55,6 +93,8 @@ posix_kqueue_init(struct kqueue *kq)
 
     if (posix_self_pipe(sd) < 0)
         return (-1);
+
+    TAILQ_INIT(&kq->kq_inflight);
 
     /*
      * Hand the read end back as the kqueue's identifying fd; the
@@ -87,11 +127,23 @@ posix_kqueue_init(struct kqueue *kq)
 void
 posix_kqueue_free(struct kqueue *kq)
 {
-    if (kq->kq_id >= 0) {
-        if (close(kq->kq_id) < 0)
-            dbg_perror("close(kq_id)");
-        kq->kq_id = -1;
-    }
+    /*
+     * kq_id is the user-facing fd we handed back from kqueue();
+     * the user is expected to close(2) it.  We must NOT close it
+     * ourselves: posix_kqueue_free runs (a) at process exit via
+     * libkqueue_free, where the user has likely already closed it
+     * and the fd number may have been recycled by the OS for an
+     * unrelated open, and (b) inline from kqueue_free_by_id when
+     * a brand-new kqueue() reuses that fd number, in which case
+     * kq_id is the *new* kqueue's pipe and our close(2) would
+     * pull the rug from under it.  Without a monitoring thread
+     * (linux/platform.c) we have no other way to detect ownership;
+     * skip the close and accept the at-most one-fd-per-kqueue
+     * leak when the caller forgets close().  kq_wake_wfd is the
+     * write end of the same self-pipe, internal to libkqueue, so
+     * it's always safe (and correct) to close.
+     */
+    kq->kq_id = -1;
     if (kq->kq_wake_wfd >= 0) {
         if (close(kq->kq_wake_wfd) < 0)
             dbg_perror("close(kq_wake_wfd)");
@@ -222,14 +274,24 @@ posix_dispatch_filter(struct filter *filt, struct kevent *eventlist,
      *    already lowered the level) and emit nothing.
      */
     if (LIST_EMPTY(&filt->kf_ready)) {
+        /*
+         * Drain-style filters: copyout walks the filter's own
+         * knote tree (under kq_mtx) when the filter eventfd
+         * fires.  The src argument is unused.
+         */
+        if (
 #ifdef EVFILT_SIGNAL
-        if (filt->kf_id == EVFILT_SIGNAL) {
+            filt->kf_id == EVFILT_SIGNAL ||
+#endif
+#ifdef EVFILT_TIMER
+            filt->kf_id == EVFILT_TIMER ||
+#endif
+            0) {
             rv = filt->kf_copyout(eventlist, nevents, filt, NULL, NULL);
             if (rv < 0)
                 return (-1);
             return rv;
         }
-#endif
         return (0);
     }
 
@@ -237,18 +299,28 @@ posix_dispatch_filter(struct filter *filt, struct kevent *eventlist,
         if (n >= nevents)
             break;
 
+        /*
+         * Detach from kf_ready BEFORE invoking copyout: an
+         * EV_ONESHOT knote deletes itself inside copyout via
+         * knote_copyout_flag_actions -> knote_delete -> the
+         * final knote_release frees the underlying storage,
+         * and a post-copyout LIST_REMOVE_ZERO would walk freed
+         * memory.  Detaching up front also closes the window
+         * where a coalesced re-trigger from another thread sees
+         * the entry still on kf_ready and skips its
+         * LIST_INSERT_HEAD (correct: we're about to deliver).
+         *
+         * LIST_REMOVE_ZERO clears next/prev so a later
+         * LIST_INSERTED check (e.g. inside knote_delete's own
+         * cleanup) sees the entry as detached.
+         */
+        LIST_REMOVE_ZERO(kn, kn_ready);
+
         rv = filt->kf_copyout(eventlist + n, nevents - n, filt, kn, NULL);
         if (rv < 0) {
             dbg_puts("kf_copyout failed");
             return (-1);
         }
-        /*
-         * LIST_REMOVE_ZERO clears kn_ready's next/prev pointers
-         * after unlinking; without that LIST_INSERTED returns true
-         * on the now-detached knote and a later knote_delete tries
-         * to LIST_REMOVE it again, walking stale pointers.
-         */
-        LIST_REMOVE_ZERO(kn, kn_ready);
         if (rv > 0)
             n += rv;
     }
@@ -275,6 +347,7 @@ posix_dispatch_fd_cb(struct knote *kn, void *uctx)
     struct posix_dispatch_fd_ctx *ctx = uctx;
     int fd = (int)kn->kev.ident;
     bool always_ready = (kn->kn_flags & KNFL_FILE) != 0;
+    fd_set *master;
     int rv;
 
     if (ctx->nout >= ctx->nevents)
@@ -284,12 +357,22 @@ posix_dispatch_fd_cb(struct knote *kn, void *uctx)
     /*
      * Regular files are "always readable" up to EOF; we don't
      * gate them on FD_ISSET because they can't be select()-armed.
-     * Everything else has to show up in the post-pselect set.
+     * Everything else has to show up in the post-pselect set AND
+     * still be present in the master watch set.  The master check
+     * is the single-delivery gate under KEVENT_WAIT_DROP_LOCK:
+     * once one waiter's EV_CLEAR copyout disarms the fd, later
+     * waiters with stale snapshots see the CLR and quietly drop
+     * the duplicate emit.
      */
+    master = (ctx->active == &ctx->filt->kf_kqueue->kq_rfds)
+        ? &ctx->filt->kf_kqueue->kq_fds
+        : &ctx->filt->kf_kqueue->kq_wfds;
     if (!always_ready) {
         if (fd < 0 || fd >= FD_SETSIZE)
             return (0);
         if (!FD_ISSET(fd, ctx->active))
+            return (0);
+        if (!FD_ISSET(fd, master))
             return (0);
     }
 
