@@ -234,14 +234,13 @@ if(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "posix")
     set(LIBKQUEUE_HAVE_FILT_TIMER 1)
   endif()
   #
-  #  PROC: src/posix/proc.c (sigwaitinfo + waitpid wait thread)
-  #  hasn't been verified end-to-end against the new dispatcher
-  #  yet (test_kevent_proc_get crashes), and macOS doesn't ship
-  #  sigwaitinfo at all.  Disable it on the POSIX backend until
-  #  the impl is reworked / verified; keep the
-  #  HAVE_WAITPID/SIGACTION/SIGWAITINFO probes in case later
-  #  re-enable wants them.
+  #  PROC: src/posix/proc.c uses sigwaitinfo + waitpid in a wait
+  #  thread.  macOS doesn't ship sigwaitinfo (returns ENOSYS), so
+  #  gate on the probe.
   #
+  if(HAVE_WAITPID AND HAVE_SIGWAITINFO)
+    set(LIBKQUEUE_HAVE_FILT_PROC 1)
+  endif()
 
 else()
   #

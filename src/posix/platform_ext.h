@@ -54,7 +54,6 @@
  */
 #define POSIX_FILTER_PROC_PLATFORM_SPECIFIC \
     struct { \
-        struct eventfd  kf_proc_eventfd; \
         pthread_t kf_proc_thread_id; \
     }
 

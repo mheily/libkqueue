@@ -135,7 +135,7 @@ waiter_notify(struct proc_pid *ppd, int status)
         filt = knote_get_filter(kn);
         dbg_printf("pid=%u exited, notifying kq=%u filter=%p kn=%p",
                    (unsigned int)ppd->ppd_pid, kn->kn_kq->kq_id, filt, kn);
-        kqops.eventfd_raise(&filt->kf_proc_eventfd);
+        kqops.eventfd_raise(&filt->kf_efd);
         LIST_INSERT_HEAD(&filt->kf_ready, kn, kn_ready); /* protected by proc_pid_index_mtx */
 
         LIST_REMOVE_ZERO(kn, kn_proc_waiter);
@@ -159,7 +159,7 @@ waiter_notify_error(struct proc_pid *ppd, int wait_errno)
         filt = knote_get_filter(kn);
         dbg_printf("pid=%u errored (%s), notifying kq=%u filter=%p kn=%p",
                    (unsigned int)ppd->ppd_pid, strerror(errno), kn->kn_kq->kq_id, filt, kn);
-        kqops.eventfd_raise(&filt->kf_proc_eventfd);
+        kqops.eventfd_raise(&filt->kf_efd);
         LIST_INSERT_HEAD(&filt->kf_ready, kn, kn_ready); /* protected by proc_pid_index_mtx */
 
         LIST_REMOVE_ZERO(kn, kn_proc_waiter);
@@ -453,14 +453,14 @@ evfilt_proc_libkqueue_fork(void)
 static int
 evfilt_proc_init(struct filter *filt)
 {
-    if (kqops.eventfd_init(&filt->kf_proc_eventfd, filt) < 0) {
+    if (kqops.eventfd_init(&filt->kf_efd, filt) < 0) {
     error_0:
         return (-1);
     }
 
-    if (kqops.eventfd_register(filt->kf_kqueue, &filt->kf_proc_eventfd) < 0) {
+    if (kqops.eventfd_register(filt->kf_kqueue, &filt->kf_efd) < 0) {
     error_1:
-        kqops.eventfd_close(&filt->kf_proc_eventfd);
+        kqops.eventfd_close(&filt->kf_efd);
         goto error_0;
     }
 
@@ -570,8 +570,8 @@ evfilt_proc_destroy(struct filter *filt)
     }
     tracing_mutex_unlock(&proc_init_mtx);
 
-    kqops.eventfd_unregister(filt->kf_kqueue, &filt->kf_proc_eventfd);
-    kqops.eventfd_close(&filt->kf_proc_eventfd);
+    kqops.eventfd_unregister(filt->kf_kqueue, &filt->kf_efd);
+    kqops.eventfd_close(&filt->kf_efd);
 }
 
 /*
@@ -761,7 +761,7 @@ evfilt_proc_knote_modify(struct filter *filt, struct knote *kn,
         if (LIST_INSERTED(kn, kn_ready))
             LIST_REMOVE_ZERO(kn, kn_ready);
         if (LIST_EMPTY(&filt->kf_ready))
-            kqops.eventfd_lower(&filt->kf_proc_eventfd);
+            kqops.eventfd_lower(&filt->kf_efd);
         tracing_mutex_unlock(&proc_pid_index_mtx);
     }
 
@@ -783,7 +783,7 @@ evfilt_proc_knote_delete(struct filter *filt, struct knote *kn)
     if (LIST_INSERTED(kn, kn_ready))
         LIST_REMOVE_ZERO(kn, kn_ready);
     if (LIST_EMPTY(&filt->kf_ready))
-        kqops.eventfd_lower(&filt->kf_proc_eventfd);
+        kqops.eventfd_lower(&filt->kf_efd);
     tracing_mutex_unlock(&proc_pid_index_mtx);
 
     return (0);
@@ -807,85 +807,33 @@ evfilt_proc_knote_disable(struct filter *filt, struct knote *kn)
     if (LIST_INSERTED(kn, kn_ready))
         LIST_REMOVE_ZERO(kn, kn_ready);
     if (LIST_EMPTY(&filt->kf_ready))
-        kqops.eventfd_lower(&filt->kf_proc_eventfd);
+        kqops.eventfd_lower(&filt->kf_efd);
     tracing_mutex_unlock(&proc_pid_index_mtx);
 
     return (0);
 }
 
 static int
-evfilt_proc_knote_copyout(struct kevent *dst, int nevents, struct filter *filt,
-    struct knote *kn, void *ev)
+evfilt_proc_knote_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
+    struct knote *kn, UNUSED void *ev)
 {
-    struct kevent *dst_p = dst, *dst_end = dst_p + nevents;
-
     /*
-     * Prevent the waiter thread from modifying
-     * the knotes in the ready list whilst we're
-     * processing them.
-     *
-     * At first glance this wouldn't appear to
-     * require a global lock.  The issue is that
-     * if we use filter-specific locks to protect
-     * the kf_ready list, we can get into a deadlock
-     * where the waiter thread holds the lock on
-     * proc_pid_index_mtx, and it attempting to lock
-     * the filter lock to insert new ready
-     * notifications, and we're holding the filter
-     * lock, and attempting to delete a knote,
-     * which requires holding the proc_pid_index_mtx.
-     *
-     * This was seen in the real world and caused
-     * major issues.
-     *
-     * By using a single lock we ensure either the
-     * waiter thread is notifying kqueue instances
-     * data is ready, or a kqueue is copying out
-     * notifications, so no deadlock can occur.
+     * Per-knote copyout, called once by the dispatcher for each
+     * knote it dequeues from kf_ready (the dispatcher detaches
+     * before invoking us, so we don't iterate kf_ready ourselves).
+     * proc_pid_index_mtx still protects kn_proc_status against the
+     * wait thread - waiter_notify writes it under the same mutex.
      */
     tracing_mutex_lock(&proc_pid_index_mtx);
-    /*
-     * Tolerate spurious wakes: an eventfd backend that doesn't
-     * keep the wake-pending flag and the port queue / counter
-     * perfectly in sync may deliver two wakes for one waiter
-     * notification, the second of which finds kf_ready already
-     * drained.  Return 0 so the kqueue waiter just sees no events
-     * for this slot.
-     */
-    if (LIST_EMPTY(&filt->kf_ready)) {
-        tracing_mutex_unlock(&proc_pid_index_mtx);
-        return (0);
-    }
-
-    /*
-     * kn arg is always NULL here, so we just reuse it
-     * for the loop.
-     */
-    while ((kn = LIST_FIRST(&filt->kf_ready))) {
-        if (dst_p >= dst_end)
-            break;
-
-        LIST_REMOVE_ZERO(kn, kn_ready); /* knote_copyout_flag_actions may free the knote */
-        kevent_dump(&kn->kev);
-        memcpy(dst_p, &kn->kev, sizeof(*dst));
-        dst_p->fflags = NOTE_EXIT;
-        dst_p->flags |= EV_EOF;
-        dst_p->data = kn->kn_proc_status;
-
-        if (knote_copyout_flag_actions(filt, kn) < 0) {
-            LIST_INSERT_HEAD(&filt->kf_ready, kn, kn_ready);
-            tracing_mutex_unlock(&proc_pid_index_mtx);
-            return -1;
-        }
-
-        dst_p++;
-    }
-
-    if (LIST_EMPTY(&filt->kf_ready))
-        kqops.eventfd_lower(&filt->kf_proc_eventfd);
+    memcpy(dst, &kn->kev, sizeof(*dst));
+    dst->fflags = NOTE_EXIT;
+    dst->flags |= EV_EOF;
+    dst->data   = kn->kn_proc_status;
     tracing_mutex_unlock(&proc_pid_index_mtx);
 
-    return (dst_p - dst);
+    if (knote_copyout_flag_actions(filt, kn) < 0)
+        return (-1);
+    return (1);
 }
 
 const struct filter evfilt_proc = {
