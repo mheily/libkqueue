@@ -1,16 +1,16 @@
 libkqueue
 =========
 
-### Test suite
-[![CI tests FreeBSD](https://github.com/mheily/libkqueue/actions/workflows/ci-freebsd.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-freebsd.yml)
-[![CI tests macOS](https://github.com/mheily/libkqueue/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-macos.yml)
-[![CI tests OpenBSD](https://github.com/mheily/libkqueue/actions/workflows/ci-openbsd.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-openbsd.yml)
-[![CI tests NetBSD](https://github.com/mheily/libkqueue/actions/workflows/ci-netbsd.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-netbsd.yml)
 ### Targets + Test suite
 [![CI Linux](https://github.com/mheily/libkqueue/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-linux.yml)
 [![CI Windows](https://github.com/mheily/libkqueue/actions/workflows/ci-windows.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-windows.yml)
 [![CI Solaris (OmniOS)](https://github.com/mheily/libkqueue/actions/workflows/ci-solaris.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-solaris.yml)
 [![Coverity](https://scan.coverity.com/projects/24822/badge.svg)](https://scan.coverity.com/projects/mheily-libkqueue)
+### Test suite
+[![CI tests FreeBSD](https://github.com/mheily/libkqueue/actions/workflows/ci-freebsd.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-freebsd.yml)
+[![CI tests OpenBSD](https://github.com/mheily/libkqueue/actions/workflows/ci-openbsd.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-openbsd.yml)
+[![CI tests NetBSD](https://github.com/mheily/libkqueue/actions/workflows/ci-netbsd.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-netbsd.yml)
+[![CI tests macOS](https://github.com/mheily/libkqueue/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-macos.yml)
 
 Overview
 --------
