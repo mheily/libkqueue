@@ -82,6 +82,9 @@
  */
 TAILQ_HEAD(posix_kqueue_kevent_state_head, kqueue_kevent_state);
 
+struct posix_timer;
+TAILQ_HEAD(posix_timer_head, posix_timer);
+
 #define POSIX_KQUEUE_PLATFORM_SPECIFIC \
     fd_set          kq_fds;          /* watched-for-read fd set */ \
     fd_set          kq_rfds;         /* read-readable fds after last pselect */ \
@@ -92,13 +95,14 @@ TAILQ_HEAD(posix_kqueue_kevent_state_head, kqueue_kevent_state);
     int             kq_always_ready; /* count of "always-ready" knotes; non-zero \
                                       * forces pselect to a 0 timeout so file/etc \
                                       * knotes get re-dispatched every wait */ \
-    struct posix_kqueue_kevent_state_head kq_inflight  /* kevent() callers in-flight */
+    struct posix_kqueue_kevent_state_head kq_inflight; /* kevent() callers in-flight */ \
+    struct posix_timer_head kq_timers   /* EVFILT_TIMER deadlines for this kq */
 
 /** Additional members of 'struct knote'
  *
  */
 #define POSIX_KNOTE_PLATFORM_SPECIFIC \
     POSIX_KNOTE_PROC_PLATFORM_SPECIFIC; \
-    struct sleepreq *kn_sleepreq
+    struct posix_timer *kn_timer
 
 #endif  /* ! _KQUEUE_POSIX_PLATFORM_EXT_H */

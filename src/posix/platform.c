@@ -95,6 +95,7 @@ posix_kqueue_init(struct kqueue *kq)
         return (-1);
 
     TAILQ_INIT(&kq->kq_inflight);
+    TAILQ_INIT(&kq->kq_timers);
 
     /*
      * Hand the read end back as the kqueue's identifying fd; the
@@ -218,6 +219,25 @@ posix_kevent_wait(struct kqueue *kq, UNUSED int numevents, const struct timespec
     for (;;) {
         char buf[64];
         bool real_event;
+        struct timespec timer_to;
+        const struct timespec *use_to = timeout;
+        long timer_ns;
+
+        /*
+         * Clamp the pselect timeout against the next EVFILT_TIMER
+         * deadline so timer fires drive wakeups without a sleeper
+         * thread.  -1 means "no timer constrains us".
+         */
+        timer_ns = posix_timer_min_deadline_ns(kq);
+        if (timer_ns >= 0) {
+            timer_to.tv_sec  = timer_ns / 1000000000L;
+            timer_to.tv_nsec = timer_ns % 1000000000L;
+            if (use_to == NULL ||
+                use_to->tv_sec > timer_to.tv_sec ||
+                (use_to->tv_sec == timer_to.tv_sec &&
+                 use_to->tv_nsec > timer_to.tv_nsec))
+                use_to = &timer_to;
+        }
 
         /*
          * Drain wake bytes left in kq_id from cross-thread arms
@@ -240,7 +260,7 @@ posix_kevent_wait(struct kqueue *kq, UNUSED int numevents, const struct timespec
 
         dbg_printf("waiting on nfds=%d (always_ready=%d)",
                    kq->kq_nfds, kq->kq_always_ready);
-        n = pselect(kq->kq_nfds, &rfds, &wfds, NULL, timeout, NULL);
+        n = pselect(kq->kq_nfds, &rfds, &wfds, NULL, use_to, NULL);
         if (n < 0) {
             if (errno == EINTR) {
                 dbg_puts("pselect: EINTR");
@@ -253,10 +273,18 @@ posix_kevent_wait(struct kqueue *kq, UNUSED int numevents, const struct timespec
         kq->kq_rfds = rfds;
         kq->kq_wrfds = wfds;
 
+        /*
+         * A timer expiry presents to pselect as a plain timeout
+         * (n == 0).  Run the timer sweep so copyout sees fresh
+         * fire counts; if anything fired, force a copyout pass.
+         */
         if (n == 0) {
+            posix_timer_check(kq);
             if (kq->kq_always_ready > 0)
-                return (1);              /* always-ready dispatch */
-            return (0);                  /* genuine timeout */
+                return (1);
+            if (timer_ns >= 0 && (use_to == &timer_to))
+                return (1);              /* let copyout drain timers */
+            return (0);                  /* genuine user timeout */
         }
 
         /*
@@ -504,8 +532,23 @@ posix_kevent_copyout(struct kqueue *kq, UNUSED int nready,
         }
 #endif
 
+#ifdef EVFILT_TIMER
         /*
-         * Eventfd-keyed filters (USER, PROC, SIGNAL, TIMER):
+         * EVFILT_TIMER has no eventfd: it's driven entirely from
+         * the pselect timeout clamp.  Run its copyout every pass
+         * and let it walk kq_timers for fired entries.
+         */
+        if (filt->kf_id == EVFILT_TIMER) {
+            rv = posix_dispatch_filter(filt, eventlist + nout, nevents - nout);
+            if (rv < 0)
+                return (-1);
+            nout += rv;
+            continue;
+        }
+#endif
+
+        /*
+         * Eventfd-keyed filters (USER, PROC, SIGNAL):
          * a non-empty kf_pfd that turned readable means the
          * filter has knotes queued on its kf_ready list.  Drain
          * the eventfd and let the filter's copyout emit them.

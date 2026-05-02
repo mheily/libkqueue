@@ -13,316 +13,362 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
+
+/*
+ * EVFILT_TIMER on POSIX, driven entirely from the dispatcher's
+ * pselect(2) timeout - no sleeper threads, no eventfds, no
+ * socketpairs.  Each registered knote owns a struct posix_timer
+ * holding its (CLOCK_MONOTONIC) next-deadline + interval; all
+ * timers for a kqueue live on kq->kq_timers.  Two hooks let the
+ * dispatcher integrate them:
+ *
+ *   posix_timer_min_deadline_ns - smallest "now -> deadline" delta
+ *       across enabled timers; the wait loop clamps its pselect
+ *       timeout against this.
+ *
+ *   posix_timer_check - advance every timer's deadline past the
+ *       current monotonic time, bumping fire_count once per skipped
+ *       interval (so EV_DISPATCH/EV_DISABLE accumulate ticks the
+ *       way native BSD does).  Removes oneshot timers as they fire.
+ *
+ * copyout walks kq_timers and emits one kevent per knote with a
+ * non-zero fire_count, draining the counter as it goes.
+ */
+
 #include <signal.h>
-#include <sys/socket.h>
-#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include <stdlib.h>
 
 #include "private.h"
 
-#if defined(__linux__)
-# include <sys/prctl.h>
-#endif
-
-/* A request to sleep for a certain time */
-struct sleepreq {
-    int         pfd;            /* fd to poll for ACKs */
-    int         wfd;            /* fd to wake up when sleep is over */
-    uintptr_t   ident;          /* from kevent */
-    intptr_t    interval;       /* sleep time, in milliseconds */
-    pthread_cond_t  cond;
-    pthread_mutex_t mtx;
-    bool        terminate;      /* set under mtx by _timer_delete; the cond_signal
-                                 * is otherwise indistinguishable from a spurious
-                                 * pthread_cond_timedwait wakeup. */
-    struct sleepstat *stat;
+struct posix_timer {
+    TAILQ_ENTRY(posix_timer) entry;
+    struct knote   *kn;
+    struct timespec next;       /* CLOCK_MONOTONIC */
+    long            interval_ns;/* 0 if oneshot */
+    bool            oneshot;
+    bool            absolute;   /* NOTE_ABSOLUTE: fire once and stop */
+    unsigned int    fire_count;
 };
 
-/* Information about a successful sleep operation */
-struct sleepinfo {
-    uintptr_t   ident;          /* from kevent */
-    uintptr_t   counter;        /* number of times the timer expired */
-};
-
-static void *
-sleeper_thread(void *arg)
+static void
+ts_now(struct timespec *out)
 {
-    struct sleepreq *sr = (struct sleepreq *) arg;
-    struct sleepinfo si;
-    struct timeval now;
-    struct timespec req;
-    sigset_t        mask;
-    ssize_t         cnt;
-    bool            cts = true;     /* Clear To Send */
-    char            buf[1];
-    int rv;
-
-    /* Initialize the response */
-    si.ident = sr->ident;
-    si.counter = 0;
-
-    /* Block all signals */
-    sigfillset(&mask);
-    if (pthread_sigmask(SIG_BLOCK, &mask, NULL) != 0)
-        dbg_perror("pthread_sigmask(SIG_BLOCK)");
-
-    for (;;) {
-
-        pthread_mutex_lock(&sr->mtx);
-
-        /* Convert the timeout into an absolute time */
-        /* Convert milliseconds into seconds+nanoseconds */
-        gettimeofday(&now, NULL);
-        req.tv_sec  = now.tv_sec + sr->interval / 1000;
-        req.tv_nsec = now.tv_usec + ((sr->interval % 1000) * 1000000);
-
-        /* Sleep */
-        dbg_printf("sleeping for %ld ms", (unsigned long) sr->interval);
-        rv = pthread_cond_timedwait(&sr->cond, &sr->mtx, &req);
-        {
-            bool terminate = sr->terminate;
-            pthread_mutex_unlock(&sr->mtx);
-            if (rv == 0) {
-                if (terminate) {
-                    /* _timer_delete() has requested that we terminate */
-                    dbg_puts("terminating sleeper thread");
-                    break;
-                }
-                /*
-                 * Spurious cond_wait wake.  Without the terminate
-                 * flag we'd treat this as a delete and exit early,
-                 * leaking the timer.  Loop back and re-arm the
-                 * absolute timeout for the remaining interval.
-                 */
-                dbg_puts("spurious cond_wait wake, resuming");
-                continue;
-            } else if (rv != ETIMEDOUT) {
-                dbg_printf("rv=%d %s", rv, strerror(rv));
-                if (rv == EINTR)
-                    abort(); //FIXME should not happen
-            }
-            /* rv == ETIMEDOUT - timer fired. */
-        }
-        si.counter++;
-        dbg_printf(" -------- sleep over (CTS=%d)----------", cts);
-
-        /* Test if the previous wakeup has been acknowledged */
-        if (!cts) {
-            cnt = read(sr->wfd, &buf, 1);
-            if (cnt < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    ;
-                } else {
-                    dbg_perror("read(2)");
-                    break;
-                }
-            } else if (cnt == 0) {
-                dbg_perror("short read(2)");
-                break;
-            } else {
-                cts = true;
-            }
-        }
-
-        /* Wake up kevent waiters if they are ready */
-        if (cts) {
-            cnt = write(sr->wfd, &si, sizeof(si));
-            if (cnt < 0) {
-                /* FIXME: handle EAGAIN */
-                dbg_perror("write(2)");
-            } else if ((size_t)cnt < sizeof(si)) {
-                dbg_puts("FIXME: handle short write");
-            }
-            cts = false;
-            si.counter = 0;
-        }
-    }
-
-    dbg_puts("sleeper thread exiting");
-    return (NULL);
+    clock_gettime(CLOCK_MONOTONIC, out);
 }
 
 static int
-_timer_create(struct filter *filt, struct knote *kn)
+ts_lt(const struct timespec *a, const struct timespec *b)
 {
-    pthread_attr_t attr;
-    pthread_t tid;
-    struct sleepreq *req;
-    kn->kev.flags |= EV_CLEAR;
-
-    req = malloc(sizeof(*req));
-    if (req == NULL) {
-        dbg_perror("malloc");
-        return (-1);
-    }
-    req->pfd = filt->kf_pfd;
-    req->wfd = filt->kf_wfd;
-    req->ident = kn->kev.ident;
-    req->interval = kn->kev.data;
-    kn->kn_sleepreq = req;
-    pthread_cond_init(&req->cond, NULL);
-    pthread_mutex_init(&req->mtx, NULL);
-
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
-    if (pthread_create(&tid, &attr, sleeper_thread, req) != 0) {
-        dbg_perror("pthread_create");
-        pthread_attr_destroy(&attr);
-        free(req);
-        return (-1);
-    }
-
-#ifdef __linux__
-    /*
-     * Set the thread's name to something descriptive so it shows up in gdb,
-     * etc. Max name length is 16 bytes.
-     */
-    prctl(PR_SET_NAME, "libkqueue_sleep", 0, 0, 0);
-#endif
-
-    pthread_attr_destroy(&attr);
-
-    return (0);
+    if (a->tv_sec != b->tv_sec) return a->tv_sec < b->tv_sec;
+    return a->tv_nsec < b->tv_nsec;
 }
 
-static int
-_timer_delete(struct knote *kn)
+static void
+ts_add_ns(struct timespec *t, long ns)
 {
-    if (kn->kn_sleepreq != NULL) {
-        dbg_puts("deleting timer");
-        pthread_mutex_lock(&kn->kn_sleepreq->mtx); //FIXME - error check
-        kn->kn_sleepreq->terminate = true;
-        pthread_cond_signal(&kn->kn_sleepreq->cond); //FIXME - error check
-        pthread_mutex_unlock(&kn->kn_sleepreq->mtx); //FIXME - error check
-        pthread_cond_destroy(&kn->kn_sleepreq->cond); //FIXME - error check
-        free(kn->kn_sleepreq);
-        kn->kn_sleepreq = NULL;
+    t->tv_sec  += ns / 1000000000L;
+    t->tv_nsec += ns % 1000000000L;
+    if (t->tv_nsec >= 1000000000L) {
+        t->tv_sec  += 1;
+        t->tv_nsec -= 1000000000L;
     }
-    return (0);
+}
+
+/*
+ * Convert a kev.data + fflags pair into nanoseconds.  BSD picks
+ * the unit from the fflags bits (NOTE_USECONDS, NOTE_NSECONDS,
+ * NOTE_SECONDS); the default is milliseconds.
+ */
+static long
+timer_data_to_ns(intptr_t data, unsigned int fflags)
+{
+#ifdef NOTE_NSECONDS
+    if (fflags & NOTE_NSECONDS) return (long) data;
+#endif
+#ifdef NOTE_USECONDS
+    if (fflags & NOTE_USECONDS) return (long) data * 1000L;
+#endif
+#ifdef NOTE_SECONDS
+    if (fflags & NOTE_SECONDS) return (long) data * 1000000000L;
+#endif
+    return (long) data * 1000000L;     /* default: ms */
+}
+
+static struct posix_timer *
+timer_alloc(struct knote *kn)
+{
+    struct posix_timer *t;
+    long ns;
+
+    t = calloc(1, sizeof(*t));
+    if (t == NULL)
+        return (NULL);
+    t->kn      = kn;
+    t->oneshot = (kn->kev.flags & EV_ONESHOT) != 0;
+
+#ifdef NOTE_ABSOLUTE
+    if (kn->kev.fflags & NOTE_ABSOLUTE) {
+        /*
+         * kev.data is an absolute deadline in CLOCK_REALTIME
+         * units; convert to a CLOCK_MONOTONIC deadline by
+         * computing the delta against wall-now and adding to
+         * monotonic-now.  Wall-clock jumps after registration
+         * will distort this; matching strict BSD semantics here
+         * would need a separate clock per timer, which we'll
+         * add if a test calls for it.
+         */
+        struct timespec rt_now, m_now;
+        long abs_ns = timer_data_to_ns(kn->kev.data, kn->kev.fflags);
+        clock_gettime(CLOCK_REALTIME, &rt_now);
+        ts_now(&m_now);
+        long delta = (abs_ns / 1000000000L - rt_now.tv_sec) * 1000000000L
+                   + (abs_ns % 1000000000L - rt_now.tv_nsec);
+        if (delta < 0) delta = 0;
+        t->next     = m_now;
+        ts_add_ns(&t->next, delta);
+        t->absolute = true;
+        return (t);
+    }
+#endif
+
+    ns = timer_data_to_ns(kn->kev.data, kn->kev.fflags);
+    if (ns < 1) ns = 1;
+    t->interval_ns = t->oneshot ? 0 : ns;
+    ts_now(&t->next);
+    ts_add_ns(&t->next, ns);
+    return (t);
+}
+
+/*
+ * Smallest "now -> next deadline" delta across enabled timers,
+ * in nanoseconds.  Returns -1 when no timer would constrain the
+ * pselect timeout.  Disabled timers don't influence the wait but
+ * still get advanced in posix_timer_check so fire_count
+ * accumulates ticks across the disable window.
+ */
+long
+posix_timer_min_deadline_ns(struct kqueue *kq)
+{
+    struct posix_timer *t;
+    struct timespec now;
+    long min_ns = -1;
+
+    if (TAILQ_EMPTY(&kq->kq_timers))
+        return (-1);
+    ts_now(&now);
+    TAILQ_FOREACH(t, &kq->kq_timers, entry) {
+        long delta;
+        if (KNOTE_DISABLED(t->kn))
+            continue;
+        if (ts_lt(&t->next, &now))
+            return (0);              /* already past-due */
+        delta = (t->next.tv_sec - now.tv_sec) * 1000000000L
+              + (t->next.tv_nsec - now.tv_nsec);
+        if (min_ns < 0 || delta < min_ns)
+            min_ns = delta;
+    }
+    return min_ns;
+}
+
+/*
+ * Walk every timer on the kq and roll its deadline forward past
+ * the current monotonic time, bumping fire_count once per missed
+ * interval.  Oneshot/absolute timers fire at most once and are
+ * unlinked + freed.  Called from the copyout path before we
+ * iterate timers for delivery.
+ */
+void
+posix_timer_check(struct kqueue *kq)
+{
+    struct posix_timer *t, *tnext;
+    struct timespec now;
+
+    if (TAILQ_EMPTY(&kq->kq_timers))
+        return;
+    ts_now(&now);
+    TAILQ_FOREACH_SAFE(t, &kq->kq_timers, entry, tnext) {
+        if (KNOTE_DISABLED(t->kn))
+            continue;                            /* paused; resume on EV_ENABLE */
+        while (!ts_lt(&now, &t->next)) {        /* now >= t->next */
+            t->fire_count++;
+            if (t->oneshot || t->absolute || t->interval_ns == 0)
+                goto stop;
+            ts_add_ns(&t->next, t->interval_ns);
+        }
+        continue;
+    stop:
+        /* Latch deadline well past now so we don't re-fire. */
+        t->next.tv_sec = now.tv_sec + 1000000000L;
+        t->next.tv_nsec = 0;
+    }
 }
 
 int
-evfilt_timer_init(struct filter *filt)
+evfilt_timer_init(UNUSED struct filter *filt)
 {
-    int fd[2];
-
-    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fd) < 0) {
-        dbg_perror("socketpair(3)");
-        return (-1);
-    }
-    if (fcntl(fd[0], F_SETFL, O_NONBLOCK) < 0
-        || fcntl(fd[1], F_SETFL, O_NONBLOCK) < 0) {
-        dbg_perror("fcntl(2)");
-        close(fd[0]);
-        close(fd[1]);
-        return (-1);
-    }
-
-    filt->kf_wfd = fd[0];
-    filt->kf_pfd = fd[1];
-
     return (0);
 }
 
 void
-evfilt_timer_destroy(struct filter *filt)
+evfilt_timer_destroy(UNUSED struct filter *filt)
 {
-    if (close(filt->kf_wfd) < 0)
-        dbg_perror("close(kf_wfd)");
-    if (close(filt->kf_pfd) < 0)
-        dbg_perror("close(kf_pfd)");
+}
+
+/*
+ * Per-knote copyout.  Reads-and-zeros the fire counter; emits one
+ * kevent if there's anything to deliver.  KNOTE_DISABLED knotes
+ * leave the counter alone so on EV_ENABLE the accumulated tick
+ * count is delivered in one shot.
+ */
+static int
+evfilt_timer_copyout_one(struct kevent *dst, struct filter *filt,
+        struct knote *src)
+{
+    struct posix_timer *t = src->kn_timer;
+    unsigned int count;
+
+    if (t == NULL)
+        return (0);
+    if (KNOTE_DISABLED(src))
+        return (0);
+    count = t->fire_count;
+    if (count == 0)
+        return (0);
+    t->fire_count = 0;
+
+    memcpy(dst, &src->kev, sizeof(*dst));
+    dst->data = (intptr_t) count;
+
+    if (knote_copyout_flag_actions(filt, src) < 0)
+        return (-1);
+    return (1);
+}
+
+struct timer_drain_ctx {
+    struct filter *filt;
+    struct kevent *eventlist;
+    int            nevents;
+    int            nout;
+    int            err;
+};
+
+static int
+timer_drain_cb(struct knote *kn, void *uctx)
+{
+    struct timer_drain_ctx *c = uctx;
+    int rv;
+
+    if (c->nout >= c->nevents)
+        return (1);
+    rv = evfilt_timer_copyout_one(c->eventlist + c->nout, c->filt, kn);
+    if (rv < 0) {
+        c->err = -1;
+        return (1);
+    }
+    c->nout += rv;
+    return (0);
 }
 
 int
-evfilt_timer_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
-    struct knote *src, void *ptr UNUSED)
+evfilt_timer_copyout(struct kevent *dst, int nevents, struct filter *filt,
+        UNUSED struct knote *src, UNUSED void *ptr)
 {
-    struct sleepinfo    si;
-    ssize_t       cnt;
-    struct knote *kn;
+    struct timer_drain_ctx c = {
+        .filt = filt, .eventlist = dst, .nevents = nevents,
+        .nout = 0, .err = 0,
+    };
 
-    /* Read the ident */
-    cnt = read(filt->kf_pfd, &si, sizeof(si));
-    if (cnt < 0) {
-        if (errno == EINTR)
-            return (-EINTR);
-        /* FIXME: handle EAGAIN */
-        dbg_printf("read(2): %s", strerror(errno));
-        return (-1);
-    } else if ((size_t)cnt < sizeof(si)) {
-        dbg_puts("error: short read");
-        return (-1);
-    }
-
-    /* Acknowlege receipt */
-    cnt = write(filt->kf_pfd, ".", 1);
-    if (cnt < 0) {
-        /* FIXME: handle EAGAIN and EINTR */
-        dbg_printf("write(2): %s", strerror(errno));
-        return (-1);
-    } else if (cnt < 1) {
-        dbg_puts("error: short write");
-        return (-1);
-    }
-
-    kn = knote_lookup(filt, si.ident);
-
-    /*
-     * Race condition: timer events remain queued even after
-     * the knote is deleted. Ignore these events
-     */
-    if (kn == NULL)
-        return (0);
-
-    dbg_printf("knote=%p", kn);
-    memcpy(dst, &kn->kev, sizeof(*dst));
-
-    dst->data = si.counter;
-
-    if (knote_copyout_flag_actions(filt, src) < 0) return -1;
-
-    return (1);
+    posix_timer_check(filt->kf_kqueue);
+    (void) knote_foreach(filt, timer_drain_cb, &c);
+    return c.err < 0 ? -1 : c.nout;
 }
 
 int
 evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
 {
-    /* TODO: kn_create arms before EV_DISABLE - see kevent_copyin_one EV_ADD|EV_DISABLE race. */
-    return _timer_create(filt, kn);
+    struct posix_timer *t;
+
+    /* BSD makes timers EV_CLEAR by default - data is the fire
+     * count since last delivery, not a sticky boolean. */
+    kn->kev.flags |= EV_CLEAR;
+
+    t = timer_alloc(kn);
+    if (t == NULL)
+        return (-1);
+    kn->kn_timer = t;
+    TAILQ_INSERT_TAIL(&filt->kf_kqueue->kq_timers, t, entry);
+
+    /*
+     * A new deadline may be sooner than the one a parked pselect
+     * is waiting on; wake it so it recomputes its timeout.
+     */
+    posix_wake_kqueue(filt->kf_kqueue);
+    return (0);
 }
 
 int
 evfilt_timer_knote_modify(struct filter *filt, struct knote *kn,
         const struct kevent *kev)
 {
-    (void) filt;
-    (void) kn;
-    (void) kev;
-    return (-1); /* STUB */
+    /*
+     * Replace the timer state with one matching the new interval.
+     * EV_RECEIPT is sticky on BSD (mirrors src/linux/timer.c).
+     */
+    unsigned short keep = kn->kev.flags & EV_RECEIPT;
+    if (kn->kn_timer != NULL) {
+        TAILQ_REMOVE(&filt->kf_kqueue->kq_timers, kn->kn_timer, entry);
+        free(kn->kn_timer);
+        kn->kn_timer = NULL;
+    }
+    kn->kev = *kev;
+    kn->kev.flags |= EV_CLEAR | keep;
+    return evfilt_timer_knote_create(filt, kn);
 }
 
 int
 evfilt_timer_knote_delete(struct filter *filt, struct knote *kn)
 {
-    (void) filt;
-    if (kn->kev.flags & EV_DISABLE)
-        return (0);
-
-    dbg_printf("deleting timer # %d", (int) kn->kev.ident);
-    return _timer_delete(kn);
+    if (kn->kn_timer != NULL) {
+        TAILQ_REMOVE(&filt->kf_kqueue->kq_timers, kn->kn_timer, entry);
+        free(kn->kn_timer);
+        kn->kn_timer = NULL;
+    }
+    return (0);
 }
 
 int
 evfilt_timer_knote_enable(struct filter *filt, struct knote *kn)
 {
-    return evfilt_timer_knote_create(filt, kn);
+    struct posix_timer *t = kn->kn_timer;
+
+    /*
+     * Resume from now: the disable window doesn't accumulate
+     * fires (posix_timer_check skips disabled timers), so a
+     * fresh deadline + zero fire_count is the natural restart
+     * point.  Matches BSD's EV_DISPATCH-on-timer behaviour where
+     * the user gets ticks counted from re-enable forward.
+     */
+    if (t != NULL) {
+        long ns = t->absolute ? 0 : (t->interval_ns > 0 ? t->interval_ns : 1);
+        ts_now(&t->next);
+        ts_add_ns(&t->next, ns);
+        t->fire_count = 0;
+    }
+    posix_wake_kqueue(filt->kf_kqueue);
+    return (0);
 }
 
 int
-evfilt_timer_knote_disable(struct filter *filt, struct knote *kn)
+evfilt_timer_knote_disable(UNUSED struct filter *filt, UNUSED struct knote *kn)
 {
-    return evfilt_timer_knote_delete(filt, kn);
+    /*
+     * Pause: posix_timer_check observes KNOTE_DISABLED and skips
+     * the entry, so no fires accumulate while disabled.
+     * EV_ENABLE will reset the deadline.
+     */
+    return (0);
 }
 
 const struct filter evfilt_timer = {

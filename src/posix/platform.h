@@ -84,4 +84,7 @@ void    posix_eventfd_unregister(struct kqueue *, struct eventfd *);
 
 void    posix_wake_kqueue(struct kqueue *kq);
 
+long    posix_timer_min_deadline_ns(struct kqueue *kq);
+void    posix_timer_check(struct kqueue *kq);
+
 #endif  /* ! _KQUEUE_POSIX_PLATFORM_H */
