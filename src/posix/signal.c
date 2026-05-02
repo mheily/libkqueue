@@ -85,12 +85,34 @@ static int
 sig_platform_add(int sig)
 {
     struct sigaction sa;
+    sigset_t mask;
 
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = _signal_handler;
     sa.sa_flags |= SA_RESTART;
     sigfillset(&sa.sa_mask);
-    return sigaction(sig, &sa, NULL);
+    if (sigaction(sig, &sa, NULL) != 0)
+        return (-1);
+
+    /*
+     * Unblock the signum on this thread.  Callers commonly block
+     * RT signals process-wide before registering EVFILT_SIGNAL to
+     * prevent the default-terminate disposition from racing the
+     * knote registration; with our handler now installed the
+     * default disposition is moot, but as long as every thread
+     * keeps the signum blocked the kernel will queue the signal
+     * indefinitely and the AS-safe handler never runs.  Threads
+     * spawned after this call inherit our mask, but pre-existing
+     * threads keep theirs - the application is responsible for
+     * unblocking in those if it cares (matches the cross-thread
+     * mask requirement signalfd-based delivery imposes; see
+     * BUGS.md).
+     */
+    sigemptyset(&mask);
+    sigaddset(&mask, sig);
+    (void) pthread_sigmask(SIG_UNBLOCK, &mask, NULL);
+
+    return (0);
 }
 
 static int

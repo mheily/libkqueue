@@ -263,7 +263,6 @@ test_kevent_signal_multi_signum(struct test_context *ctx)
     kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
 }
 
-#if !defined(LIBKQUEUE_BACKEND_POSIX)
 /*
  * Two kqueues each watching the same signum.  A single kill must
  * be observed by both - on libkqueue's signalfd backend this
@@ -301,7 +300,6 @@ test_kevent_signal_multi_kqueue(struct test_context *ctx)
     kevent_rv_cmp(0, kevent(kqfd2,     &kev, 1, NULL, 0, NULL));
     close(kqfd2);
 }
-#endif /* !LIBKQUEUE_BACKEND_POSIX */
 
 /*
  * RT signals queue per-fire (vs the per-process pending-bit
@@ -494,9 +492,7 @@ test_evfilt_signal(struct test_context *ctx)
 #if defined(EV_DISPATCH) && !defined(__NetBSD__)
     test(kevent_signal_dispatch, ctx);
 #endif
-#if !defined(LIBKQUEUE_BACKEND_POSIX)
     test(kevent_signal_multi_kqueue, ctx);
-#endif
     test(kevent_signal_multi_signum, ctx);
     test(kevent_signal_receipt_preserved, ctx);
     test(kevent_signal_modify_clobbers_udata, ctx);
@@ -509,7 +505,7 @@ test_evfilt_signal(struct test_context *ctx)
      * queueing semantics aren't there yet.  Skip until the
      * dispatcher learns to count.
      */
-#if defined(SIGRTMIN) && !defined(LIBKQUEUE_BACKEND_POSIX)
+#ifdef SIGRTMIN
     test(kevent_signal_rt_late_register, ctx);
 #endif
 }
