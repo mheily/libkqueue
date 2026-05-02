@@ -71,7 +71,17 @@ jobs:
       if: runner.os == 'Linux'
       continue-on-error: true
       run: |
-        sudo sed -i 's|http://azure.archive.ubuntu.com|http://archive.ubuntu.com|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+        echo 'Acquire::http::Timeout "5"; Acquire::Retries "2";' | \
+            sudo tee /etc/apt/apt.conf.d/99-ci-timeouts >/dev/null
+        . /etc/lsb-release
+        sudo tee /etc/apt/sources.list.d/ubuntu-canonical.sources >/dev/null <<EOF
+        Types: deb
+        URIs: http://archive.ubuntu.com/ubuntu http://us.archive.ubuntu.com/ubuntu http://mirrors.edge.kernel.org/ubuntu
+        Suites: ${DISTRIB_CODENAME} ${DISTRIB_CODENAME}-updates ${DISTRIB_CODENAME}-security
+        Components: main restricted universe multiverse
+        Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+        EOF
+        sudo apt-get update -qq
         sudo apt-get install -y elfutils gdb >/dev/null
 
     - name: Test
