@@ -479,6 +479,17 @@ test_evfilt_timer(struct test_context *ctx)
     test(kevent_timer_note_absolute, ctx);
     test(kevent_timer_note_absolute_after_modify, ctx);
 #endif
+/*
+ * NetBSD kern_event.c filt_timermodify does kn->kn_flags = kev->flags,
+ * replacing the flags word completely (github.com/NetBSD/src
+ * sys/kern/kern_event.c:1536).  EV_RECEIPT set on the original EV_ADD
+ * is lost when a subsequent modify omits it.  OpenBSD's filt_timermodify
+ * calls knote_assign(), which only updates sfflags/sdata/udata and
+ * leaves kn_flags intact (github.com/openbsd/src
+ * sys/kern/kern_event.c:746,2340), so EV_RECEIPT survives there.
+ */
+#if !defined(__NetBSD__)
     test(kevent_timer_modify_preserves_ev_receipt, ctx);
+#endif
     test(kevent_timer_modify_clobbers_udata, ctx);
 }

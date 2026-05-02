@@ -844,11 +844,16 @@ test_evfilt_proc(struct test_context *ctx)
     test(kevent_proc_exit_status_ok, ctx);
     test(kevent_proc_exit_status_error, ctx);
     test(kevent_proc_modify_arms_late, ctx);
-/*
- * OpenBSD and NetBSD native kqueue fire EV_EOF on process exit
- * regardless of fflags, so clearing fflags via re-EV_ADD doesn't
- * prevent the exit event.  Skip the disarms test there.
- */
+    /*
+     * OpenBSD and NetBSD filt_proc() unconditionally activates the knote
+     * on process exit (EV_EOF | EV_ONESHOT) regardless of kn_sfflags.
+     * Clearing fflags via re-EV_ADD therefore cannot prevent the exit
+     * event.  OpenBSD: github.com/openbsd/src sys/kern/kern_event.c:463-470.
+     * NetBSD: github.com/NetBSD/src sys/kern/kern_event.c:1296 ("Always
+     * activate the knote for NOTE_EXIT regardless of whether or not the
+     * listener cares about it").
+     */
+
 #if !defined(__OpenBSD__) && !defined(__NetBSD__)
     test(kevent_proc_modify_disarms, ctx);
 #endif
