@@ -524,8 +524,11 @@ test_kevent_proc_already_exited(struct test_context *ctx)
 
     test_no_kevents(ctx->kqfd);
 
-/* macOS, OpenBSD, and NetBSD reject EVFILT_PROC registration for a
- * zombie with ESRCH; they do not support register-after-exit. */
+    /*
+     * macOS, OpenBSD, and NetBSD reject EVFILT_PROC registration for a
+     * zombie with ESRCH; they do not support registering after exit.
+     */
+
 #if defined(__APPLE__) || defined(__OpenBSD__) || defined(__NetBSD__)
     EV_SET(&kev, early, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
     if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
@@ -841,9 +844,11 @@ test_evfilt_proc(struct test_context *ctx)
     test(kevent_proc_exit_status_ok, ctx);
     test(kevent_proc_exit_status_error, ctx);
     test(kevent_proc_modify_arms_late, ctx);
-/* OpenBSD and NetBSD native kqueue fire EV_EOF on process exit
+/*
+ * OpenBSD and NetBSD native kqueue fire EV_EOF on process exit
  * regardless of fflags, so clearing fflags via re-EV_ADD doesn't
- * prevent the exit event.  Skip the disarms test there. */
+ * prevent the exit event.  Skip the disarms test there.
+ */
 #if !defined(__OpenBSD__) && !defined(__NetBSD__)
     test(kevent_proc_modify_disarms, ctx);
 #endif
