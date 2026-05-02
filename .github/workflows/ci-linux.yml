@@ -93,11 +93,20 @@ jobs:
 
     - name: Add GCC source
       if: ${{ matrix.env.CC == 'gcc' }}
-      uses: myci-actions/add-deb-repo@10
-      with:
-        repo: deb https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu ${{ env.MYREL }} main
-        repo-name: ubuntu-toolchain-r-test
-        keys-asc: https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x1E9377A2BA9EF27F
+      run: |
+        sudo install -dm 0755 /etc/apt/keyrings
+        # PPA is signed with two keys; concatenate both into one keyring.
+        TMP=$(mktemp -d)
+        for k in 1E9377A2BA9EF27F 2C277A0A352154E5; do
+          curl --retry 5 --retry-all-errors -fsSL \
+            "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${k}" \
+            | gpg --dearmor -o "${TMP}/${k}.gpg"
+        done
+        cat "${TMP}"/*.gpg | sudo tee /etc/apt/keyrings/ubuntu-toolchain-r-test.gpg >/dev/null
+        rm -rf "${TMP}"
+        echo "deb [signed-by=/etc/apt/keyrings/ubuntu-toolchain-r-test.gpg] https://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu ${{ env.MYREL }} main" \
+          | sudo tee /etc/apt/sources.list.d/ubuntu-toolchain-r-test.list
+        sudo apt-get update
 
     - name: Install GCC ${{ env.GCC_VER }}
       if: ${{ matrix.env.CC == 'gcc' }}
