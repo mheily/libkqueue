@@ -71,13 +71,12 @@ struct filter;
  * Using the build system macro makes it slightly easier to
  * toggle between POSIX/Linux implementations.
  */
+#include "../posix/platform_ext.h"      /* union posix_filter_state, etc. */
+
 #if HAVE_SYS_PIDFD_OPEN
 #define KNOTE_PROC_PLATFORM_SPECIFIC  int kn_procfd;
-#define FILTER_PROC_PLATFORM_SPECIFIC
 #else
-#include "../posix/platform_ext.h"
 #define KNOTE_PROC_PLATFORM_SPECIFIC  POSIX_KNOTE_PROC_PLATFORM_SPECIFIC
-#define FILTER_PROC_PLATFORM_SPECIFIC POSIX_FILTER_PROC_PLATFORM_SPECIFIC
 #endif
 
 /*
@@ -388,8 +387,7 @@ struct fd_state {
  *
  */
 #define FILTER_PLATFORM_SPECIFIC \
-    void           *kf_signal_state; /* signal.h per-filter heap state */ \
-    FILTER_PROC_PLATFORM_SPECIFIC
+    union posix_filter_state kf_state /* per-filter union (see posix/platform_ext.h) */
 
 /** Additional members of struct kqueue
  *

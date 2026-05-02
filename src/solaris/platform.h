@@ -214,15 +214,12 @@ struct event_buf {
     }
 
 /*
- * Per-filter fields are also mutually exclusive: a struct filter serves
- * exactly one filter type.  kf_signal_state and the proc fields share a
- * union for that reason.
+ * Per-filter platform state.  See union posix_filter_state in
+ * src/posix/platform_ext.h for the layout - filters that need
+ * platform-specific fields get one named struct member each.
  */
 #define FILTER_PLATFORM_SPECIFIC \
-    union { \
-        void *kf_signal_state;                      /* EVFILT_SIGNAL: sig_filter_state pointer (evfilt_signal.h) */ \
-        POSIX_FILTER_PROC_PLATFORM_SPECIFIC;        /* EVFILT_PROC: eventfd + reaper thread (posix/proc.c) */ \
-    }
+    union posix_filter_state kf_state
 
 /*
  * Per-kqueue deferred-free bookkeeping.

@@ -47,15 +47,26 @@
         int kn_proc_status; \
     }
 
-/** Additional members of 'struct filter'
+/*
+ * Per-filter platform state.  Each EVFILT_* that needs any state
+ * gets its own struct; they're grouped in union posix_filter_state
+ * because a given struct-filter slot only ever serves one filter
+ * id.  Filters with no platform state (READ, WRITE, USER, TIMER)
+ * don't appear here - READ/WRITE work directly off kq_fds /
+ * kq_wfds, USER off the common kf_efd, TIMER off kq_timers.
  *
- * These should be included in the platform's FILTER_PLATFORM_SPECIFIC
- * macro definition if using the POSIX proc filter.
+ * Add a new struct here when a new filter grows per-filter state;
+ * adding a member to the union is a no-op for unrelated filters.
  */
-#define POSIX_FILTER_PROC_PLATFORM_SPECIFIC \
-    struct { \
-        pthread_t kf_proc_thread_id; \
-    }
+struct sig_filter_state;            /* defined in common/evfilt_signal.h */
+
+struct posix_filter_signal {
+    struct sig_filter_state *state; /* heap-allocated dispatcher state */
+};
+
+union posix_filter_state {
+    struct posix_filter_signal  sig;
+};
 
 /** Additional members of 'struct filter'
  *
@@ -63,10 +74,8 @@
  * macro definition if using all the POSIX filters.
  */
 #define POSIX_FILTER_PLATFORM_SPECIFIC \
-    int             kf_pfd; /* fd to poll(2) for readiness */ \
-    int             kf_wfd; \
-    POSIX_FILTER_PROC_PLATFORM_SPECIFIC; \
-    void           *kf_signal_state /* posix/signal.c per-filter heap state */
+    int             kf_pfd;             /* fd dispatcher polls for filter readiness */ \
+    union posix_filter_state kf_state   /* per-filter union, indexed by kf_id */
 
 /** Additional members of 'struct kqueue'
  *

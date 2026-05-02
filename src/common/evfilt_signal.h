@@ -224,7 +224,7 @@ sig_dispatch_handle(int sig)
         return;
 
     LIST_FOREACH(sl, &sigtbl[sig].s_links, sl_entry) {
-        struct sig_filter_state *sfs = sl->sl_filt->kf_signal_state;
+        struct sig_filter_state *sfs = sl->sl_filt->kf_state.sig.state;
         struct knote *kn;
         int wake = 0;
 
@@ -453,14 +453,14 @@ evfilt_signal_init(struct filter *filt)
     }
     for (sig = 0; sig < SIGNAL_MAX; sig++)
         sfs->sfs_links[sig].sl_filt = filt;
-    filt->kf_signal_state = sfs;
+    filt->kf_state.sig.state = sfs;
 
     pthread_mutex_lock(&sig_init_mtx);
     if (sig_filter_count == 0) {
         if (sig_dispatch_start() < 0) {
             pthread_mutex_unlock(&sig_init_mtx);
             free(sfs);
-            filt->kf_signal_state = NULL;
+            filt->kf_state.sig.state = NULL;
             kqops.eventfd_unregister(filt->kf_kqueue, &filt->kf_efd);
             kqops.eventfd_close(&filt->kf_efd);
             return (-1);
@@ -475,7 +475,7 @@ evfilt_signal_init(struct filter *filt)
 static void
 evfilt_signal_destroy(struct filter *filt)
 {
-    struct sig_filter_state *sfs = filt->kf_signal_state;
+    struct sig_filter_state *sfs = filt->kf_state.sig.state;
     int sig;
 
     if (sfs != NULL) {
@@ -487,7 +487,7 @@ evfilt_signal_destroy(struct filter *filt)
         }
         pthread_mutex_unlock(&sigtbl_mtx);
         free(sfs);
-        filt->kf_signal_state = NULL;
+        filt->kf_state.sig.state = NULL;
     }
 
     kqops.eventfd_unregister(filt->kf_kqueue, &filt->kf_efd);
@@ -551,7 +551,7 @@ evfilt_signal_knote_create(struct filter *filt, struct knote *kn)
 #endif
 
     kn->kev.flags |= EV_CLEAR;
-    sfs = filt->kf_signal_state;
+    sfs = filt->kf_state.sig.state;
     sl = &sfs->sfs_links[sig];
 
     pthread_mutex_lock(&sigtbl_mtx);
@@ -603,7 +603,7 @@ static int
 evfilt_signal_knote_delete(struct filter *filt, struct knote *kn)
 {
     int sig = (int) kn->kev.ident;
-    struct sig_filter_state *sfs = filt->kf_signal_state;
+    struct sig_filter_state *sfs = filt->kf_state.sig.state;
     struct sig_link *sl = &sfs->sfs_links[sig];
 
     (void) filt;
@@ -634,7 +634,7 @@ evfilt_signal_knote_delete(struct filter *filt, struct knote *kn)
 static int
 evfilt_signal_knote_enable(struct filter *filt, struct knote *kn)
 {
-    struct sig_filter_state *sfs = filt->kf_signal_state;
+    struct sig_filter_state *sfs = filt->kf_state.sig.state;
     struct sig_link *sl = &sfs->sfs_links[(int) kn->kev.ident];
     int wake = 0;
 
@@ -662,7 +662,7 @@ evfilt_signal_knote_enable(struct filter *filt, struct knote *kn)
 static int
 evfilt_signal_knote_disable(struct filter *filt, struct knote *kn)
 {
-    struct sig_filter_state *sfs = filt->kf_signal_state;
+    struct sig_filter_state *sfs = filt->kf_state.sig.state;
     struct sig_link *sl = &sfs->sfs_links[(int) kn->kev.ident];
 
     (void) filt;
@@ -686,7 +686,7 @@ static int
 evfilt_signal_copyout(struct kevent *dst, int nevents, struct filter *filt,
     struct knote *src UNUSED, void *ptr UNUSED)
 {
-    struct sig_filter_state *sfs = filt->kf_signal_state;
+    struct sig_filter_state *sfs = filt->kf_state.sig.state;
     struct knote *kn, *kn_tmp;
     /*
      * Snapshot the knotes we're emitting under sigtbl_mtx so we
