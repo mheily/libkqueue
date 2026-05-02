@@ -67,13 +67,17 @@ jobs:
     - name: Build
       run: make -j2
 
+    - name: Install watchdog debug tools
+      if: runner.os == 'Linux'
+      continue-on-error: true
+      run: |
+        sudo sed -i 's|http://azure.archive.ubuntu.com|http://archive.ubuntu.com|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+        sudo apt-get install -y elfutils gdb >/dev/null
+
     - name: Test
       env:
         KQUEUE_DEBUG: ${{ matrix.env.BUILD_TYPE == 'Release' && '' || '1' }}
       run: |
-        if [ "$RUNNER_OS" = "Linux" ]; then
-          sudo apt-get install -y elfutils gdb >/dev/null
-        fi
         test/libkqueue-test \
           --watchdog-timeout=120 \
           --watchdog-cmd="${{ github.workspace }}/tools/test-stack-dump.sh"

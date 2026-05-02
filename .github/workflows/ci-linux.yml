@@ -125,6 +125,12 @@ jobs:
     - name: Build libkqueue
       run: make -j2
 
+    - name: Install watchdog debug tools
+      continue-on-error: true
+      run: |
+        sudo sed -i 's|http://azure.archive.ubuntu.com|http://archive.ubuntu.com|g' /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+        sudo apt-get install -y elfutils gdb >/dev/null
+
     - name: Run tests
       # KQUEUE_DEBUG is compiled out of Release builds (NDEBUG path),
       # so setting the env var on Release is dead weight - the
@@ -134,7 +140,6 @@ jobs:
         KQUEUE_DEBUG: ${{ matrix.env.BUILD_TYPE == 'Release' && '' || '1' }}
         TSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/tsan.supp
       run: |
-        sudo apt-get install -y elfutils gdb >/dev/null
         test/libkqueue-test \
           --watchdog-timeout=120 \
           --watchdog-cmd="${{ github.workspace }}/tools/test-stack-dump.sh" \
