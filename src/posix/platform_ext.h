@@ -83,7 +83,7 @@
 TAILQ_HEAD(posix_kqueue_kevent_state_head, kqueue_kevent_state);
 
 struct posix_timer;
-TAILQ_HEAD(posix_timer_head, posix_timer);
+RB_HEAD(posix_timer_tree, posix_timer);
 
 #define POSIX_KQUEUE_PLATFORM_SPECIFIC \
     fd_set          kq_fds;          /* watched-for-read fd set */ \
@@ -96,7 +96,7 @@ TAILQ_HEAD(posix_timer_head, posix_timer);
                                       * forces pselect to a 0 timeout so file/etc \
                                       * knotes get re-dispatched every wait */ \
     struct posix_kqueue_kevent_state_head kq_inflight; /* kevent() callers in-flight */ \
-    struct posix_timer_head kq_timers   /* EVFILT_TIMER deadlines for this kq */
+    struct posix_timer_tree kq_timers   /* EVFILT_TIMER deadlines (RB-tree by next-deadline) */
 
 /** Additional members of 'struct knote'
  *

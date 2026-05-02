@@ -17,22 +17,30 @@
 /*
  * EVFILT_TIMER on POSIX, driven entirely from the dispatcher's
  * pselect(2) timeout - no sleeper threads, no eventfds, no
- * socketpairs.  Each registered knote owns a struct posix_timer
- * holding its (CLOCK_MONOTONIC) next-deadline + interval; all
- * timers for a kqueue live on kq->kq_timers.  Two hooks let the
- * dispatcher integrate them:
+ * socketpairs.  Each registered, enabled knote owns a struct
+ * posix_timer linked into kq->kq_timers, an RB-tree keyed on the
+ * (CLOCK_MONOTONIC) next-deadline.  Two hooks let the dispatcher
+ * integrate them:
  *
- *   posix_timer_min_deadline_ns - smallest "now -> deadline" delta
- *       across enabled timers; the wait loop clamps its pselect
- *       timeout against this.
+ *   posix_timer_min_deadline_ns - O(log N) peek at the earliest
+ *       deadline; the wait loop clamps its pselect timeout
+ *       against it.
  *
- *   posix_timer_check - advance every timer's deadline past the
- *       current monotonic time, bumping fire_count once per skipped
- *       interval (so EV_DISPATCH/EV_DISABLE accumulate ticks the
- *       way native BSD does).  Removes oneshot timers as they fire.
+ *   posix_timer_check - pop past-due timers off the front of the
+ *       tree, bump fire_count, advance and re-insert (periodics)
+ *       or leave detached (oneshot/absolute).  Idle case is
+ *       O(log N); on K fires it's O(K log N).
  *
- * copyout walks kq_timers and emits one kevent per knote with a
- * non-zero fire_count, draining the counter as it goes.
+ * Disabled timers are unlinked from the tree on EV_DISABLE so they
+ * don't contribute to the wait deadline; EV_ENABLE recomputes
+ * next-deadline as now+interval and re-inserts.  Matches BSD's
+ * EV_DISPATCH-on-timer behaviour where ticks accumulate from
+ * re-enable forward, not across the disable window.
+ *
+ * copyout walks the per-filter knote tree (knote_foreach) and
+ * emits one kevent per knote with a non-zero fire_count.  We
+ * iterate knotes rather than the deadline tree so a copyout
+ * delivers in knote order, not deadline order.
  */
 
 #include <signal.h>
@@ -43,26 +51,44 @@
 #include "private.h"
 
 struct posix_timer {
-    TAILQ_ENTRY(posix_timer) entry;
+    RB_ENTRY(posix_timer) entry;
     struct knote   *kn;
     struct timespec next;       /* CLOCK_MONOTONIC */
     long            interval_ns;/* 0 if oneshot */
     bool            oneshot;
     bool            absolute;   /* NOTE_ABSOLUTE: fire once and stop */
+    bool            in_tree;    /* linked in kq->kq_timers */
     unsigned int    fire_count;
 };
-
-static void
-ts_now(struct timespec *out)
-{
-    clock_gettime(CLOCK_MONOTONIC, out);
-}
 
 static int
 ts_lt(const struct timespec *a, const struct timespec *b)
 {
     if (a->tv_sec != b->tv_sec) return a->tv_sec < b->tv_sec;
     return a->tv_nsec < b->tv_nsec;
+}
+
+/*
+ * RB ordering: earlier deadline first, tiebreak on pointer
+ * identity so two timers with the same deadline can coexist
+ * (RB_INSERT requires a strict weak ordering).
+ */
+static int
+posix_timer_cmp(const struct posix_timer *a, const struct posix_timer *b)
+{
+    if (ts_lt(&a->next, &b->next)) return -1;
+    if (ts_lt(&b->next, &a->next)) return  1;
+    if (a < b) return -1;
+    if (a > b) return  1;
+    return 0;
+}
+
+RB_GENERATE_STATIC(posix_timer_tree, posix_timer, entry, posix_timer_cmp)
+
+static void
+ts_now(struct timespec *out)
+{
+    clock_gettime(CLOCK_MONOTONIC, out);
 }
 
 static void
@@ -141,67 +167,89 @@ timer_alloc(struct knote *kn)
     return (t);
 }
 
+static void
+timer_link(struct kqueue *kq, struct posix_timer *t)
+{
+    if (t->in_tree)
+        return;
+    RB_INSERT(posix_timer_tree, &kq->kq_timers, t);
+    t->in_tree = true;
+}
+
+static void
+timer_unlink(struct kqueue *kq, struct posix_timer *t)
+{
+    if (!t->in_tree)
+        return;
+    RB_REMOVE(posix_timer_tree, &kq->kq_timers, t);
+    t->in_tree = false;
+}
+
 /*
  * Smallest "now -> next deadline" delta across enabled timers,
- * in nanoseconds.  Returns -1 when no timer would constrain the
- * pselect timeout.  Disabled timers don't influence the wait but
- * still get advanced in posix_timer_check so fire_count
- * accumulates ticks across the disable window.
+ * in nanoseconds.  Returns -1 when no enabled timer would
+ * constrain the pselect timeout.  O(log N) - just RB_MIN.
  */
 long
 posix_timer_min_deadline_ns(struct kqueue *kq)
 {
     struct posix_timer *t;
     struct timespec now;
-    long min_ns = -1;
+    long delta;
 
-    if (TAILQ_EMPTY(&kq->kq_timers))
+    t = RB_MIN(posix_timer_tree, &kq->kq_timers);
+    if (t == NULL)
         return (-1);
     ts_now(&now);
-    TAILQ_FOREACH(t, &kq->kq_timers, entry) {
-        long delta;
-        if (KNOTE_DISABLED(t->kn))
-            continue;
-        if (ts_lt(&t->next, &now))
-            return (0);              /* already past-due */
-        delta = (t->next.tv_sec - now.tv_sec) * 1000000000L
-              + (t->next.tv_nsec - now.tv_nsec);
-        if (min_ns < 0 || delta < min_ns)
-            min_ns = delta;
-    }
-    return min_ns;
+    if (ts_lt(&t->next, &now))
+        return (0);                              /* already past-due */
+    delta = (t->next.tv_sec - now.tv_sec) * 1000000000L
+          + (t->next.tv_nsec - now.tv_nsec);
+    return delta;
 }
 
 /*
- * Walk every timer on the kq and roll its deadline forward past
- * the current monotonic time, bumping fire_count once per missed
- * interval.  Oneshot/absolute timers fire at most once and are
- * unlinked + freed.  Called from the copyout path before we
- * iterate timers for delivery.
+ * Pop past-due timers off the front of the tree.  For each one,
+ * bump fire_count, advance the deadline (periodic) or detach
+ * (oneshot/absolute), and re-insert if still relevant.  Idle
+ * case is O(log N) for the RB_MIN; with K fires it's O(K log N).
+ * Disabled timers aren't in the tree and aren't touched.
  */
 void
 posix_timer_check(struct kqueue *kq)
 {
-    struct posix_timer *t, *tnext;
+    struct posix_timer *t;
     struct timespec now;
 
-    if (TAILQ_EMPTY(&kq->kq_timers))
+    t = RB_MIN(posix_timer_tree, &kq->kq_timers);
+    if (t == NULL)
         return;
     ts_now(&now);
-    TAILQ_FOREACH_SAFE(t, &kq->kq_timers, entry, tnext) {
-        if (KNOTE_DISABLED(t->kn))
-            continue;                            /* paused; resume on EV_ENABLE */
-        while (!ts_lt(&now, &t->next)) {        /* now >= t->next */
-            t->fire_count++;
-            if (t->oneshot || t->absolute || t->interval_ns == 0)
-                goto stop;
-            ts_add_ns(&t->next, t->interval_ns);
+
+    while (t != NULL && !ts_lt(&now, &t->next)) {
+        timer_unlink(kq, t);
+        t->fire_count++;
+        if (t->oneshot || t->absolute || t->interval_ns == 0) {
+            /*
+             * Detach from the deadline tree but leave the struct
+             * alive; copyout will deliver the single fire and
+             * the EV_ONESHOT path (or explicit EV_DELETE) frees.
+             * Latch deadline so a stray re-link wouldn't refire.
+             */
+            t->next.tv_sec = now.tv_sec + 1000000000L;
+            t->next.tv_nsec = 0;
+        } else {
+            /* Catch up missed intervals before re-linking so the
+             * single re-insert lands at the post-catch-up key. */
+            do {
+                ts_add_ns(&t->next, t->interval_ns);
+                if (ts_lt(&now, &t->next))
+                    break;
+                t->fire_count++;
+            } while (1);
+            timer_link(kq, t);
         }
-        continue;
-    stop:
-        /* Latch deadline well past now so we don't re-fire. */
-        t->next.tv_sec = now.tv_sec + 1000000000L;
-        t->next.tv_nsec = 0;
+        t = RB_MIN(posix_timer_tree, &kq->kq_timers);
     }
 }
 
@@ -218,9 +266,9 @@ evfilt_timer_destroy(UNUSED struct filter *filt)
 
 /*
  * Per-knote copyout.  Reads-and-zeros the fire counter; emits one
- * kevent if there's anything to deliver.  KNOTE_DISABLED knotes
- * leave the counter alone so on EV_ENABLE the accumulated tick
- * count is delivered in one shot.
+ * kevent if there's anything to deliver.  Disabled knotes don't
+ * accumulate fires (not in the tree) so the early-out here is
+ * just defence-in-depth.
  */
 static int
 evfilt_timer_copyout_one(struct kevent *dst, struct filter *filt,
@@ -298,7 +346,7 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
     if (t == NULL)
         return (-1);
     kn->kn_timer = t;
-    TAILQ_INSERT_TAIL(&filt->kf_kqueue->kq_timers, t, entry);
+    timer_link(filt->kf_kqueue, t);
 
     /*
      * A new deadline may be sooner than the one a parked pselect
@@ -318,7 +366,7 @@ evfilt_timer_knote_modify(struct filter *filt, struct knote *kn,
      */
     unsigned short keep = kn->kev.flags & EV_RECEIPT;
     if (kn->kn_timer != NULL) {
-        TAILQ_REMOVE(&filt->kf_kqueue->kq_timers, kn->kn_timer, entry);
+        timer_unlink(filt->kf_kqueue, kn->kn_timer);
         free(kn->kn_timer);
         kn->kn_timer = NULL;
     }
@@ -331,7 +379,7 @@ int
 evfilt_timer_knote_delete(struct filter *filt, struct knote *kn)
 {
     if (kn->kn_timer != NULL) {
-        TAILQ_REMOVE(&filt->kf_kqueue->kq_timers, kn->kn_timer, entry);
+        timer_unlink(filt->kf_kqueue, kn->kn_timer);
         free(kn->kn_timer);
         kn->kn_timer = NULL;
     }
@@ -344,30 +392,31 @@ evfilt_timer_knote_enable(struct filter *filt, struct knote *kn)
     struct posix_timer *t = kn->kn_timer;
 
     /*
-     * Resume from now: the disable window doesn't accumulate
-     * fires (posix_timer_check skips disabled timers), so a
-     * fresh deadline + zero fire_count is the natural restart
-     * point.  Matches BSD's EV_DISPATCH-on-timer behaviour where
-     * the user gets ticks counted from re-enable forward.
+     * Resume from now: re-link with a fresh deadline and zero
+     * the fire counter.  Matches BSD's EV_DISPATCH-on-timer
+     * behaviour where ticks count from re-enable forward.
      */
     if (t != NULL) {
         long ns = t->absolute ? 0 : (t->interval_ns > 0 ? t->interval_ns : 1);
         ts_now(&t->next);
         ts_add_ns(&t->next, ns);
         t->fire_count = 0;
+        timer_link(filt->kf_kqueue, t);
     }
     posix_wake_kqueue(filt->kf_kqueue);
     return (0);
 }
 
 int
-evfilt_timer_knote_disable(UNUSED struct filter *filt, UNUSED struct knote *kn)
+evfilt_timer_knote_disable(struct filter *filt, struct knote *kn)
 {
     /*
-     * Pause: posix_timer_check observes KNOTE_DISABLED and skips
-     * the entry, so no fires accumulate while disabled.
-     * EV_ENABLE will reset the deadline.
+     * Pause: unlink from the deadline tree so we don't constrain
+     * pselect on a knote that won't deliver.  EV_ENABLE re-links
+     * with a fresh deadline.
      */
+    if (kn->kn_timer != NULL)
+        timer_unlink(filt->kf_kqueue, kn->kn_timer);
     return (0);
 }
 

@@ -95,7 +95,7 @@ posix_kqueue_init(struct kqueue *kq)
         return (-1);
 
     TAILQ_INIT(&kq->kq_inflight);
-    TAILQ_INIT(&kq->kq_timers);
+    RB_INIT(&kq->kq_timers);
 
     /*
      * Hand the read end back as the kqueue's identifying fd; the
