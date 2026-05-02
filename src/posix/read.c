@@ -76,18 +76,27 @@ posix_read_descriptor_type(struct knote *kn)
         /*
          * Detect listening (passive) sockets so copyout can return
          * a non-zero data when an incoming connection is queued.
-         * SO_ACCEPTCONN is POSIX-2001 and present on every platform
-         * we target (Linux, illumos, FreeBSD/OpenBSD/NetBSD,
-         * macOS >= 10.6); a getsockopt failure means a real error,
-         * not a missing option.
          */
         if (kn->kn_flags & KNFL_SOCKET_STREAM) {
             int listening = 0;
             slen = sizeof(listening);
             if (getsockopt((int)kn->kev.ident, SOL_SOCKET,
-                           SO_ACCEPTCONN, &listening, &slen) == 0 &&
-                listening)
-                kn->kn_flags |= KNFL_SOCKET_PASSIVE;
+                           SO_ACCEPTCONN, &listening, &slen) == 0) {
+                if (listening)
+                    kn->kn_flags |= KNFL_SOCKET_PASSIVE;
+            } else {
+                /*
+                 * SO_ACCEPTCONN is missing on macOS (ENOPROTOOPT).
+                 * Fall back to recv(MSG_PEEK|MSG_DONTWAIT): on a
+                 * listening socket it errors ENOTCONN, on a
+                 * connected one it returns data, EOF, or EAGAIN.
+                 */
+                char probe;
+                ssize_t r = recv((int)kn->kev.ident, &probe, 1,
+                                 MSG_PEEK | MSG_DONTWAIT);
+                if (r < 0 && errno == ENOTCONN)
+                    kn->kn_flags |= KNFL_SOCKET_PASSIVE;
+            }
         }
         return (0);
     default:
