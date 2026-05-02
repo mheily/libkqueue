@@ -206,9 +206,6 @@ posix_kevent_wait(struct kqueue *kq, UNUSED int numevents, const struct timespec
     fd_set rfds, wfds;
     struct timespec zero = { 0, 0 };
 
-    rfds = kq->kq_fds;
-    wfds = kq->kq_wfds;
-
     /*
      * If any always-ready knote (e.g. EVFILT_READ on a regular
      * file) is registered, force pselect to return immediately.
@@ -218,28 +215,72 @@ posix_kevent_wait(struct kqueue *kq, UNUSED int numevents, const struct timespec
     if (kq->kq_always_ready > 0)
         timeout = &zero;
 
-    dbg_printf("waiting on nfds=%d (always_ready=%d)",
-               kq->kq_nfds, kq->kq_always_ready);
-    n = pselect(kq->kq_nfds, &rfds, &wfds, NULL, timeout, NULL);
-    if (n < 0) {
-        if (errno == EINTR) {
-            dbg_puts("pselect: EINTR");
-            return (0);
-        }
-        dbg_perror("pselect(2)");
-        return (-1);
-    }
+    for (;;) {
+        char buf[64];
+        bool real_event;
 
-    kq->kq_rfds = rfds;
-    kq->kq_wrfds = wfds;
-    /*
-     * Always-ready knotes still need dispatch even when pselect
-     * timed out with no real fd activity.  Returning > 0 makes
-     * the common kevent_copyout path call our copyout.
-     */
-    if (n == 0 && kq->kq_always_ready > 0)
-        return (1);
-    return (n);
+        /*
+         * Drain wake bytes left in kq_id from cross-thread arms
+         * or same-thread copyin paths.  Without this, an EV_ADD
+         * that primed the wake-pipe inside the same kevent() call
+         * would make pselect return immediately on a synthetic
+         * "kqueue changed" signal; copyout then finds nothing
+         * really ready and returns 0, surfacing to the caller of
+         * kevent(...,timeout=NULL) as a spurious 0 return.  The
+         * pselect snapshot below already incorporates the
+         * up-to-date kq_fds, so the wake byte itself is redundant
+         * once we've reloaded.
+         */
+        if (kq->kq_id >= 0)
+            while (read(kq->kq_id, buf, sizeof(buf)) > 0)
+                /* repeat */;
+
+        rfds = kq->kq_fds;
+        wfds = kq->kq_wfds;
+
+        dbg_printf("waiting on nfds=%d (always_ready=%d)",
+                   kq->kq_nfds, kq->kq_always_ready);
+        n = pselect(kq->kq_nfds, &rfds, &wfds, NULL, timeout, NULL);
+        if (n < 0) {
+            if (errno == EINTR) {
+                dbg_puts("pselect: EINTR");
+                return (0);
+            }
+            dbg_perror("pselect(2)");
+            return (-1);
+        }
+
+        kq->kq_rfds = rfds;
+        kq->kq_wrfds = wfds;
+
+        if (n == 0) {
+            if (kq->kq_always_ready > 0)
+                return (1);              /* always-ready dispatch */
+            return (0);                  /* genuine timeout */
+        }
+
+        /*
+         * Determine whether pselect saw a real fd transition or
+         * only the wake-pipe.  Clear kq_id from the read snapshot
+         * and see if anything remains; if both rfds and wfds are
+         * empty, this was a spurious wake.  When the caller asked
+         * to block (timeout NULL) we loop; otherwise return n and
+         * let copyout do its thing (it will just produce zero
+         * events, matching kevent's "timed out" semantics).
+         */
+        if (kq->kq_id >= 0 && FD_ISSET(kq->kq_id, &rfds))
+            FD_CLR(kq->kq_id, &rfds);
+        real_event = false;
+        for (int fd = 0; fd < kq->kq_nfds; fd++) {
+            if (FD_ISSET(fd, &rfds) || FD_ISSET(fd, &wfds)) {
+                real_event = true;
+                break;
+            }
+        }
+        if (real_event || timeout != NULL)
+            return (n);
+        /* Spurious wake on a NULL-timeout caller - reload and re-arm. */
+    }
 }
 
 /*
