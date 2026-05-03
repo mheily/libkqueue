@@ -217,6 +217,7 @@ struct eventfd {
 #define KNFL_SOCKET_RDM          (1U << 7U)
 #define KNFL_SOCKET_SEQPACKET    (1U << 8U)
 #define KNFL_SOCKET_RAW          (1U << 9U)
+#define KNFL_ALWAYS_READY_BUMPED (1U << 10U)    /* this knote contributed +1 to kq_always_ready */
 #define KNFL_KNOTE_DELETED       (1U << 31U)
 #define KNFL_SOCKET              (KNFL_SOCKET_STREAM |\
                                   KNFL_SOCKET_DGRAM |\

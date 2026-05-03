@@ -121,9 +121,11 @@ posix_read_arm(struct filter *filt, struct knote *kn)
     struct kqueue *kq = filt->kf_kqueue;
 
     if (kn->kn_flags & KNFL_FILE) {
-        if (!LIST_INSERTED(kn, kn_ready)) {
-            LIST_INSERT_HEAD(&filt->kf_ready, kn, kn_ready);
+        if (!(kn->kn_flags & KNFL_ALWAYS_READY_BUMPED)) {
+            if (!LIST_INSERTED(kn, kn_ready))
+                LIST_INSERT_HEAD(&filt->kf_ready, kn, kn_ready);
             kq->kq_always_ready++;
+            kn->kn_flags |= KNFL_ALWAYS_READY_BUMPED;
         }
         posix_wake_kqueue(kq);
         return (0);
@@ -154,10 +156,18 @@ posix_read_disarm(struct filter *filt, struct knote *kn)
     struct kqueue *kq = filt->kf_kqueue;
 
     if (kn->kn_flags & KNFL_FILE) {
-        if (LIST_INSERTED(kn, kn_ready)) {
-            LIST_REMOVE_ZERO(kn, kn_ready);
+        if (kn->kn_flags & KNFL_ALWAYS_READY_BUMPED) {
+            /*
+             * Common knote_delete unlinks kn_ready before
+             * calling us, so the LIST_INSERTED check on its
+             * own would miss the decrement.  The flag tracks
+             * the +1 we owe to kq_always_ready independently.
+             */
+            if (LIST_INSERTED(kn, kn_ready))
+                LIST_REMOVE_ZERO(kn, kn_ready);
             if (kq->kq_always_ready > 0)
                 kq->kq_always_ready--;
+            kn->kn_flags &= ~KNFL_ALWAYS_READY_BUMPED;
         }
         return;
     }
@@ -266,18 +276,17 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents,
             curpos = 0;
 
         /*
-         * At EOF the knote is "not ready": don't emit, and stop
-         * waking the kqueue on its behalf.  When the consumer
-         * lseeks back, the next arm path will rewake.
+         * BSD spec: a regular-file read knote is "active when
+         * size > position".  Suppress the emit when at/past
+         * EOF, but keep the knote on kf_ready so a later write
+         * (through any fd) or lseek-back picks up immediately
+         * on the next kevent.  We don't have a vfs-write
+         * callback to hand-fire the knote, so the kqueue stays
+         * in always-ready polling for the file knote's
+         * lifetime - the existing contract for any file knote.
          */
-        if (curpos >= sb.st_size) {
-            if (LIST_INSERTED(src, kn_ready)) {
-                LIST_REMOVE_ZERO(src, kn_ready);
-                if (filt->kf_kqueue->kq_always_ready > 0)
-                    filt->kf_kqueue->kq_always_ready--;
-            }
+        if (curpos >= sb.st_size)
             return (0);
-        }
         dst->data = (intptr_t)(sb.st_size - curpos);
     } else if (src->kn_flags & KNFL_SOCKET_PASSIVE) {
         /*
