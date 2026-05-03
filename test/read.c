@@ -714,6 +714,62 @@ test_kevent_regular_file(struct test_context *ctx)
     close(fd);
 }
 
+/*
+ * BSD spec: an EVFILT_READ knote on a regular file is "active when
+ * size > position".  After draining to EOF the knote is quiescent;
+ * on a subsequent write that pushes size past the read position,
+ * the knote must re-activate.  Tests the "another writer appended
+ * to the file" case, which native BSD handles via a KNOTE() callback
+ * from the vfs write path.
+ */
+void
+test_kevent_regular_file_reactivate(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    char            path[] = "/tmp/libkqueue-test-XXXXXX";
+    struct timespec timeout = { 2, 0 };
+    int             rfd, wfd, tmpfd;
+
+    tmpfd = mkstemp(path);
+    if (tmpfd < 0) die("mkstemp");
+    if (write(tmpfd, "abcd", 4) != 4) die("write initial");
+    close(tmpfd);
+
+    rfd = open(path, O_RDONLY);
+    if (rfd < 0) die("open(rfd)");
+
+    EV_SET(&kev, rfd, EVFILT_READ, EV_ADD, 0, 0, &rfd);
+    kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
+
+    /* Initial: 4 bytes available. */
+    if (kevent_get_timeout(ret, 1, ctx->kqfd, &timeout) != 1)
+        die("initial: no event");
+    if (ret[0].data != 4)
+        die("initial: expected data=4, got %ld", (long) ret[0].data);
+
+    /* Seek to EOF; knote should now be quiet. */
+    if (lseek(rfd, 4, SEEK_SET) != 4) die("lseek");
+    test_no_kevents(ctx->kqfd);
+
+    /* Append through a separate write fd.  Native BSD's KNOTE() in
+     * the vfs write path should re-activate the knote. */
+    wfd = open(path, O_WRONLY | O_APPEND);
+    if (wfd < 0) die("open(wfd)");
+    if (write(wfd, "efgh", 4) != 4) die("write append");
+    close(wfd);
+
+    /* size=8 pos=4 -> data=4. */
+    if (kevent_get_timeout(ret, 1, ctx->kqfd, &timeout) != 1)
+        die("re-activation: no event after file grew");
+    if (ret[0].data != 4)
+        die("re-activation: expected data=4, got %ld", (long) ret[0].data);
+
+    kev.flags = EV_DELETE;
+    kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
+    close(rfd);
+    unlink(path);
+}
+
 /* Test transitioning a socket from EVFILT_WRITE to EVFILT_READ */
 void
 test_transition_from_write_to_read(struct test_context *ctx)
@@ -879,6 +935,7 @@ test_evfilt_read(struct test_context *ctx)
     test(kevent_pipe_eof, ctx);
     test(kevent_pipe_eof_multi, ctx);
     test(kevent_regular_file, ctx);
+    test(kevent_regular_file_reactivate, ctx);
     close(ctx->client_fd);
     close(ctx->server_fd);
     close(ctx->listen_fd);
