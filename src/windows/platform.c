@@ -37,86 +37,10 @@ static __thread struct event_buf iocp_buf;
  */
 static __thread DWORD iocp_wait_timeout_ms;
 
-/*
- * Wake every thread parked in GetQueuedCompletionStatus on this kq
- * so kqueue_free's deferred teardown can complete.  Each parked
- * waiter dequeues the synthetic completion, returns to the common
- * kevent loop, takes the kq lock, observes kq_freeing and a non-
- * empty kq_inflight, exits without re-blocking.  The last caller
- * out runs kqueue_complete_deferred_free.
- *
- * One PostQueuedCompletionStatus per inflight caller is enough -
- * each completion only wakes one GQCS - so we post the count by
- * walking kq_inflight under the per-kq lock.  A spurious extra
- * wake (post to a kq with no waiters) is harmless because copyout
- * is robust to discarded completions.
- */
-static void
-windows_kqueue_interrupt(struct kqueue *kq)
-{
-    struct kqueue_kevent_state *state;
-    if (kq->kq_iocp == NULL)
-        return;
-    TAILQ_FOREACH(state, &kq->kq_inflight, entry) {
-        PostQueuedCompletionStatus(kq->kq_iocp, 0, (ULONG_PTR) 0, NULL);
-    }
-}
-
 extern int windows_signal_init(void);
 #ifndef NDEBUG
 extern dbg_func_t windows_dbg_default(void);
 #endif
-static void
-windows_libkqueue_init(void)
-{
-    WSADATA wsaData;
-
-    /*
-     * Bring up the global kq_mtx CRITICAL_SECTION before common
-     * code can lock it.  POSIX backends rely on
-     * PTHREAD_MUTEX_INITIALIZER static init; Win32's
-     * CRITICAL_SECTION needs a runtime InitializeCriticalSection,
-     * which tracing_mutex_init wraps.
-     */
-    tracing_mutex_init(&kq_mtx, NULL);
-
-    /*
-     * Winsock startup must succeed for any socket-shaped filter
-     * (EVFILT_READ / EVFILT_WRITE on AF_INET, FD_CLOSE detection
-     * via WSAEventSelect, etc.) to function.  Used to live inside
-     * libkqueue_init's KQUEUE_DEBUG branch in common code, which
-     * meant Release builds without the env var never started
-     * Winsock at all.
-     */
-    if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0)
-        abort();
-
-#if !defined(NDEBUG) && !defined(__GNUC__)
-    /*
-     * MSVC Debug CRT heap surveillance: opt in only when the user
-     * set KQUEUE_DEBUG=1, mirroring the original common-code
-     * behaviour.  -Werror'd builds without __GNUC__ pull in
-     * <crtdbg.h> via private.h.
-     */
-    {
-        char *s = getenv("KQUEUE_DEBUG");
-        if (s && *s && *s != '0') {
-            int tmpFlag = _CrtSetDbgFlag(_CRTDBG_REPORT_FLAG);
-            tmpFlag |= _CRTDBG_CHECK_ALWAYS_DF;
-            _CrtSetDbgFlag(tmpFlag);
-        }
-    }
-#endif
-
-    /*
-     * Hook CTRL_C / CTRL_BREAK / window-close / logoff / shutdown
-     * so an external signal-shaped event reaches any kqueue
-     * watcher EVFILT_SIGNAL'd on the matching signum.  Failures
-     * are non-fatal: the rest of the library is still usable;
-     * just no console-control bridge.
-     */
-    (void) windows_signal_init();
-}
 
 static atomic_int kq_close_pipe_seq;
 
@@ -257,51 +181,6 @@ err:
     return (-1);
 }
 
-/*
- * Win32 thread-pool callback: runs after the consumer closes
- * the kq fd, freeing the kq for real (map_remove + LIST_REMOVE
- * + windows_kqueue_free + free).  Deferred from
- * windows_kevent_copyout because that runs with the per-kq
- * lock held; common kqueue_free needs to take that lock and
- * destroy it.
- *
- * Any kevent caller that arrives between the close-detect
- * completion and this callback running sees kq_consumer_closed
- * via the windows_kevent_wait short-circuit and returns EBADF
- * without ever entering kqops.kevent_wait, so we can free the
- * kq freely once we get the global kq_mtx.
- */
-VOID CALLBACK
-windows_kqueue_close_cleanup(PTP_CALLBACK_INSTANCE inst, PVOID ctx)
-{
-    struct kqueue *kq = (struct kqueue *) ctx;
-    struct kqueue *iter;
-    int alive = 0;
-    (void) inst;
-
-    /*
-     * kqueue_free asserts kq_mtx is held; it does the
-     * LIST_REMOVE, map_remove, kqops.kqueue_free, per-kq mutex
-     * destroy, and free.  Safe to take kq_mtx here because the
-     * original kevent() caller has released the per-kq lock by
-     * the time this thread runs.
-     *
-     * Race we have to defend against: process exit fires
-     * libkqueue_free between the close-detect post and our
-     * dispatch.  libkqueue_free walks kq_list and frees every
-     * kq still in it - if it raced us, this kq pointer is
-     * already freed memory.  Verify it's still in kq_list under
-     * the global lock before dereferencing.
-     */
-    tracing_mutex_lock(&kq_mtx);
-    LIST_FOREACH(iter, &kq_list, kq_entry) {
-        if (iter == kq) { alive = 1; break; }
-    }
-    if (alive)
-        kqueue_free(kq);
-    tracing_mutex_unlock(&kq_mtx);
-}
-
 void
 windows_kqueue_free(struct kqueue *kq)
 {
@@ -359,6 +238,76 @@ windows_kqueue_free(struct kqueue *kq)
     if (kq->kq_iocp != NULL) {
         CloseHandle(kq->kq_iocp);
         kq->kq_iocp = NULL;
+    }
+}
+
+/*
+ * Win32 thread-pool callback: runs after the consumer closes
+ * the kq fd, freeing the kq for real (map_remove + LIST_REMOVE
+ * + windows_kqueue_free + free).  Deferred from
+ * windows_kevent_copyout because that runs with the per-kq
+ * lock held; common kqueue_free needs to take that lock and
+ * destroy it.
+ *
+ * Any kevent caller that arrives between the close-detect
+ * completion and this callback running sees kq_consumer_closed
+ * via the windows_kevent_wait short-circuit and returns EBADF
+ * without ever entering kqops.kevent_wait, so we can free the
+ * kq freely once we get the global kq_mtx.
+ */
+VOID CALLBACK
+windows_kqueue_close_cleanup(PTP_CALLBACK_INSTANCE inst, PVOID ctx)
+{
+    struct kqueue *kq = (struct kqueue *) ctx;
+    struct kqueue *iter;
+    int alive = 0;
+    (void) inst;
+
+    /*
+     * kqueue_free asserts kq_mtx is held; it does the
+     * LIST_REMOVE, map_remove, kqops.kqueue_free, per-kq mutex
+     * destroy, and free.  Safe to take kq_mtx here because the
+     * original kevent() caller has released the per-kq lock by
+     * the time this thread runs.
+     *
+     * Race we have to defend against: process exit fires
+     * libkqueue_free between the close-detect post and our
+     * dispatch.  libkqueue_free walks kq_list and frees every
+     * kq still in it - if it raced us, this kq pointer is
+     * already freed memory.  Verify it's still in kq_list under
+     * the global lock before dereferencing.
+     */
+    tracing_mutex_lock(&kq_mtx);
+    LIST_FOREACH(iter, &kq_list, kq_entry) {
+        if (iter == kq) { alive = 1; break; }
+    }
+    if (alive)
+        kqueue_free(kq);
+    tracing_mutex_unlock(&kq_mtx);
+}
+
+/*
+ * Wake every thread parked in GetQueuedCompletionStatus on this kq
+ * so kqueue_free's deferred teardown can complete.  Each parked
+ * waiter dequeues the synthetic completion, returns to the common
+ * kevent loop, takes the kq lock, observes kq_freeing and a non-
+ * empty kq_inflight, exits without re-blocking.  The last caller
+ * out runs kqueue_complete_deferred_free.
+ *
+ * One PostQueuedCompletionStatus per inflight caller is enough -
+ * each completion only wakes one GQCS - so we post the count by
+ * walking kq_inflight under the per-kq lock.  A spurious extra
+ * wake (post to a kq with no waiters) is harmless because copyout
+ * is robust to discarded completions.
+ */
+static void
+windows_kqueue_interrupt(struct kqueue *kq)
+{
+    struct kqueue_kevent_state *state;
+    if (kq->kq_iocp == NULL)
+        return;
+    TAILQ_FOREACH(state, &kq->kq_inflight, entry) {
+        PostQueuedCompletionStatus(kq->kq_iocp, 0, (ULONG_PTR) 0, NULL);
     }
 }
 
@@ -729,6 +678,61 @@ windows_filter_free(struct kqueue *kq, struct filter *kf)
 {
 
 }
+
+static void
+windows_libkqueue_init(void)
+{
+    WSADATA wsaData;
+
+    /*
+     * Bring up the global kq_mtx CRITICAL_SECTION before common
+     * code can lock it.  POSIX backends rely on
+     * PTHREAD_MUTEX_INITIALIZER static init; Win32's
+     * CRITICAL_SECTION needs a runtime InitializeCriticalSection,
+     * which tracing_mutex_init wraps.
+     */
+    tracing_mutex_init(&kq_mtx, NULL);
+
+    /*
+     * Winsock startup must succeed for any socket-shaped filter
+     * (EVFILT_READ / EVFILT_WRITE on AF_INET, FD_CLOSE detection
+     * via WSAEventSelect, etc.) to function.  Used to live inside
+     * libkqueue_init's KQUEUE_DEBUG branch in common code, which
+     * meant Release builds without the env var never started
+     * Winsock at all.
+     */
+    if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0)
+        abort();
+
+#if !defined(NDEBUG) && !defined(__GNUC__)
+    /*
+     * MSVC Debug CRT heap surveillance: opt in only when the user
+     * set KQUEUE_DEBUG=1, mirroring the original common-code
+     * behaviour.  -Werror'd builds without __GNUC__ pull in
+     * <crtdbg.h> via private.h.
+     */
+    {
+        char *s = getenv("KQUEUE_DEBUG");
+        if (s && *s && *s != '0') {
+            int tmpFlag = _CrtSetDbgFlag(_CRTDBG_REPORT_FLAG);
+            tmpFlag |= _CRTDBG_CHECK_ALWAYS_DF;
+            _CrtSetDbgFlag(tmpFlag);
+        }
+    }
+#endif
+
+    /*
+     * Hook CTRL_C / CTRL_BREAK / window-close / logoff / shutdown
+     * so an external signal-shaped event reaches any kqueue
+     * watcher EVFILT_SIGNAL'd on the matching signum.  Failures
+     * are non-fatal: the rest of the library is still usable;
+     * just no console-control bridge.
+     */
+    (void) windows_signal_init();
+}
+
+/* Externally referenced from src/windows/{read,write}.c per-knote      */
+/* create paths.                                                        */
 
 /*
  * No-op invalid-parameter handler.  _get_osfhandle on a non-fd
