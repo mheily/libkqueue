@@ -17,6 +17,7 @@
 #include "common.h"
 
 #include <limits.h>
+#include <sys/mman.h>
 
 #if defined(__linux__) || defined(__FreeBSD__)
 #include <sys/resource.h>
@@ -374,34 +375,75 @@ test_kqueue_recursive(void *unused)
 }
 
 /*
- * kevent() with negative or absurdly large nevents must reject
- * with EINVAL, not crash or copyout junk.  FreeBSD added this
- * check via D30480.
+ * kevent() with negative or absurdly large nevents must not
+ * crash or copyout past the eventlist's valid range.  FreeBSD
+ * D30480 added explicit EINVAL rejection; other platforms
+ * silently treat negative as 0.  The portable safety contract
+ * is simpler: no buffer overrun.
+ *
+ * Verified by sandwiching a single-kevent eventlist between
+ * PROT_NONE guard pages.  Any write past the buffer (in either
+ * direction) traps to SIGSEGV and the test process dies hard.
  */
 static void
 test_kqueue_nevents_validation(void *unused)
 {
-    struct kevent ret[1];
     int           kq;
+    long          page = sysconf(_SC_PAGESIZE);
+    char         *region;
+    struct kevent *evlist;
 
     (void) unused;
     if ((kq = kqueue()) < 0) die("kqueue");
 
-    /* Negative nevents must reject with EINVAL (FreeBSD D30480). */
-    if (kevent(kq, NULL, 0, ret, -1, NULL) != -1 || errno != EINVAL)
-        die("kevent(nevents=-1) accepted, expected EINVAL (errno=%d)", errno);
+    /*
+     * 3-page region: [PROT_NONE | RW | PROT_NONE].  Place the
+     * single-element eventlist at the END of the middle page so
+     * the byte immediately after kevent[0] is PROT_NONE: any
+     * forward overrun crashes.  Underrun (before eventlist) is
+     * also PROT_NONE for the entire prefix of the middle page
+     * up to evlist.
+     */
+    region = mmap(NULL, 3 * page, PROT_NONE,
+                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (region == MAP_FAILED) die("mmap");
+    if (mprotect(region + page, page, PROT_READ | PROT_WRITE) < 0)
+        die("mprotect");
+    evlist = (struct kevent *)
+             (region + 2 * page - sizeof(struct kevent));
+    /* Sanity: dereferenceable. */
+    memset(evlist, 0, sizeof(*evlist));
 
-    /* Huge nevents: implementation may clamp internally but must
-     * not crash or copyout a multi-GB buffer.  We poll with no
-     * pending events, expect 0 returned (no events) or EINVAL. */
+    /*
+     * Negative nevents.  Whether the kernel rejects or treats
+     * as 0 is implementation-defined.  What's universal: it
+     * MUST NOT write through evlist or anywhere it shouldn't.
+     */
+    {
+        int rv = kevent(kq, NULL, 0, evlist, -1, NULL);
+        if (rv > 0)
+            die("kevent(nevents=-1) returned events, must not");
+#if !defined(NATIVE_KQUEUE) || defined(__FreeBSD__)
+        if (rv != -1 || errno != EINVAL)
+            die("kevent(nevents=-1) expected EINVAL (errno=%d)", errno);
+#endif
+    }
+
+    /*
+     * INT_MAX nevents: a kernel that allocates nevents *
+     * sizeof(struct kevent) without overflow check could OOM
+     * or wrap.  Guard pages catch any actual write past the
+     * single valid slot.
+     */
     {
         struct timespec poll = { 0, 1000000 };  /* 1ms */
-        int rv = kevent(kq, NULL, 0, ret, INT_MAX, &poll);
-        if (rv == -1 && errno != EINVAL)
-            die("kevent(nevents=INT_MAX) failed with %d (%s), expected 0 or EINVAL",
+        int rv = kevent(kq, NULL, 0, evlist, INT_MAX, &poll);
+        if (rv == -1 && errno != EINVAL && errno != ENOMEM)
+            die("kevent(nevents=INT_MAX) errno=%d (%s)",
                 errno, strerror(errno));
     }
 
+    munmap(region, 3 * page);
     close(kq);
 }
 

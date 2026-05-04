@@ -509,27 +509,40 @@ test_kevent_signal_udata_preserved(struct test_context *ctx)
 }
 
 /*
- * Signum 0 and out-of-range signums must reject with EINVAL on
- * EV_ADD.  FreeBSD filt_signalattach checks ident < SIGRTMAX.
+ * Out-of-range signums must reject.  Native BSD's filt_signalattach
+ * only checks ident < SIGRTMAX, so signum 0 and small negatives may
+ * register without error - libkqueue's POSIX/Linux backends reject
+ * them.  The portable contract: registering an unusable signum
+ * either fails outright OR never delivers (kill() can't send 0/
+ * out-of-range signums anyway).
  */
 static void
 test_kevent_signal_invalid_signum_rejected(struct test_context *ctx)
 {
     struct kevent kev;
+    int           rv;
 
-    /* Signum 0 is reserved (used by kill(pid, 0) to test pid existence). */
-    EV_SET(&kev, 0, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
-    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
-        die("signum 0 should reject");
-    if (errno != EINVAL)
-        die("signum 0: expected EINVAL, got %d (%s)", errno, strerror(errno));
-
-    /* Way out of range. */
+    /* Way out of range: every backend rejects this (NSIG cap). */
     EV_SET(&kev, 9999, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
-    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+    rv = kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
+    if (rv == 0)
         die("signum 9999 should reject");
     if (errno != EINVAL)
         die("signum 9999: expected EINVAL, got %d (%s)", errno, strerror(errno));
+
+#if !defined(NATIVE_KQUEUE)
+    /*
+     * Signum 0: libkqueue rejects.  Native BSD accepts and
+     * registers a useless knote (kill(0) can't generate signal 0
+     * for it to fire on), so don't pin EINVAL there.
+     */
+    EV_SET(&kev, 0, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    rv = kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
+    if (rv == 0)
+        die("signum 0 should reject (libkqueue contract)");
+    if (errno != EINVAL)
+        die("signum 0: expected EINVAL, got %d (%s)", errno, strerror(errno));
+#endif
 }
 
 /*
