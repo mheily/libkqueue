@@ -141,6 +141,48 @@
 #else
 #  include "include/sys/event.h"
 #  include "src/windows/platform.h"
+#  include "win32_compat.h"
+
+/*
+ * POSIX-style constants the test suite uses that aren't shipped
+ * by the Win32 SDK.  Pick the closest analogue rather than
+ * #ifdef-ing every callsite.
+ */
+#  ifndef MSG_DONTWAIT
+/*
+ * Win32 recv() takes flags but doesn't define MSG_DONTWAIT; the
+ * test suite uses it as a "don't block during cleanup drain" hint.
+ * Mapping it to 0 falls back to blocking recv, which is fine here
+ * because the drains run on sockets that already have pending data.
+ */
+#    define MSG_DONTWAIT 0
+#  endif
+#  ifndef SHUT_RDWR
+#    define SHUT_RDWR SD_BOTH
+#  endif
+#  ifndef SHUT_RD
+#    define SHUT_RD SD_RECEIVE
+#  endif
+#  ifndef SHUT_WR
+#    define SHUT_WR SD_SEND
+#  endif
+#  ifndef S_IRWXU
+#    define S_IRWXU (_S_IREAD | _S_IWRITE)
+#  endif
+
+/* usleep() shim: Win32 Sleep() is millisecond-granular. */
+#  define usleep(_us) Sleep((DWORD)((_us) / 1000))
+#endif
+
+/*
+ * close() on a SOCKET via the Win32 CRT _close() asserts in
+ * Debug builds (the SOCKET isn't a CRT fd); use closesocket()
+ * there.  POSIX fds (open/_open/_pipe) keep using close().
+ */
+#ifdef _WIN32
+#  define closesock(s) closesocket((SOCKET)(s))
+#else
+#  define closesock(s) close(s)
 #endif
 
 #include "config.h"
@@ -194,9 +236,11 @@ void test_evfilt_user(struct test_context *);
 void test_evfilt_libkqueue(struct test_context *);
 void test_threading(struct test_context *);
 
+extern void watchdog_heartbeat(const char *test_name);
 #define test(f, ctx ,...) do {                                            \
     if ((ctx->test->ut_num >= ctx->test->ut_start) && (ctx->test->ut_num <= ctx->test->ut_end)) {\
         assert(ctx != NULL); \
+        watchdog_heartbeat("test_"#f); \
         test_begin(ctx, "test_"#f"()\t"__VA_ARGS__); \
         errno = 0; \
         test_##f(ctx); \

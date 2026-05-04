@@ -59,13 +59,22 @@ if(LIBKQUEUE_HAVE_FILT_VNODE)
 endif()
 if(LIBKQUEUE_HAVE_FILT_PROC AND UNIX)
   list(APPEND LIBKQUEUE_TEST_SOURCES proc.c)
+elseif(LIBKQUEUE_HAVE_FILT_PROC AND WIN32)
+  # POSIX test/proc.c uses fork() / kill(SIGUSR1) / waitpid() heavily,
+  # none of which port cleanly.  test/proc_win32.c is a slimmer
+  # parallel that exercises the same NOTE_EXIT delivery + already-
+  # exited paths via CreateProcess.
+  list(APPEND LIBKQUEUE_TEST_SOURCES proc_win32.c)
 endif()
 if(LIBKQUEUE_HAVE_FILT_SIGNAL AND UNIX)
   list(APPEND LIBKQUEUE_TEST_SOURCES signal.c)
+elseif(LIBKQUEUE_HAVE_FILT_SIGNAL AND WIN32)
+  list(APPEND LIBKQUEUE_TEST_SOURCES signal_win32.c)
 endif()
 if(LIBKQUEUE_HAVE_FILT_LIBKQUEUE)
   list(APPEND LIBKQUEUE_TEST_SOURCES libkqueue.c)
 endif()
+# vnode.c builds on Windows but always-listed above; nothing extra needed.
 
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/config.h.in
                ${CMAKE_CURRENT_BINARY_DIR}/config.h)
@@ -74,6 +83,7 @@ add_executable(libkqueue-test ${LIBKQUEUE_TEST_SOURCES})
 target_include_directories(libkqueue-test
                            PRIVATE
                              "${CMAKE_SOURCE_DIR}"
+                             "${CMAKE_SOURCE_DIR}/include"
                              "${CMAKE_BINARY_DIR}/include")
 if(NOT "${CMAKE_SYSTEM_NAME}" MATCHES "(Solaris|SunOS)" AND
    NOT "${LIBKQUEUE_BACKEND_RESOLVED}" STREQUAL "posix")

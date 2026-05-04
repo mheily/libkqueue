@@ -19,6 +19,8 @@
 
 #ifndef _WIN32
 #include <getopt.h>
+#else
+#include <crtdbg.h>
 #endif
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__sun) || defined(__APPLE__)
@@ -31,6 +33,15 @@
 #endif
 
 #include "common.h"
+
+#ifdef _WIN32
+static void test_iph_noop(const wchar_t *expr, const wchar_t *func,
+                          const wchar_t *file, unsigned int line,
+                          uintptr_t reserved)
+{
+    (void) expr; (void) func; (void) file; (void) line; (void) reserved;
+}
+#endif
 
 /*
  * Watchdog: a tiny child process that fires a stack dump and
@@ -276,10 +287,176 @@ watchdog_stop(void)
     }
 }
 #else  /* _WIN32 */
-static void watchdog_start(void) {}
-void        watchdog_heartbeat(const char *test_name) { (void) test_name; }
-static void watchdog_stop(void)  {}
-static void watchdog_parse_cmd(const char *cmd) { (void) cmd; }
+
+#define WATCHDOG_TEST_NAME_MAX 64
+#define WATCHDOG_CMD_BUF       512
+
+static int              watchdog_timeout_s   = 0;
+static char             watchdog_cmd_buf[WATCHDOG_CMD_BUF];
+static HANDLE           watchdog_event       = NULL;  /* auto-reset, signalled by heartbeat */
+static HANDLE           watchdog_stop_event  = NULL;  /* manual-reset, signalled by stop() */
+static HANDLE           watchdog_thread      = NULL;
+static CRITICAL_SECTION watchdog_lock;
+static char             watchdog_last_name[WATCHDOG_TEST_NAME_MAX];
+
+static void
+watchdog_parse_cmd(const char *cmd)
+{
+    size_t n = strlen(cmd);
+    if (n >= sizeof(watchdog_cmd_buf)) n = sizeof(watchdog_cmd_buf) - 1;
+    memcpy(watchdog_cmd_buf, cmd, n);
+    watchdog_cmd_buf[n] = '\0';
+}
+
+/*
+ * Windows watchdog thread: parks on watchdog_event for the timeout.
+ * - WAIT_OBJECT_0: heartbeat from main, reset and wait again.
+ * - WAIT_TIMEOUT:  test wedged; spawn the dump cmd, then ExitProcess.
+ *
+ * watchdog_stop_event lets watchdog_stop() interrupt the wait
+ * cleanly when the suite finishes within budget.
+ */
+static DWORD WINAPI
+watchdog_thread_proc(LPVOID unused)
+{
+    HANDLE waits[2] = { watchdog_event, watchdog_stop_event };
+    char   pidbuf[32];
+    DWORD  pid = GetCurrentProcessId();
+
+    (void) unused;
+    snprintf(pidbuf, sizeof(pidbuf), "%lu", (unsigned long) pid);
+
+    for (;;) {
+        DWORD rv = WaitForMultipleObjects(2, waits, FALSE,
+                                          (DWORD) watchdog_timeout_s * 1000);
+        if (rv == WAIT_OBJECT_0)        continue;     /* heartbeat */
+        if (rv == WAIT_OBJECT_0 + 1)    return 0;     /* stop */
+        if (rv != WAIT_TIMEOUT) {
+            fprintf(stderr, "watchdog: WaitForMultipleObjects failed gle=%lu\n",
+                    (unsigned long) GetLastError());
+            return 1;
+        }
+
+        /* Bark. */
+        EnterCriticalSection(&watchdog_lock);
+        fprintf(stderr,
+                "\n=== test watchdog: timeout in %s (pid %s), "
+                "running dump command ===\n",
+                watchdog_last_name[0] ? watchdog_last_name : "(unknown)",
+                pidbuf);
+        LeaveCriticalSection(&watchdog_lock);
+        fflush(stderr);
+
+        if (watchdog_cmd_buf[0]) {
+            /*
+             * Build the cmdline: "<watchdog_cmd> <pid>".  The dump
+             * tool (cdb -pv -c '~*kb;qd' -p, procdump -ma, etc.)
+             * sees the parent pid as its final argv entry, matching
+             * the POSIX watchdog convention.
+             */
+            char  cmdline[WATCHDOG_CMD_BUF + 64];
+            STARTUPINFOA si = { 0 };
+            PROCESS_INFORMATION pi = { 0 };
+            si.cb         = sizeof(si);
+            si.dwFlags    = STARTF_USESTDHANDLES;
+            si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+            si.hStdOutput = GetStdHandle(STD_ERROR_HANDLE);
+            si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+
+            snprintf(cmdline, sizeof(cmdline), "%s %s",
+                     watchdog_cmd_buf, pidbuf);
+            fprintf(stderr, "watchdog: spawning: %s\n", cmdline);
+            fflush(stderr);
+
+            if (CreateProcessA(NULL, cmdline, NULL, NULL, TRUE,
+                               CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+                /*
+                 * Cap the dump at 30s; cdb / procdump occasionally
+                 * hang attaching to a deeply-wedged process.  After
+                 * that, walk away and kill ourselves anyway.
+                 */
+                if (WaitForSingleObject(pi.hProcess, 30 * 1000) == WAIT_TIMEOUT) {
+                    fprintf(stderr,
+                            "watchdog: dump command exceeded 30s, killing\n");
+                    fflush(stderr);
+                    TerminateProcess(pi.hProcess, 1);
+                }
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            } else {
+                fprintf(stderr, "watchdog: CreateProcess failed gle=%lu\n",
+                        (unsigned long) GetLastError());
+                fflush(stderr);
+            }
+        }
+
+        fprintf(stderr, "=== test watchdog: aborting parent ===\n");
+        fflush(stderr);
+        ExitProcess(124);
+    }
+}
+
+static void
+watchdog_start(void)
+{
+    if (watchdog_timeout_s <= 0)
+        return;
+    if (watchdog_cmd_buf[0] == '\0') {
+        fprintf(stderr, "--watchdog-timeout requires --watchdog-cmd\n");
+        return;
+    }
+
+    InitializeCriticalSection(&watchdog_lock);
+    watchdog_event      = CreateEventA(NULL, FALSE, FALSE, NULL);
+    watchdog_stop_event = CreateEventA(NULL, TRUE,  FALSE, NULL);
+    if (!watchdog_event || !watchdog_stop_event) {
+        fprintf(stderr, "watchdog: CreateEvent failed gle=%lu\n",
+                (unsigned long) GetLastError());
+        return;
+    }
+    watchdog_thread = CreateThread(NULL, 0, watchdog_thread_proc, NULL,
+                                   0, NULL);
+    if (!watchdog_thread) {
+        fprintf(stderr, "watchdog: CreateThread failed gle=%lu\n",
+                (unsigned long) GetLastError());
+        return;
+    }
+
+    printf("watchdog active (timeout %ds, cmd '%s', pid %lu)\n",
+           watchdog_timeout_s, watchdog_cmd_buf,
+           (unsigned long) GetCurrentProcessId());
+}
+
+void
+watchdog_heartbeat(const char *test_name)
+{
+    if (watchdog_event == NULL) return;
+
+    EnterCriticalSection(&watchdog_lock);
+    {
+        size_t n = strlen(test_name);
+        if (n >= sizeof(watchdog_last_name))
+            n = sizeof(watchdog_last_name) - 1;
+        memcpy(watchdog_last_name, test_name, n);
+        watchdog_last_name[n] = '\0';
+    }
+    LeaveCriticalSection(&watchdog_lock);
+
+    SetEvent(watchdog_event);
+}
+
+static void
+watchdog_stop(void)
+{
+    if (watchdog_thread == NULL) return;
+
+    SetEvent(watchdog_stop_event);
+    WaitForSingleObject(watchdog_thread, INFINITE);
+    CloseHandle(watchdog_thread); watchdog_thread = NULL;
+    CloseHandle(watchdog_event);  watchdog_event  = NULL;
+    CloseHandle(watchdog_stop_event); watchdog_stop_event = NULL;
+    DeleteCriticalSection(&watchdog_lock);
+}
 #endif
 
 unsigned int
@@ -441,9 +618,47 @@ main(int argc, char **argv)
      * one internally; that allocation is never freed and shows up as
      * a "possibly lost" leak under valgrind.  Thread-safe: libc's
      * stdio serialises FILE access via the FILE's internal lock, so
-     * the shared buffer is no different from libc's own. */
+     * the shared buffer is no different from libc's own.
+     *
+     * MSVC's CRT silently turns _IOLBF into _IOFBF when the stream
+     * isn't a TTY, so on Win32 go fully unbuffered. */
+#ifdef _WIN32
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    /*
+     * Tests deliberately exercise CRT calls on closed / invalid fds
+     * (double-close on the writer end of a pipe after the EOF-trigger
+     * close, etc.).  MSVC's Debug CRT routes those through the
+     * invalid-parameter handler, whose default action is to surface
+     * a modal Watson dialog - on a headless CI runner that hangs the
+     * process until the job timeout fires.  Install a no-op handler
+     * for the whole test process so the call paths fall back to the
+     * documented errno = EBADF return.
+     */
+    _set_invalid_parameter_handler(test_iph_noop);
+
+    /*
+     * MSVC Debug CRT also has a *separate* assertion path:
+     * _CrtDbgReportW.  By default it pops a modal MessageBoxW for
+     * any assert/error/warning - on a headless CI runner that just
+     * hangs the process forever (we caught one stuck inside
+     * _close_internal -> _CrtDbgReportW -> MessageBoxW with cdb).
+     * Redirect all three report categories to stderr so the same
+     * conditions surface as log lines and the call returns instead
+     * of blocking on a UI dialog that nothing will ever click.
+     */
+#ifdef _DEBUG
+    _CrtSetReportMode(_CRT_WARN,   _CRTDBG_MODE_FILE);
+    _CrtSetReportMode(_CRT_ERROR,  _CRTDBG_MODE_FILE);
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_WARN,   _CRTDBG_FILE_STDERR);
+    _CrtSetReportFile(_CRT_ERROR,  _CRTDBG_FILE_STDERR);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+#endif
+#else
     static char stdout_buf[BUFSIZ];
     setvbuf(stdout, stdout_buf, _IOLBF, sizeof(stdout_buf));
+#endif
 
     /*
      * Each filter test is gated on the public header actually
@@ -464,14 +679,14 @@ main(int argc, char **argv)
           .ut_func = test_evfilt_read,
           .ut_end = INT_MAX },
 #endif
-#if defined(EVFILT_SIGNAL) && !defined(_WIN32) && !defined(__ANDROID__)
+#if defined(EVFILT_SIGNAL) && !defined(__ANDROID__)
         // XXX-FIXME -- BROKEN ON LINUX WHEN RUN IN A SEPARATE THREAD
         { .ut_name = "signal",
           .ut_enabled = 1,
           .ut_func = test_evfilt_signal,
           .ut_end = INT_MAX },
 #endif
-#ifdef EVFILT_PROC
+#if defined(EVFILT_PROC)
         { .ut_name = "proc",
           .ut_enabled = 1,
           .ut_func = test_evfilt_proc,
@@ -483,7 +698,7 @@ main(int argc, char **argv)
           .ut_func = test_evfilt_timer,
           .ut_end = INT_MAX },
 #endif
-#if defined(EVFILT_VNODE) && !defined(_WIN32)
+#ifdef EVFILT_VNODE
         { .ut_name = "vnode",
           .ut_enabled = 1,
           .ut_func = test_evfilt_vnode,
@@ -501,7 +716,7 @@ main(int argc, char **argv)
           .ut_func = test_evfilt_user,
           .ut_end = INT_MAX },
 #endif
-#ifdef EVFILT_LIBKQUEUE
+#if defined(EVFILT_LIBKQUEUE) && !defined(_WIN32)
         { .ut_name = "libkqueue",
           .ut_enabled = 1,
           .ut_func = test_evfilt_libkqueue,
@@ -527,7 +742,22 @@ main(int argc, char **argv)
 
     iterations = 1;
 
-/* Windows does not provide a POSIX-compatible getopt */
+    /*
+     * Argument parsing.  POSIX uses getopt_long; Windows ships
+     * without it so we hand-roll a tiny parser that understands the
+     * same options the test suite actually consumes:
+     *
+     *     -h
+     *     -n N            (number of iterations)
+     *     --watchdog-timeout=N
+     *     --watchdog-cmd=CMD
+     *     <testclass>[:<num>|:<start>-<end>] ...
+     *
+     * After the option phase, `optind_local` points at the first
+     * positional argument; the shared block below filters the
+     * test table down to whatever the user asked for.
+     */
+    int optind_local = 1;
 #ifndef _WIN32
     {
         enum {
@@ -566,15 +796,40 @@ main(int argc, char **argv)
                     usage();
             }
         }
+        optind_local = optind;
     }
+#else
+    while (optind_local < argc) {
+        const char *a = argv[optind_local];
+        if (strcmp(a, "-h") == 0) {
+            usage();
+        } else if (strcmp(a, "-n") == 0 && optind_local + 1 < argc) {
+            iterations = atoi(argv[++optind_local]);
+        } else if (strncmp(a, "--watchdog-timeout=", 19) == 0) {
+            watchdog_timeout_s = atoi(a + 19);
+            if (watchdog_timeout_s <= 0) {
+                fprintf(stderr, "--watchdog-timeout must be > 0\n");
+                exit(1);
+            }
+        } else if (strncmp(a, "--watchdog-cmd=", 15) == 0) {
+            watchdog_parse_cmd(a + 15);
+        } else if (a[0] == '-') {
+            fprintf(stderr, "unknown option: %s\n", a);
+            usage();
+        } else {
+            break;  /* first positional - rest go to test selection */
+        }
+        optind_local++;
+    }
+#endif
 
     /* If specific tests are requested, disable all tests by default */
-    if (optind < argc) {
+    if (optind_local < argc) {
         for (test = tests; test->ut_name != NULL; test++) {
             test->ut_enabled = 0;
         }
     }
-    for (i = optind; i < argc; i++) {
+    for (i = optind_local; i < argc; i++) {
         match = 0;
         arg = argv[i];
         for (test = tests; test->ut_name != NULL; test++) {
@@ -637,7 +892,6 @@ main(int argc, char **argv)
             exit(1);
         }
     }
-#endif
 
     test_harness(tests, iterations);
 
