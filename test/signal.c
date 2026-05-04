@@ -700,14 +700,17 @@ test_evfilt_signal(struct test_context *ctx)
 #endif
     test(kevent_signal_ev_clear_resets_data, ctx);
     /*
-     * pthread_kill(self) on Linux backend: signalfd-based dispatch
-     * may not see per-thread-targeted signals if the calling thread
-     * doesn't have the signal masked.  BSD's EVFILT_SIGNAL hooks
-     * before thread routing so this works there.  Gate until the
-     * Linux backend either masks signals globally or switches to a
-     * sigaction-based dispatch.
+     * pthread_kill(self) hangs on:
+     *  - Linux backend (signalfd-based dispatch may not see
+     *    per-thread-targeted signals if the calling thread doesn't
+     *    have the signal masked)
+     *  - macOS native kqueue (psignal_internal apparently doesn't
+     *    fire EVFILT_SIGNAL on pthread_kill-routed signals; test
+     *    deadlocks waiting for an event that never arrives)
+     * Only FreeBSD's tdksignal -> tdsendsignal path posts to the
+     * proc-level klist regardless of source thread.
      */
-#if !defined(LIBKQUEUE_BACKEND_LINUX)
+#if !defined(LIBKQUEUE_BACKEND_LINUX) && !defined(__APPLE__)
     test(kevent_signal_pthread_kill_self, ctx);
 #endif
     test(kevent_signal_fires_while_blocked, ctx);

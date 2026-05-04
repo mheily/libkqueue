@@ -710,7 +710,15 @@ test_evfilt_timer(struct test_context *ctx)
     test(kevent_timer_disable_drains, ctx);
     test(kevent_timer_delete_drains, ctx);
     test(kevent_timer_multi_kqueue, ctx);
+    /*
+     * Native BSDs (OpenBSD, NetBSD, FreeBSD, macOS) don't validate
+     * negative timer intervals - filt_timerattach lets them through
+     * and they fire as one-shot-immediate or never.  libkqueue's
+     * POSIX/Linux backends reject with EINVAL.  Gate to libkqueue.
+     */
+#if !defined(NATIVE_KQUEUE)
     test(kevent_timer_negative_interval_rejected, ctx);
+#endif
 #ifdef NOTE_NSECONDS
     test(kevent_timer_huge_interval, ctx);
 #endif
