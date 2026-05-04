@@ -35,22 +35,19 @@ static __thread struct epoll_event epoll_events[MAX_KEVENT];
  */
 static pthread_t monitoring_thread;
 static pid_t monitoring_tid; /* Monitoring thread */
-static atomic_bool monitoring_thread_created; /* set after successful pthread_create;
-                                                 distinguishes "never started" from
-                                                 "started, then exited" (which clears
-                                                 monitoring_tid).  Cleared in the
-                                                 fork hook so the child can spin up
-                                                 its own monitoring thread. */
-
 static pthread_mutex_t monitoring_thread_mtx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t monitoring_thread_cond = PTHREAD_COND_INITIALIZER;
 
+enum thread_exit_state {
+    THREAD_EXIT_STATE_SELF_CANCEL = 0,
+    THREAD_EXIT_STATE_CANCEL_LOCKED,
+    THREAD_EXIT_STATE_CANCEL_UNLOCKED,
+};
+
 /*
- * No more THREAD_EXIT_STATE_* enum: cleanup always acquires
- * kq_mtx in the thread context that runs it, with no
- * "inherited from cancellor" trick.  See monitoring_thread_cleanup
- * and linux_libkqueue_free below for the protocol.
+ * Monitoring thread is exiting because the process is terminating
  */
+static enum thread_exit_state monitoring_thread_state;
 
 /*
  * Map for kqueue pipes where index is the read side (for which signals are received)
@@ -119,84 +116,86 @@ fd_map_get(int fd)
  * fields and on kq_list with M0 in main's lockset but not T1's,
  * even though both threads acquire the same mutex.
  *
- * Cleanup always acquires kq_mtx in the thread context that
- * runs it (no "lock inherited from cancellor" trick).  Both
- * monitoring_thread_loop and linux_libkqueue_free are responsible
- * for releasing kq_mtx before the cancellation point that triggers
- * this handler so the lock is genuinely free when we get here.
- *
- * TSAN cannot validate the synchronisation pattern: its
- * instrumentation does not propagate happens-before edges across
- * pthread_cancel into the cleanup-handler invocation, and warnings
- * fire on every memory access made by the chain (kqueue_free,
- * filter_unregister_all, knote_delete_all, ...).  TSAN_IGNORE on
- * this function alone wouldn't help because the attribute doesn't
- * propagate to callees.  The suppressions file at tools/tsan.supp
- * (`race:monitoring_thread_cleanup`) catches every warning under
- * this stack pattern, applied in CI via TSAN_OPTIONS=suppressions=.
+ * The protection is real (lock is acquired before any access)
+ * but the instrumentation can't see it.  The suppressions file
+ * at tools/tsan.supp (`race:monitoring_thread_cleanup`) catches
+ * every warning under this stack pattern, applied in CI via
+ * TSAN_OPTIONS=suppressions=.
  */
 static void
 monitoring_thread_cleanup(UNUSED void *arg)
 {
     struct kqueue *kq, *kq_tmp;
 
-    tracing_mutex_lock(&kq_mtx);
+    if ((monitoring_thread_state == THREAD_EXIT_STATE_CANCEL_LOCKED) ||
+        (monitoring_thread_state == THREAD_EXIT_STATE_CANCEL_UNLOCKED)) {
 
-    /*
-     * If the entire process is exiting, then free all
-     * the kqueues.
-     *
-     * We do this because we don't reliably receive all the
-     * close MONITORING_THREAD_SIGNALs before the process
-     * exits, and this avoids ASAN or valgrind raising
-     * spurious memory leaks.
-     *
-     * If the user _hasn't_ closed a KQ fd, then we don't
-     * free the underlying memory, and it'll be correctly
-     * reported as a memory leak.
-     *
-     * On the SELF_CANCEL path (kq_cnt hit zero in the loop)
-     * kq_list is already empty so this walk is a no-op.
-     */
-    LIST_FOREACH_SAFE(kq, &kq_list, kq_entry, kq_tmp) {
         /*
-         * We only cleanup kqueues where their file descriptor
-         * has been closed.  Other kqueues may be in the middle
-         * of operations with kq->kq_mtx held, and attempting to
-         * clean them up would cause a deadlock.  Those are
-         * legitimate leaks the user application should have
-         * freed before exit.
+         * Keep the assertion in kqueue_free happy
          */
-        dbg_printf("kq=%p - fd=%i explicitly checking for closure", kq, kq->kq_id);
-        if (fcntl(kq->kq_id, F_GETFD) < 0) {
-            dbg_printf("kq=%p - fd=%i forcefully cleaning up, current use_count=%u: %s",
-                       kq, kq->kq_id, fd_use_cnt[kq->kq_id],
-                       errno == EBADF ? "File descriptor already closed" : strerror(errno));
-            fd_use_cnt[kq->kq_id] = 0;
-        } else {
+        if (monitoring_thread_state == THREAD_EXIT_STATE_CANCEL_UNLOCKED)
+            tracing_mutex_lock(&kq_mtx);
+
+        /*
+         * If the entire process is exiting, then free all
+         * the kqueues.
+         *
+         * We do this because we don't reliably receive all the
+         * close MONITORING_THREAD_SIGNALs before the process
+         * exits, and this avoids ASAN or valgrind raising
+         * spurious memory leaks.
+         *
+         * If the user _hasn't_ closed a KQ fd, then we don't
+         * free the underlying memory, and it'll be correctly
+         * reported as a memory leak.
+         */
+        LIST_FOREACH_SAFE(kq, &kq_list, kq_entry, kq_tmp) {
             /*
-             * User never closed kqfd.  We still treat this as a
-             * leak (sanity check below) but interrupt any threads
-             * parked in epoll_wait first so they exit kevent()
-             * with EBADF instead of staying stuck forever.  The
-             * kq itself is still leaked per the existing contract
-             * - the user is responsible for matching kqueue() with
-             * close().
+             * We only cleanup kqueues where their file descriptor
+             * has been closed.  Other kqueues may be in the middle
+             * of operations with kq->kq_mtx held, and attempting to
+             * clean them up would cause a deadlock.  Those are
+             * legitimate leaks the user application should have
+             * freed before exit.
              */
-            assert(fd_use_cnt[kq->kq_id] > 0);
-            linux_kqueue_interrupt(kq);
+            dbg_printf("kq=%p - fd=%i explicitly checking for closure", kq, kq->kq_id);
+            if (fcntl(kq->kq_id, F_GETFD) < 0) {
+                dbg_printf("kq=%p - fd=%i forcefully cleaning up, current use_count=%u: %s",
+                           kq, kq->kq_id, fd_use_cnt[kq->kq_id],
+                           errno == EBADF ? "File descriptor already closed" : strerror(errno));
+                fd_use_cnt[kq->kq_id] = 0;
+            } else {
+                /*
+                 * User never closed kqfd.  We still treat this as a
+                 * leak (sanity check below) but interrupt any threads
+                 * parked in epoll_wait first so they exit kevent()
+                 * with EBADF instead of staying stuck forever.  The
+                 * kq itself is still leaked per the existing contract
+                 * - the user is responsible for matching kqueue() with
+                 * close().
+                 */
+                assert(fd_use_cnt[kq->kq_id] > 0);
+                linux_kqueue_interrupt(kq);
+            }
+
+            if (fd_use_cnt[kq->kq_id] == 0) {
+                dbg_printf("kq=%p - fd=%i use_count=%u cleaning up...", kq, kq->kq_id, fd_use_cnt[kq->kq_id]);
+                kqueue_free(kq);
+            } else {
+                dbg_printf("kq=%p - fd=%i is alive use_count=%u.  Skipping, this is likely a leak...",
+                           kq, kq->kq_id, fd_use_cnt[kq->kq_id]);
+            }
         }
 
-        if (fd_use_cnt[kq->kq_id] == 0) {
-            dbg_printf("kq=%p - fd=%i use_count=%u cleaning up...", kq, kq->kq_id, fd_use_cnt[kq->kq_id]);
-            kqueue_free(kq);
-        } else {
-            dbg_printf("kq=%p - fd=%i is alive use_count=%u.  Skipping, this is likely a leak...",
-                       kq, kq->kq_id, fd_use_cnt[kq->kq_id]);
-        }
+        if (monitoring_thread_state == THREAD_EXIT_STATE_CANCEL_UNLOCKED)
+            tracing_mutex_unlock(&kq_mtx);
     }
 
-    dbg_printf("tid=%u - monitoring thread exiting", monitoring_tid);
+    dbg_printf("tid=%u - monitoring thread exiting (%s)",
+               monitoring_tid,
+               monitoring_thread_state == THREAD_EXIT_STATE_SELF_CANCEL ?
+                   "no kqueues" : "process term");
+
     /* Free thread resources */
     free(fd_map);
     fd_map = NULL;
@@ -206,7 +205,8 @@ monitoring_thread_cleanup(UNUSED void *arg)
     /* Reset so that thread can be restarted */
     monitoring_tid = 0;
 
-    tracing_mutex_unlock(&kq_mtx);
+    if (monitoring_thread_state == THREAD_EXIT_STATE_CANCEL_LOCKED)
+        tracing_mutex_unlock(&kq_mtx);
 }
 
 
@@ -332,6 +332,7 @@ monitoring_thread_loop(UNUSED void *arg)
     pthread_cond_signal(&monitoring_thread_cond);
     (void) pthread_mutex_unlock(&monitoring_thread_mtx);
 
+    monitoring_thread_state = THREAD_EXIT_STATE_CANCEL_UNLOCKED;
     pthread_cleanup_push(monitoring_thread_cleanup, NULL)
     while (true) {
         /*
@@ -368,30 +369,19 @@ monitoring_thread_loop(UNUSED void *arg)
     }
 
     /*
-     * Drop kq_mtx before the cancellation point so that, if a
-     * pthread_cancel from main was already pending, the cleanup
-     * handler runs in a clean lockset and reacquires kq_mtx
-     * itself.  Without this release, the handler would inherit a
-     * lock owned by this thread but not visible to TSAN's
-     * lockset-based race detection.
+     * Ensure that any cancellation requests are acted on
      */
-    tracing_mutex_unlock(&kq_mtx);
+    monitoring_thread_state = THREAD_EXIT_STATE_CANCEL_LOCKED;
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     pthread_testcancel();
 
+    monitoring_thread_state = THREAD_EXIT_STATE_SELF_CANCEL;
     pthread_cleanup_pop(true); /* Executes the cleanup function (monitoring_thread_cleanup) */
+    res = pthread_detach(pthread_self());
+    if (res != 0)
+        dbg_printf("pthread_detach(3): %s", strerror(res));
+    tracing_mutex_unlock(&kq_mtx);
 
-    /*
-     * No pthread_detach here.  Main thread reads monitoring_tid
-     * under kq_mtx in linux_libkqueue_free; if the thread has
-     * already cleaned up (tid == 0 from cleanup) main skips
-     * pthread_join, otherwise main joins.  Detaching from this
-     * side races: the thread can detach between main's tid-read
-     * and main's pthread_join, leaving join to fail with "joining
-     * already joined thread".  Without detach, the thread is
-     * always joinable; the leak window is at most up to process
-     * exit, which is when libkqueue_free runs anyway.
-     */
     return NULL;
 }
 
@@ -405,7 +395,6 @@ linux_kqueue_start_thread(void)
 
          return (-1);
     }
-    atomic_store(&monitoring_thread_created, true);
     /*
      * Wait for thread creation to publish monitoring_tid.  Loop on
      * the predicate (monitoring_tid != 0) to be safe against
@@ -433,14 +422,13 @@ linux_libkqueue_fork(void)
      * which called it.
      *
      * Ensure we don't try and cancel it on exit by
-     * clearing the thread id and the created flag.
+     * clearing the thread id.
      *
      * We don't need to lock the kq_mtx here as we're in
      * the child, and none of our threads will have been
      * duplicated.
      */
     monitoring_tid = 0;
-    atomic_store(&monitoring_thread_created, false);
 
     /*
      * If the process has been forked, then we need
@@ -489,34 +477,23 @@ linux_libkqueue_fork(void)
 static void
 linux_libkqueue_free(void)
 {
-    UNUSED pid_t tid;
+    pid_t tid;
 
-    /*
-     * Use monitoring_thread_created (set after pthread_create) to
-     * decide whether the thread exists at all - monitoring_tid is
-     * cleared by the cleanup handler when the thread exits, so it
-     * can't distinguish "never started" from "started, then
-     * exited".  Always pthread_join when created so the thread is
-     * reaped (no thread-leak warning from TSAN).  pthread_join on
-     * an exited-but-joinable thread returns immediately with the
-     * exit status; pthread_cancel on the same is a benign ESRCH.
-     *
-     * No kq_mtx around the read - monitoring_thread_created is an
-     * atomic; main has already finished its kq_mtx-protected work
-     * by the time atexit fires.
-     */
-    if (atomic_load(&monitoring_thread_created)) {
+    tracing_mutex_lock(&kq_mtx);
+    tid = monitoring_tid; /* Gets trashed when the thread exits */
+    if (tid) {
         void *retval;
         int ret;
-
-        tracing_mutex_lock(&kq_mtx);
-        tid = monitoring_tid; /* may be 0 if cleanup already ran */
-        tracing_mutex_unlock(&kq_mtx);
 
         dbg_printf("tid=%u - cancelling", tid);
         ret = pthread_cancel(monitoring_thread);
         if (ret != 0)
            dbg_printf("tid=%u - cancel failed: %s", tid, strerror(ret));
+        /*
+         * We unlock here to allow the monitoring thread
+         * to continue if it was processing a cleanup.
+         */
+        tracing_mutex_unlock(&kq_mtx);
 
         ret = pthread_join(monitoring_thread, &retval);
         if (ret == 0) {
@@ -528,7 +505,8 @@ linux_libkqueue_free(void)
         } else {
             dbg_printf("tid=%u - join failed: %s", tid, strerror(ret));
         }
-        atomic_store(&monitoring_thread_created, false);
+    } else {
+        tracing_mutex_unlock(&kq_mtx);
     }
 }
 
