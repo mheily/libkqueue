@@ -1181,7 +1181,17 @@ test_evfilt_proc(struct test_context *ctx)
 #ifdef EV_RECEIPT
     test(kevent_proc_receipt_preserved, ctx);
 #endif
+    /*
+     * disable_preserves_events: requires the kqueue to surface a
+     * NOTE_EXIT that fired while the knote was disabled, on
+     * subsequent EV_ENABLE.  Native BSD/macOS forces EV_ONESHOT
+     * on EVFILT_PROC and may auto-delete the knote at exit time
+     * (no kn to enable).  Skip on native; libkqueue's POSIX
+     * backend keeps the knote around until userspace consumes.
+     */
+#if !defined(NATIVE_KQUEUE)
     test(kevent_proc_disable_preserves_events, ctx);
+#endif
     test(kevent_proc_exit_signal_decode, ctx);
     test(kevent_proc_fork_storm, ctx);
 

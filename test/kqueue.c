@@ -399,16 +399,18 @@ test_kqueue_nevents_validation(void *unused)
     /*
      * 3-page region: [PROT_NONE | RW | PROT_NONE].  Place the
      * single-element eventlist at the END of the middle page so
-     * the byte immediately after kevent[0] is PROT_NONE: any
-     * forward overrun crashes.  Underrun (before eventlist) is
-     * also PROT_NONE for the entire prefix of the middle page
-     * up to evlist.
+     * the byte immediately after kevent[0] is PROT_NONE.  Map
+     * RW first then mprotect the outer pages DOWN to PROT_NONE -
+     * NetBSD (and some PaX-hardened kernels) refuse to elevate
+     * permissions via mprotect from PROT_NONE.
      */
-    region = mmap(NULL, 3 * page, PROT_NONE,
+    region = mmap(NULL, 3 * page, PROT_READ | PROT_WRITE,
                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (region == MAP_FAILED) die("mmap");
-    if (mprotect(region + page, page, PROT_READ | PROT_WRITE) < 0)
-        die("mprotect");
+    if (mprotect(region, page, PROT_NONE) < 0)
+        die("mprotect(guard 0)");
+    if (mprotect(region + 2 * page, page, PROT_NONE) < 0)
+        die("mprotect(guard 2)");
     evlist = (struct kevent *)
              (region + 2 * page - sizeof(struct kevent));
     /* Sanity: dereferenceable. */
