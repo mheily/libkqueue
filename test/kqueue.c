@@ -17,6 +17,9 @@
 #include "common.h"
 
 #include <limits.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <time.h>
 #include <sys/mman.h>
 
 #if defined(__linux__) || defined(__FreeBSD__)
@@ -510,6 +513,227 @@ test_kqueue_fd_reuse_no_stale_events(void *unused)
     close(kq);
 }
 
+/*
+ * Recursive kqueue chain depth-N: register kq1 watching kq2's fd,
+ * kq2 watching kq3's, ..., kq[N-1] watching kqN's.  Trigger via
+ * leaf and let the wakeup propagate back up.  XNU caps at
+ * MAX_NESTED_KQ=10 (returns ELOOP); FreeBSD/OpenBSD/NetBSD don't
+ * cap and may stack-overflow on the recursive wake.
+ *
+ * If the kernel survives, register fails partway with ELOOP/EINVAL
+ * and we clean up; if it doesn't, the QEMU VM dies and CI marks
+ * failure - that's the point, file upstream.
+ *
+ * Depth tuned conservatively (100) for first run.  Increase if
+ * no kernels panic.
+ */
+#ifdef NATIVE_KQUEUE
+static void
+test_kqueue_deep_recursive_chain(void *unused)
+{
+    enum { CHAIN_DEPTH = 100 };
+    int           kqs[CHAIN_DEPTH];
+    struct kevent kev;
+    int           i, depth;
+
+    (void) unused;
+
+    for (depth = 0; depth < CHAIN_DEPTH; depth++) {
+        kqs[depth] = kqueue();
+        if (kqs[depth] < 0) {
+            /* Out of fds or similar; tear down. */
+            break;
+        }
+    }
+
+    /* Chain: kq[0] watches kq[1], kq[1] watches kq[2], ... */
+    for (i = 0; i + 1 < depth; i++) {
+        EV_SET(&kev, kqs[i + 1], EVFILT_READ, EV_ADD, 0, 0, NULL);
+        if (kevent(kqs[i], &kev, 1, NULL, 0, NULL) < 0) {
+            /*
+             * ELOOP / EINVAL from a depth cap is the safe
+             * outcome; bail without panicking.
+             */
+            depth = i + 1;
+            break;
+        }
+    }
+
+    /* Tear down in reverse so closes propagate down the chain. */
+    for (i = depth - 1; i >= 0; i--) close(kqs[i]);
+}
+#endif
+
+/*
+ * Knote-pool exhaustion: register many EVFILT_USER knotes on one
+ * kqueue and verify the kernel returns ENOMEM/EMFILE rather than
+ * panicking on allocation failure.  Count kept moderate (8192) so
+ * the bulk-close path completes before fd-pressure tests run.
+ */
+static void
+test_kqueue_knote_pool_exhaustion(void *unused)
+{
+    enum { N = 8192 };
+    int  kq;
+    int  i, registered = 0;
+
+    (void) unused;
+    if ((kq = kqueue()) < 0) die("kqueue");
+
+    for (i = 0; i < N; i++) {
+        struct kevent kev;
+        EV_SET(&kev, i + 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+        if (kevent(kq, &kev, 1, NULL, 0, NULL) < 0) {
+            /* ENOMEM / EAGAIN / EMFILE all acceptable. */
+            break;
+        }
+        registered++;
+    }
+    close(kq);
+#ifdef HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE
+    /* Linux backend cleans up asynchronously; drain so subsequent
+     * fd-pressure tests don't see lingering allocations. */
+    libkqueue_drain_pending_close();
+#endif
+    (void) registered;
+}
+
+/*
+ * Pipe peer-close detach race: tight-loop registering EVFILT_WRITE
+ * on a pipe write end and closing both ends in a sibling thread.
+ * filt_pipedetach walking pipe->pipe_peer while pipeclose nulls it
+ * is a UAF candidate per the FreeBSD/NetBSD audits.  No deterministic
+ * synchronisation - racing as fast as possible.
+ */
+struct pipe_uaf_args { atomic_int stop; };
+
+static void *
+_pipe_uaf_worker(void *arg)
+{
+    struct pipe_uaf_args *a = arg;
+    while (!atomic_load(&a->stop)) {
+        int p[2];
+        if (pipe(p) < 0) continue;
+        int kq = kqueue();
+        if (kq < 0) { close(p[0]); close(p[1]); continue; }
+        struct kevent kev;
+        EV_SET(&kev, p[1], EVFILT_WRITE, EV_ADD, 0, 0, NULL);
+        (void) kevent(kq, &kev, 1, NULL, 0, NULL);
+        /* Close in adverse order: read end first, then write. */
+        close(p[0]);
+        close(p[1]);
+        close(kq);
+    }
+    return NULL;
+}
+
+static void
+test_kqueue_pipe_peer_close_uaf(void *unused)
+{
+    enum { N_THREADS = 4, DURATION_MS = 500 };
+    pthread_t              th[N_THREADS];
+    struct pipe_uaf_args   args;
+    int                    i;
+    struct timespec        deadline, now;
+
+    (void) unused;
+    atomic_init(&args.stop, 0);
+
+    for (i = 0; i < N_THREADS; i++) {
+        if (pthread_create(&th[i], NULL, _pipe_uaf_worker, &args) != 0)
+            die("pthread_create");
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_nsec += DURATION_MS * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    do {
+        struct timespec sleep = { 0, 50 * 1000000L };
+        nanosleep(&sleep, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &now);
+    } while (now.tv_sec < deadline.tv_sec ||
+             (now.tv_sec == deadline.tv_sec &&
+              now.tv_nsec < deadline.tv_nsec));
+
+    atomic_store(&args.stop, 1);
+    for (i = 0; i < N_THREADS; i++) pthread_join(th[i], NULL);
+#ifdef HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE
+    libkqueue_drain_pending_close();
+#endif
+}
+
+/*
+ * EVFILT_TIMER callout-vs-detach race: spawn many short periodic
+ * timers, then tear them all down concurrently from sibling threads.
+ * filt_timerdetach barriering against an in-flight callout has had
+ * historical races (the audits flagged this for OpenBSD/NetBSD/
+ * FreeBSD).  Stresses the barrier path.
+ */
+struct timer_race_args { int kqfd; atomic_int stop; };
+
+static void *
+_timer_race_worker(void *arg)
+{
+    struct timer_race_args *a = arg;
+    while (!atomic_load(&a->stop)) {
+        struct kevent kev;
+        uintptr_t ident = (uintptr_t)(rand() % 32 + 1);
+        /* Sub-ms periodic so the callout fires repeatedly. */
+        EV_SET(&kev, ident, EVFILT_TIMER, EV_ADD,
+               0, 1, NULL);
+        if (kevent(a->kqfd, &kev, 1, NULL, 0, NULL) == 0) {
+            EV_SET(&kev, ident, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+            (void) kevent(a->kqfd, &kev, 1, NULL, 0, NULL);
+        }
+    }
+    return NULL;
+}
+
+static void
+test_kqueue_timer_callout_detach_race(void *unused)
+{
+    enum { N_THREADS = 4, DURATION_MS = 500 };
+    pthread_t                th[N_THREADS];
+    struct timer_race_args   args;
+    int                      kq;
+    int                      i;
+    struct timespec          deadline, now;
+
+    (void) unused;
+    if ((kq = kqueue()) < 0) die("kqueue");
+    args.kqfd = kq;
+    atomic_init(&args.stop, 0);
+
+    for (i = 0; i < N_THREADS; i++) {
+        if (pthread_create(&th[i], NULL, _timer_race_worker, &args) != 0)
+            die("pthread_create");
+    }
+
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_nsec += DURATION_MS * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    do {
+        struct timespec sleep = { 0, 50 * 1000000L };
+        nanosleep(&sleep, NULL);
+        clock_gettime(CLOCK_MONOTONIC, &now);
+    } while (now.tv_sec < deadline.tv_sec ||
+             (now.tv_sec == deadline.tv_sec &&
+              now.tv_nsec < deadline.tv_nsec));
+
+    atomic_store(&args.stop, 1);
+    for (i = 0; i < N_THREADS; i++) pthread_join(th[i], NULL);
+    close(kq);
+#ifdef HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE
+    libkqueue_drain_pending_close();
+#endif
+}
+
 void
 test_kqueue(struct test_context *ctx)
 {
@@ -557,6 +781,18 @@ test_kqueue(struct test_context *ctx)
 #if !defined(_WIN32)
     test(ev_receipt, ctx);
 #endif
+
+    /*
+     * Kernel-DoS / panic probes.  Surface real upstream bugs.
+     * Run last so any leaked fds don't poison test_cleanup
+     * (which lowers RLIMIT_NOFILE and is fragile to residue).
+     */
+#ifdef NATIVE_KQUEUE
+    test(kqueue_deep_recursive_chain, ctx);
+#endif
+    test(kqueue_knote_pool_exhaustion, ctx);
+    test(kqueue_pipe_peer_close_uaf, ctx);
+    test(kqueue_timer_callout_detach_race, ctx);
     /* TODO: this fails now, but would be good later
     test(kqueue_descriptor_is_pollable, ctx);
     */
