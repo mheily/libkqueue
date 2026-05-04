@@ -509,41 +509,31 @@ test_kevent_signal_udata_preserved(struct test_context *ctx)
 }
 
 /*
- * Out-of-range signums must reject.  Native BSD's filt_signalattach
- * only checks ident < SIGRTMAX, so signum 0 and small negatives may
- * register without error - libkqueue's POSIX/Linux backends reject
- * them.  The portable contract: registering an unusable signum
- * either fails outright OR never delivers (kill() can't send 0/
- * out-of-range signums anyway).
+ * libkqueue rejects signum 0 and out-of-range signums on EV_ADD.
+ * Native BSD/macOS don't validate ident at registration time -
+ * a knote with a bogus signum registers cleanly and never fires
+ * (kill() can't generate the signal), so the test would surface
+ * a non-bug there.  Gate to libkqueue (POSIX/Linux backends).
  */
+#if !defined(NATIVE_KQUEUE)
 static void
 test_kevent_signal_invalid_signum_rejected(struct test_context *ctx)
 {
     struct kevent kev;
-    int           rv;
 
-    /* Way out of range: every backend rejects this (NSIG cap). */
+    EV_SET(&kev, 0, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+        die("signum 0 should reject");
+    if (errno != EINVAL)
+        die("signum 0: expected EINVAL, got %d (%s)", errno, strerror(errno));
+
     EV_SET(&kev, 9999, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
-    rv = kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
-    if (rv == 0)
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
         die("signum 9999 should reject");
     if (errno != EINVAL)
         die("signum 9999: expected EINVAL, got %d (%s)", errno, strerror(errno));
-
-#if !defined(NATIVE_KQUEUE)
-    /*
-     * Signum 0: libkqueue rejects.  Native BSD accepts and
-     * registers a useless knote (kill(0) can't generate signal 0
-     * for it to fire on), so don't pin EINVAL there.
-     */
-    EV_SET(&kev, 0, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
-    rv = kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
-    if (rv == 0)
-        die("signum 0 should reject (libkqueue contract)");
-    if (errno != EINVAL)
-        die("signum 0: expected EINVAL, got %d (%s)", errno, strerror(errno));
-#endif
 }
+#endif
 
 /*
  * EV_CLEAR resets kev.data to 0 after delivery: a second drain
@@ -705,7 +695,9 @@ test_evfilt_signal(struct test_context *ctx)
     test(kevent_signal_del, ctx);
     test(kevent_signal_del_nonexistent, ctx);
     test(kevent_signal_udata_preserved, ctx);
+#if !defined(NATIVE_KQUEUE)
     test(kevent_signal_invalid_signum_rejected, ctx);
+#endif
     test(kevent_signal_ev_clear_resets_data, ctx);
     /*
      * pthread_kill(self) on Linux backend: signalfd-based dispatch
