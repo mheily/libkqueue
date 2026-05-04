@@ -116,7 +116,9 @@
  * is defined we're testing libkqueue's POSIX backend on the host,
  * not the host's native kqueue, so leave NATIVE_KQUEUE unset.
  */
-#if (defined(__APPLE__) || defined(__FreeBSD__)) && !defined(LIBKQUEUE_BACKEND_POSIX)
+#if (defined(__APPLE__) || defined(__FreeBSD__) || \
+     defined(__OpenBSD__) || defined(__NetBSD__)) && \
+    !defined(LIBKQUEUE_BACKEND_POSIX)
 #define NATIVE_KQUEUE 1
 #endif
 

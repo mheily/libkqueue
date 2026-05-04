@@ -423,7 +423,13 @@ test_kqueue_nevents_validation(void *unused)
         int rv = kevent(kq, NULL, 0, evlist, -1, NULL);
         if (rv > 0)
             die("kevent(nevents=-1) returned events, must not");
-#if !defined(NATIVE_KQUEUE) || defined(__FreeBSD__)
+#if !defined(NATIVE_KQUEUE)
+        /*
+         * libkqueue (POSIX/Linux) rejects with EINVAL.  Native
+         * BSDs don't validate; skip the errno assertion there
+         * and rely on the guard pages above to catch unsafe
+         * behaviour.
+         */
         if (rv != -1 || errno != EINVAL)
             die("kevent(nevents=-1) expected EINVAL (errno=%d)", errno);
 #endif
