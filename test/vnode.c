@@ -1075,16 +1075,15 @@ test_evfilt_vnode(struct test_context *ctx)
 #ifdef NOTE_EXTEND
     test(kevent_vnode_note_extend, ctx);
     /*
-     * OpenBSD/NetBSD kernel bug: ufs_setattr fires NOTE_TRUNCATE
-     * on shrink but never NOTE_EXTEND on grow (only ffs_write
-     * with extended=true fires NOTE_EXTEND, never the
-     * VOP_SETATTR path).  By the kqueue contract NOTE_EXTEND
+     * Cross-BSD kernel bug: VOP_SETATTR doesn't fire NOTE_EXTEND
+     * on size grow.  Only the data-write path (ffs_write with
+     * extended=true) does.  By the kqueue contract NOTE_EXTEND
      * means "size grew" regardless of how, so ftruncate-up
-     * should fire it.  FreeBSD/macOS and libkqueue both do;
-     * gate this test off the BSD2 implementations until they
-     * fix it upstream.
+     * should fire it.  FreeBSD/OpenBSD/NetBSD all miss this;
+     * macOS situation unclear (likely also missing).  libkqueue's
+     * stat-poll backends correctly fire it.
      */
-#if !defined(__OpenBSD__) && !defined(__NetBSD__)
+#if !defined(NATIVE_KQUEUE)
     test(kevent_vnode_note_extend_ftruncate, ctx);
 #endif
 #endif
