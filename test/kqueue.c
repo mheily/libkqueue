@@ -17,10 +17,13 @@
 #include "common.h"
 
 #include <limits.h>
-#include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
-#include <sys/mman.h>
+
+#ifndef _WIN32
+#  include <pthread.h>
+#  include <sys/mman.h>
+#endif
 
 #if defined(__linux__) || defined(__FreeBSD__)
 #include <sys/resource.h>
@@ -388,6 +391,7 @@ test_kqueue_recursive(void *unused)
  * PROT_NONE guard pages.  Any write past the buffer (in either
  * direction) traps to SIGSEGV and the test process dies hard.
  */
+#ifndef _WIN32   /* uses mmap/mprotect to plant guard pages */
 static void
 test_kqueue_nevents_validation(void *unused)
 {
@@ -465,6 +469,7 @@ test_kqueue_nevents_validation(void *unused)
     munmap(region, 3 * page);
     close(kq);
 }
+#endif /* !_WIN32 */
 
 /*
  * fd reuse: register on a pipe fd, close it, open a fresh socket
@@ -609,6 +614,7 @@ test_kqueue_knote_pool_exhaustion(void *unused)
  * is a UAF candidate per the FreeBSD/NetBSD audits.  No deterministic
  * synchronisation - racing as fast as possible.
  */
+#ifndef _WIN32   /* pthread + close-by-fd churn */
 struct pipe_uaf_args { atomic_int stop; };
 
 static void *
@@ -743,6 +749,7 @@ test_kqueue_timer_callout_detach_race(void *unused)
     libkqueue_drain_pending_close();
 #endif
 }
+#endif /* !_WIN32 */
 
 void
 test_kqueue(struct test_context *ctx)
@@ -769,8 +776,8 @@ test_kqueue(struct test_context *ctx)
      * filed/fixed; guard pages still validate the safety
      * contract everywhere else.
      */
-#if !defined(__NetBSD__)
-    test(kqueue_nevents_validation, ctx);
+#if !defined(__NetBSD__) && !defined(_WIN32)
+    test(kqueue_nevents_validation, ctx);   /* mmap/mprotect guard pages */
 #endif
     test(kqueue_fd_reuse_no_stale_events, ctx);
 
@@ -801,8 +808,10 @@ test_kqueue(struct test_context *ctx)
     test(kqueue_deep_recursive_chain, ctx);
 #endif
     test(kqueue_knote_pool_exhaustion, ctx);
+#ifndef _WIN32   /* pthread + close-by-fd churn */
     test(kqueue_pipe_peer_close_uaf, ctx);
     test(kqueue_timer_callout_detach_race, ctx);
+#endif
     /* TODO: this fails now, but would be good later
     test(kqueue_descriptor_is_pollable, ctx);
     */

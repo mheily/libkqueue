@@ -737,6 +737,7 @@ test_kevent_regular_file(struct test_context *ctx)
  * to the file" case, which native BSD handles via a KNOTE() callback
  * from the vfs write path.
  */
+#ifndef _WIN32  /* mkstemp + umask + mode_t + O_APPEND lseek - POSIX-only shape */
 void
 test_kevent_regular_file_reactivate(struct test_context *ctx)
 {
@@ -924,6 +925,7 @@ test_kevent_regular_file_renamed_continues(struct test_context *ctx)
     close(wfd);
     unlink(path2);
 }
+#endif /* !_WIN32 */
 
 #if defined(_WIN32) && _WIN32_WINNT >= 0x0A00
 /*
@@ -1404,7 +1406,8 @@ test_evfilt_read(struct test_context *ctx)
      * either becomes acceptable; same outcome as upstream master.
      * The POSIX backend has its own size-grow gap.
      */
-#if !defined(LIBKQUEUE_BACKEND_LINUX) && !defined(LIBKQUEUE_BACKEND_POSIX)
+#if !defined(LIBKQUEUE_BACKEND_LINUX) && !defined(LIBKQUEUE_BACKEND_POSIX) && \
+    !defined(_WIN32)   /* tests use mkstemp / umask / O_APPEND */
     test(kevent_regular_file_reactivate, ctx);
     test(kevent_regular_file_unlinked_continues, ctx);
     test(kevent_regular_file_renamed_continues, ctx);
