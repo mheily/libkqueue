@@ -304,19 +304,13 @@ evfilt_socket_copyout(struct kevent *dst, UNUSED int nevents, struct filter *fil
     if (pe->portev_events & POLLIN) {
         if (src->kn_flags & KNFL_SOCKET_PASSIVE) {
             /*
-             * Listening socket: kev.data should report the pending-accept
-             * queue length, matching native BSD's kn_data = sol_qlen.
-             * illumos exposes this as getsockopt(SO_QLEN); fall back to 1
-             * (still > 0, so solaris_kevent_copyout's data==0 suppression
-             * doesn't drop us) if the query fails.
+             * Listening socket: readiness signals a pending accept, not data
+             * bytes.  illumos has no portable way to ask the kernel for the
+             * pending-accept queue length (no SO_QLEN, no listen-queue ioctl
+             * exposed to userspace), so we report data=1; the
+             * solaris_kevent_copyout data==0 suppression won't drop us.
              */
-            int       qlen = 0;
-            socklen_t qlen_sz = sizeof(qlen);
-            if (getsockopt(pe->portev_object, SOL_SOCKET, SO_QLEN,
-                           &qlen, &qlen_sz) == 0 && qlen > 0)
-                dst->data = qlen;
-            else
-                dst->data = 1;
+            dst->data = 1;
         } else if (ioctl(pe->portev_object, FIONREAD, &pending_data) < 0) {
             /* race with close(); pretend zero pending */
             dbg_puts("ioctl(FIONREAD) of socket failed");

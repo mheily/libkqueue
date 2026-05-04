@@ -1369,7 +1369,14 @@ test_evfilt_read(struct test_context *ctx)
      * portable equivalent for listen sockets, and the POSIX
      * backend hardcodes 1.  Gate on backends that can deliver.
      */
-#if !defined(LIBKQUEUE_BACKEND_POSIX) && !defined(LIBKQUEUE_BACKEND_LINUX)
+    /*
+     * Solaris: illumos has no userspace API for the listen-queue
+     * length (no SO_QLEN, no listen-queue ioctl exposed); the
+     * solaris socket filter hardcodes data=1.  Gate alongside the
+     * existing POSIX/Linux exclusions.
+     */
+#if !defined(LIBKQUEUE_BACKEND_POSIX) && !defined(LIBKQUEUE_BACKEND_LINUX) && \
+    !defined(LIBKQUEUE_BACKEND_SOLARIS)
     test(kevent_read_listen_backlog_count, ctx);
 #endif
     test(kevent_read_pipe_data_exact_count, ctx);
