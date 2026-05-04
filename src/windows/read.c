@@ -121,28 +121,6 @@ evfilt_read_callback(void *param, BOOLEAN fired)
     }
 }
 
-#if FIXME
-static intptr_t
-get_eof_offset(int fd)
-{
-    off_t curpos;
-    struct stat sb;
-
-    curpos = lseek(fd, 0, SEEK_CUR);
-    if (curpos == (off_t) -1) {
-        dbg_perror("lseek(2)");
-        curpos = 0;
-    }
-    if (fstat(fd, &sb) < 0) {
-        dbg_perror("fstat(2)");
-        sb.st_size = 1;
-    }
-
-    dbg_printf("curpos=%zu size=%zu", curpos, sb.st_size);
-    return (sb.st_size - curpos); //FIXME: can overflow
-}
-#endif
-
 /*
  * Regular file: report bytes-remaining-to-EOF, matching the Linux
  * read filter.  At EOF discard the event by zeroing dst->filter (the

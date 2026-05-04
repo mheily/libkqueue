@@ -164,7 +164,6 @@ void windows_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state);
  */
 #define KQUEUE_PLATFORM_SPECIFIC \
     HANDLE kq_iocp; \
-    HANDLE kq_synthetic_event; \
     struct filter *kq_filt_ref[EVFILT_SYSCOUNT]; \
     size_t kq_filt_count; \
     HANDLE kq_close_read; \

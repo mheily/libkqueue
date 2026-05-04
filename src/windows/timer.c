@@ -132,9 +132,6 @@ static VOID CALLBACK evfilt_timer_callback(void* param, BOOLEAN fired){
             (void) atomic_exchange(&kn->kn_fire_count, 0);
             return;
         }
-#if DEADWOOD
-        evt_signal(kq->kq_loop, EVT_WAKEUP, kn);
-#endif
     }
     if(kn->kev.flags & EV_ONESHOT) {
         struct filter* filt;
@@ -244,10 +241,11 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
     }
     convert_msec_to_filetime(&liDueTime, (intptr_t) msec);
 
-    // XXX-FIXME add completion routine to this call
     {
         LONG period = ((kn->kev.flags & EV_ONESHOT) ||
                        (kn->kev.fflags & NOTE_ABSOLUTE)) ? 0 : (LONG) msec;
+        /* No completion routine: dispatch is via the
+         * RegisterWaitForSingleObject below. */
         if (!SetWaitableTimer(th, &liDueTime, period, NULL, NULL, FALSE)) {
             dbg_lasterror("SetWaitableTimer()");
             CloseHandle(th);

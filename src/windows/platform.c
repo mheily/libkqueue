@@ -118,27 +118,6 @@ windows_libkqueue_init(void)
     (void) windows_signal_init();
 }
 
-const struct kqueue_vtable kqops = {
-    .kqueue_init        = windows_kqueue_init,
-    .kqueue_free        = windows_kqueue_free,
-    .kqueue_interrupt   = windows_kqueue_interrupt,
-    .kevent_wait        = windows_kevent_wait,
-    .kevent_copyout     = windows_kevent_copyout,
-    .filter_init        = windows_filter_init,
-    .filter_free        = windows_filter_free,
-    .libkqueue_init     = windows_libkqueue_init,
-#ifndef NDEBUG
-    .libkqueue_dbg_default = windows_dbg_default,
-#endif
-    .eventfd_register   = windows_eventfd_register,
-    .eventfd_unregister = windows_eventfd_unregister,
-    .eventfd_init       = windows_eventfd_init,
-    .eventfd_close      = windows_eventfd_close,
-    .eventfd_raise      = windows_eventfd_raise,
-    .eventfd_lower      = windows_eventfd_lower,
-    .eventfd_descriptor = windows_eventfd_descriptor,
-};
-
 static atomic_int kq_close_pipe_seq;
 
 int
@@ -253,23 +232,6 @@ windows_kqueue_init(struct kqueue *kq)
         goto err;
     }
     pipe_read = NULL; /* now owned by kq_close_read + IOCP */
-
-#if DEADWOOD
-    /* Create a handle whose sole purpose is to indicate a synthetic
-     * IO event. */
-    kq->kq_synthetic_event = CreateSemaphore(NULL, 0, 1, NULL);
-    if (kq->kq_synthetic_event == NULL) {
-        /* FIXME: close kq_iocp */
-        dbg_lasterror("CreateSemaphore");
-        return (-1);
-    }
-
-    kq->kq_loop = evt_create();
-    if (kq->kq_loop == NULL) {
-        dbg_perror("evt_create()");
-        return (-1);
-    }
-#endif
 
     if (filter_register_all(kq) < 0)
         goto err;
@@ -844,3 +806,24 @@ windows_get_descriptor_type(struct knote *kn)
 
   return 0;
 }
+
+const struct kqueue_vtable kqops = {
+    .kqueue_init        = windows_kqueue_init,
+    .kqueue_free        = windows_kqueue_free,
+    .kqueue_interrupt   = windows_kqueue_interrupt,
+    .kevent_wait        = windows_kevent_wait,
+    .kevent_copyout     = windows_kevent_copyout,
+    .filter_init        = windows_filter_init,
+    .filter_free        = windows_filter_free,
+    .libkqueue_init     = windows_libkqueue_init,
+#ifndef NDEBUG
+    .libkqueue_dbg_default = windows_dbg_default,
+#endif
+    .eventfd_register   = windows_eventfd_register,
+    .eventfd_unregister = windows_eventfd_unregister,
+    .eventfd_init       = windows_eventfd_init,
+    .eventfd_close      = windows_eventfd_close,
+    .eventfd_raise      = windows_eventfd_raise,
+    .eventfd_lower      = windows_eventfd_lower,
+    .eventfd_descriptor = windows_eventfd_descriptor,
+};
