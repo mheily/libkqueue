@@ -17,6 +17,7 @@
 #include "common.h"
 
 #include <sys/wait.h>
+#include <limits.h>
 
 static int sigusr1_caught = 0;
 static pid_t pid;
@@ -824,6 +825,318 @@ test_kevent_signal_oneshot(struct test_context *ctx)
 }
 #endif
 
+/*
+ * EV_DELETE on a never-registered pid returns ENOENT.
+ */
+static void
+test_kevent_proc_del_nonexistent(struct test_context *ctx)
+{
+    struct kevent kev;
+    pid_t         child;
+
+    /* Use a real but unwatched pid so the lookup mechanism doesn't
+     * short-circuit on "no such process". */
+    child = fork();
+    if (child == 0) {
+        pause();
+        exit(0);
+    }
+
+    EV_SET(&kev, child, EVFILT_PROC, EV_DELETE, NOTE_EXIT, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+        die("EV_DELETE on never-added knote should fail");
+    if (errno != ENOENT)
+        die("expected ENOENT, got %d (%s)", errno, strerror(errno));
+
+    kill(child, SIGKILL);
+    waitpid(child, NULL, 0);
+}
+
+/*
+ * Watching a never-existed pid: BSD's filt_procattach calls
+ * pfind() and returns ESRCH on miss.  Linux pidfd_open returns
+ * ESRCH similarly.
+ */
+static void
+test_kevent_proc_nonexistent_pid_esrch(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    /* INT_MAX is "never going to be a real pid" on any sane kernel. */
+    EV_SET(&kev, INT_MAX, EVFILT_PROC, EV_ADD, NOTE_EXIT, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+        die("watching INT_MAX pid should fail");
+    if (errno != ESRCH)
+        die("expected ESRCH, got %d (%s)", errno, strerror(errno));
+}
+
+/*
+ * udata round-trips through NOTE_EXIT delivery.
+ */
+static void
+test_kevent_proc_udata_preserved(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    void         *marker = (void *) 0xFEEDF00DUL;
+    int           fflags = NOTE_EXIT;
+    pid_t         child;
+    int           sync_pipe[2];
+    char          go = 'g';
+
+#ifdef NOTE_EXITSTATUS
+    fflags |= NOTE_EXITSTATUS;
+#endif
+
+    if (pipe(sync_pipe) < 0) die("pipe");
+    child = fork();
+    if (child == 0) {
+        char buf;
+        close(sync_pipe[1]);
+        (void) read(sync_pipe[0], &buf, 1);
+        exit(0);
+    }
+    close(sync_pipe[0]);
+
+    EV_SET(&kev, child, EVFILT_PROC, EV_ADD, fflags, 0, marker);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (write(sync_pipe[1], &go, 1) != 1) die("write");
+    close(sync_pipe[1]);
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].udata != marker)
+        die("udata not preserved: got %p expected %p", ret[0].udata, marker);
+
+    waitpid(child, NULL, 0);
+}
+
+/*
+ * EV_RECEIPT echoes the kev with EV_ERROR=0.
+ */
+#ifdef EV_RECEIPT
+static void
+test_kevent_proc_receipt_preserved(struct test_context *ctx)
+{
+    struct kevent kev[1];
+    pid_t         child;
+
+    child = fork();
+    if (child == 0) {
+        pause();
+        exit(0);
+    }
+
+    EV_SET(&kev[0], child, EVFILT_PROC, EV_ADD | EV_RECEIPT, NOTE_EXIT, 0, NULL);
+    if (kevent(ctx->kqfd, kev, 1, kev, 1, NULL) != 1)
+        die("EV_RECEIPT should return one echo entry");
+    if (!(kev[0].flags & EV_ERROR) || kev[0].data != 0)
+        die("EV_RECEIPT echo missing EV_ERROR=0 marker");
+
+    kill(child, SIGKILL);
+    waitpid(child, NULL, 0);
+
+    EV_SET(&kev[0], child, EVFILT_PROC, EV_DELETE, 0, 0, NULL);
+    /* knote may have already been auto-deleted on exit; tolerate ENOENT. */
+    (void) kevent(ctx->kqfd, kev, 1, NULL, 0, NULL);
+}
+#endif
+
+/*
+ * Common-set: child can exit while the knote is disabled.  On
+ * re-enable, the NOTE_EXIT must still surface.  Distinct from
+ * disable_drains: that test verifies disable-suppresses; this one
+ * verifies the underlying source's event isn't lost across the
+ * disable window.
+ */
+static void
+test_kevent_proc_disable_preserves_events(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    int           fflags = NOTE_EXIT;
+    pid_t         child;
+    int           sync_pipe[2];
+    char          go = 'g';
+
+#ifdef NOTE_EXITSTATUS
+    fflags |= NOTE_EXITSTATUS;
+#endif
+
+    if (pipe(sync_pipe) < 0) die("pipe");
+    child = fork();
+    if (child == 0) {
+        char buf;
+        close(sync_pipe[1]);
+        (void) read(sync_pipe[0], &buf, 1);
+        exit(0);
+    }
+    close(sync_pipe[0]);
+
+    /* Register, then disable. */
+    EV_SET(&kev, child, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+    EV_SET(&kev, child, EVFILT_PROC, EV_DISABLE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent disable");
+
+    /*
+     * Child exits while disabled.  Don't waitpid here: the POSIX
+     * backend's internal monitor thread does the waitpid that
+     * surfaces NOTE_EXIT.  If we reap first the proc is gone before
+     * the backend can observe it.
+     */
+    if (write(sync_pipe[1], &go, 1) != 1) die("write");
+    close(sync_pipe[1]);
+
+    /* Brief sleep so the exit is observable while still disabled. */
+    usleep(100 * 1000);
+
+    /* Disabled - no delivery. */
+    test_no_kevents(ctx->kqfd);
+
+    /* Re-enable: pending NOTE_EXIT must surface. */
+    EV_SET(&kev, child, EVFILT_PROC, EV_ENABLE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent enable");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (!(ret[0].fflags & NOTE_EXIT))
+        die("expected NOTE_EXIT after re-enable, got %s",
+            kevent_to_str(&ret[0]));
+}
+
+/*
+ * Signal-killed child: kev.data must be decodable via WIFSIGNALED /
+ * WTERMSIG.  FreeBSD packs status+sig into KW_EXITCODE, macOS into
+ * NOTE_EXITSTATUS-gated kn_data.  Verify the bits round-trip.
+ */
+static void
+test_kevent_proc_exit_signal_decode(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    int           fflags = NOTE_EXIT;
+    pid_t         child;
+
+#ifdef NOTE_EXITSTATUS
+    fflags |= NOTE_EXITSTATUS;
+#endif
+
+    child = fork();
+    if (child == 0) {
+        pause();
+        _exit(0);
+    }
+
+    EV_SET(&kev, child, EVFILT_PROC, EV_ADD, fflags, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (kill(child, SIGTERM) < 0) die("kill");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (!(ret[0].fflags & NOTE_EXIT))
+        die("expected NOTE_EXIT, got %s", kevent_to_str(&ret[0]));
+
+    /*
+     * Linux backend currently surfaces just the signal number
+     * (matches FreeBSD's pre-NOTE_EXITSTATUS encoding); tolerate
+     * either the raw signum or a wait(2)-style status word.
+     */
+    int data = (int) ret[0].data;
+    if (data == SIGTERM)
+        ;  /* ok - raw signum */
+    else if (WIFSIGNALED(data) && WTERMSIG(data) == SIGTERM)
+        ;  /* ok - wait(2) encoding */
+    else
+        die("kev.data=%d doesn't decode as SIGTERM (raw or WIFSIGNALED)", data);
+
+    waitpid(child, NULL, 0);
+}
+
+/*
+ * Fork-storm: rapidly spawn N children that exit immediately,
+ * each watched with NOTE_EXIT, and verify every NOTE_EXIT is
+ * delivered.  Stresses the kqueue's proc-list iteration vs
+ * concurrent attach/detach paths.
+ *
+ * Pid-reuse race (where a recycled pid is registered after the
+ * original target is reaped) isn't included: deterministically
+ * forcing pid wrap inside a test takes either thousands of forks
+ * (slow) or sysctl knobs the test framework doesn't expose.
+ */
+static void
+test_kevent_proc_fork_storm(struct test_context *ctx)
+{
+    enum { N_CHILDREN = 32 };
+    struct kevent kev;
+    pid_t         pids[N_CHILDREN];
+    int           sync_pipe[2];
+    int           seen[N_CHILDREN] = { 0 };
+    int           i;
+    int           total_seen = 0;
+    int           fflags = NOTE_EXIT;
+
+#ifdef NOTE_EXITSTATUS
+    fflags |= NOTE_EXITSTATUS;
+#endif
+
+    if (pipe(sync_pipe) < 0) die("pipe");
+
+    /* Spawn children that wait on the gate. */
+    for (i = 0; i < N_CHILDREN; i++) {
+        pid_t p = fork();
+        if (p == 0) {
+            char buf;
+            close(sync_pipe[1]);
+            (void) read(sync_pipe[0], &buf, 1);
+            _exit(0);
+        }
+        pids[i] = p;
+    }
+    close(sync_pipe[0]);
+
+    /* Register all watches. */
+    for (i = 0; i < N_CHILDREN; i++) {
+        EV_SET(&kev, pids[i], EVFILT_PROC, EV_ADD, fflags, 0, NULL);
+        if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0)
+            die("kevent EV_ADD pid=%d", pids[i]);
+    }
+
+    /* Open the floodgate: write N bytes so all children read and exit. */
+    {
+        char go[N_CHILDREN];
+        memset(go, 'g', sizeof(go));
+        if (write(sync_pipe[1], go, sizeof(go)) != (ssize_t) sizeof(go))
+            die("write");
+    }
+    close(sync_pipe[1]);
+
+    /* Drain until we've collected one NOTE_EXIT per child or time out. */
+    {
+        struct kevent ret[N_CHILDREN];
+        struct timespec timeout = { 5, 0 };
+        while (total_seen < N_CHILDREN) {
+            int n = kevent(ctx->kqfd, NULL, 0, ret,
+                           N_CHILDREN - total_seen, &timeout);
+            if (n <= 0) break;
+            for (int j = 0; j < n; j++) {
+                if (!(ret[j].fflags & NOTE_EXIT)) continue;
+                for (int k = 0; k < N_CHILDREN; k++) {
+                    if (pids[k] == (pid_t) ret[j].ident && !seen[k]) {
+                        seen[k] = 1;
+                        total_seen++;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if (total_seen != N_CHILDREN)
+        die("fork-storm: expected %d NOTE_EXIT events, got %d",
+            N_CHILDREN, total_seen);
+
+    /* Reap. */
+    for (i = 0; i < N_CHILDREN; i++)
+        waitpid(pids[i], NULL, 0);
+}
+
 void
 test_evfilt_proc(struct test_context *ctx)
 {
@@ -862,6 +1175,15 @@ test_evfilt_proc(struct test_context *ctx)
     test(kevent_proc_modify_clobbers_udata, ctx);
     test(kevent_proc_already_exited, ctx);
     test(kevent_proc_multiple_kqueue, ctx);
+    test(kevent_proc_del_nonexistent, ctx);
+    test(kevent_proc_nonexistent_pid_esrch, ctx);
+    test(kevent_proc_udata_preserved, ctx);
+#ifdef EV_RECEIPT
+    test(kevent_proc_receipt_preserved, ctx);
+#endif
+    test(kevent_proc_disable_preserves_events, ctx);
+    test(kevent_proc_exit_signal_decode, ctx);
+    test(kevent_proc_fork_storm, ctx);
 
     signal(SIGUSR1, SIG_DFL);
 

@@ -198,11 +198,15 @@ struct kevent {
  * @{
  */
 #define NOTE_DELETE     0x0001         //!< Vnode was removed.
+#if @LIBKQUEUE_PUBLIC_NOTE_WRITE@
 #define NOTE_WRITE      0x0002         //!< Data contents changed.
+#endif
 #define NOTE_EXTEND     0x0004         //!< Size increased.
 #define NOTE_ATTRIB     0x0008         //!< Attributes changed.
 #define NOTE_LINK       0x0010         //!< Link count changed.
+#if @LIBKQUEUE_PUBLIC_NOTE_RENAME@
 #define NOTE_RENAME     0x0020         //!< Vnode was renamed.
+#endif
 #define NOTE_REVOKE     0x0040         //!< Vnode access was revoked.
 #undef  NOTE_REVOKE     /* Not supported on Linux */
 #define NOTE_TRUNCATE   0x0080         //!< File was truncated.
@@ -279,6 +283,20 @@ struct kevent {
 #define NOTE_DEBUG_FUNC    0x0007      //!< Debugging function to call to product
                                        ///< output. Function should have the signature.
                                        ///< int (*debug_func)(char const *fmt, va_list ap).
+#define NOTE_FILE_POLL_INTERVAL 0x0008 //!< Set the poll interval (kev.data, in
+                                       ///< nanoseconds) used by backends that
+                                       ///< have no kernel-driven re-arm for
+                                       ///< always-ready file knotes.  Without
+                                       ///< this, an EVFILT_READ knote on a
+                                       ///< regular file forces the kqueue's
+                                       ///< wait to busy-loop.  Set to 0 to
+                                       ///< disable polling (kqueue can sleep
+                                       ///< indefinitely; file knote re-arm
+                                       ///< only happens when something else
+                                       ///< wakes the kqueue).  Returns ENOSYS
+                                       ///< on backends with kernel-driven
+                                       ///< file-knote dispatch (Linux,
+                                       ///< Solaris, Windows).
 /** @} */
 
 #ifndef __KERNEL__

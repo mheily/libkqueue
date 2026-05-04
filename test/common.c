@@ -18,6 +18,37 @@
 
 extern int kqfd;
 
+/*
+ * Resolve where on-disk test files (mkstemp templates, vnode test
+ * files etc.) live.  Order: --tmpdir argv override, $TMPDIR, then a
+ * platform-sane default.  Returned pointer is process-global and
+ * must not be freed.
+ */
+static char test_tmpdir_buf[1024];
+
+void
+test_tmpdir_set(const char *path)
+{
+    snprintf(test_tmpdir_buf, sizeof(test_tmpdir_buf), "%s", path);
+}
+
+const char *
+test_tmpdir(void)
+{
+    if (test_tmpdir_buf[0] != '\0')
+        return test_tmpdir_buf;
+    {
+        const char *e = getenv("TMPDIR");
+        if (e != NULL && e[0] != '\0')
+            return e;
+    }
+#ifdef __ANDROID__
+    return "/data/local/tmp";
+#else
+    return "/tmp";
+#endif
+}
+
 /* Checks if any events are pending, which is an error. */
 void
 _test_no_kevents(int kqfd, const char *file, int line)
@@ -176,11 +207,15 @@ kevent_fflags_dump(struct kevent *kev)
 #ifdef EVFILT_VNODE
     case EVFILT_VNODE:
         KEVFFL_DUMP(NOTE_DELETE);
+#ifdef NOTE_WRITE
         KEVFFL_DUMP(NOTE_WRITE);
+#endif
         KEVFFL_DUMP(NOTE_EXTEND);
         KEVFFL_DUMP(NOTE_ATTRIB);
         KEVFFL_DUMP(NOTE_LINK);
+#ifdef NOTE_RENAME
         KEVFFL_DUMP(NOTE_RENAME);
+#endif
         break;
 #endif
 #ifdef EVFILT_USER

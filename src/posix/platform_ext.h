@@ -102,16 +102,24 @@ RB_HEAD(posix_timer_tree, posix_timer);
     int             kq_nfds;         /* highest watched fd + 1, for pselect's nfds */ \
     int             kq_wake_wfd;     /* write end of the self-pipe used as kq_id */ \
     int             kq_always_ready; /* count of "always-ready" knotes; non-zero \
-                                      * forces pselect to a 0 timeout so file/etc \
-                                      * knotes get re-dispatched every wait */ \
+                                      * means file knotes are registered and the \
+                                      * wait loop drives them through \
+                                      * kq_file_poll_interval_ns */ \
+    long            kq_file_poll_interval_ns; /* set via NOTE_FILE_POLL_INTERVAL on \
+                                      * EVFILT_LIBKQUEUE.  Default 0 = sched_yield() \
+                                      * each loop (cooperative spin).  Positive = \
+                                      * clamp pselect's timeout to this many ns so \
+                                      * the kqueue actually sleeps between polls. */ \
     struct posix_kqueue_kevent_state_head kq_inflight; /* kevent() callers in-flight */ \
     struct posix_timer_tree kq_timers   /* EVFILT_TIMER deadlines (RB-tree by next-deadline) */
 
 /** Additional members of 'struct knote'
  *
  */
+struct posix_vnode_state;
 #define POSIX_KNOTE_PLATFORM_SPECIFIC \
     POSIX_KNOTE_PROC_PLATFORM_SPECIFIC; \
-    struct posix_timer *kn_timer
+    struct posix_timer *kn_timer; \
+    struct posix_vnode_state *kn_vnode
 
 #endif  /* ! _KQUEUE_POSIX_PLATFORM_EXT_H */

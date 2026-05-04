@@ -445,12 +445,283 @@ test_kevent_timer_modify_preserves_ev_receipt(struct test_context *ctx)
         die("EV_RECEIPT was clobbered by kn_modify, flags=0x%x", ret[0].flags);
 }
 
+/*
+ * EV_DELETE on a never-added ident must fail with ENOENT.
+ */
+static void
+test_kevent_timer_del_nonexistent(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    EV_SET(&kev, 999, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+        die("EV_DELETE on never-added timer should fail");
+    if (errno != ENOENT)
+        die("expected ENOENT, got %d (%s)", errno, strerror(errno));
+}
+
+/*
+ * udata set on EV_ADD round-trips through delivery.
+ */
+static void
+test_kevent_timer_udata_preserved(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    struct timespec timeout = { 1, 0 };
+    void           *marker  = (void *) 0xDEADBEEFUL;
+
+    EV_SET(&kev, 70, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 50, marker);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 1)
+        die("expected timer fire");
+    if (ret[0].udata != marker)
+        die("udata not preserved: got %p, expected %p", ret[0].udata, marker);
+}
+
+/*
+ * Re-EV_ADD replaces the fflags wholesale, not OR.  Register with
+ * NOTE_NSECONDS, modify with NOTE_SECONDS - the timer should run
+ * with NOTE_SECONDS semantics, not the union.
+ */
+#if defined(NOTE_NSECONDS) && defined(NOTE_SECONDS)
+static void
+test_kevent_timer_modify_replaces_fflags(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    struct timespec timeout = { 1, 0 };
+
+    /* Register with NOTE_NSECONDS for 1h.  Past EV_ADD must hold the
+     * unit until the next modify replaces it. */
+    EV_SET(&kev, 71, EVFILT_TIMER, EV_ADD | EV_ONESHOT,
+           NOTE_NSECONDS, 60L * 60L * 1000000000L, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    /* Modify with bare ms data and no NOTE_NSECONDS.  If kn_modify
+     * ORed flags the timer would still run as nanoseconds and miss
+     * the 1s window. */
+    EV_SET(&kev, 71, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 100, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent modify");
+
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 1)
+        die("modify_replaces_fflags: timer didn't fire in 1s window "
+            "(NOTE_NSECONDS likely leaked through)");
+}
+#endif
+
+/*
+ * EV_DISABLE drops pending tick: arm a fast oneshot, busy-wait
+ * past the deadline, then disable; nothing should be delivered.
+ */
+static void
+test_kevent_timer_disable_drains(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    kevent_add(ctx->kqfd, &kev, 72, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 50, NULL);
+    usleep(150 * 1000);  /* well past 50ms */
+
+    kevent_add(ctx->kqfd, &kev, 72, EVFILT_TIMER, EV_DISABLE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
+
+    kevent_add(ctx->kqfd, &kev, 72, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+}
+
+/*
+ * EV_DELETE drops the pending tick (knote-list cleanup contract).
+ */
+static void
+test_kevent_timer_delete_drains(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    kevent_add(ctx->kqfd, &kev, 73, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 50, NULL);
+    usleep(150 * 1000);
+
+    kevent_add(ctx->kqfd, &kev, 73, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+    test_no_kevents(ctx->kqfd);
+}
+
+/*
+ * Same ident in two kqueues - independent timer state.
+ */
+static void
+test_kevent_timer_multi_kqueue(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    struct timespec timeout = { 1, 0 };
+    int             kq2;
+
+    if ((kq2 = kqueue()) < 0) die("kqueue(2)");
+
+    kevent_add(ctx->kqfd, &kev, 74, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 50, NULL);
+    kevent_add(kq2,        &kev, 74, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, 50, NULL);
+
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 1)
+        die("kq1 timer didn't fire");
+    if (kevent(kq2, NULL, 0, ret, 1, &timeout) != 1)
+        die("kq2 timer didn't fire");
+
+    close(kq2);
+}
+
+/*
+ * Huge interval (NOTE_NSECONDS data near INT64_MAX): the kernel
+ * (FreeBSD) clamps via SBT_MAX on LP64; libkqueue must either
+ * accept and clamp or reject with EINVAL.  No silent overflow into
+ * an immediate-fire.
+ */
+#ifdef NOTE_NSECONDS
+static void
+test_kevent_timer_huge_interval(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    struct timespec poll = { 0, 100 * 1000 * 1000 };  /* 100ms */
+    intptr_t        huge = INTPTR_MAX / 2;  /* well past any real timer */
+
+    EV_SET(&kev, 760, EVFILT_TIMER, EV_ADD | EV_ONESHOT,
+           NOTE_NSECONDS, huge, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) {
+        if (errno == EINVAL) {
+            /* Acceptable: kernel rejected the overflow. */
+            return;
+        }
+        die("kevent(huge interval) failed unexpectedly: %d", errno);
+    }
+
+    /*
+     * Registered: must NOT fire within 100ms (huge interval is
+     * effectively infinite).  Fire-immediate would indicate
+     * silent overflow into negative.
+     */
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &poll) > 0)
+        die("huge-interval timer fired immediately - overflow bug");
+
+    EV_SET(&kev, 760, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
+}
+#endif
+
+/*
+ * Negative interval must reject with EINVAL.
+ */
+static void
+test_kevent_timer_negative_interval_rejected(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    EV_SET(&kev, 75, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, -1, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+        die("negative interval should reject");
+    if (errno != EINVAL)
+        die("expected EINVAL, got %d (%s)", errno, strerror(errno));
+}
+
+#ifdef NOTE_ABSOLUTE
+/*
+ * NOTE_ABSOLUTE deadline already in the past must fire immediately.
+ */
+static void
+test_kevent_timer_note_absolute_past(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    struct timespec now;
+    intptr_t        deadline_ms;
+    struct timespec timeout = { 1, 0 };
+
+    if (clock_gettime(CLOCK_REALTIME, &now) < 0) die("clock_gettime");
+    deadline_ms = (intptr_t)(now.tv_sec) * 1000
+                + (intptr_t)(now.tv_nsec / 1000000)
+                - 5000;  /* 5s in the past */
+
+    EV_SET(&kev, 76, EVFILT_TIMER, EV_ADD | EV_ONESHOT,
+           NOTE_ABSOLUTE, deadline_ms, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 1)
+        die("past deadline didn't fire immediately");
+}
+#endif
+
+/*
+ * Overrun count: 50ms periodic, sleep 500ms (~10 ticks), one drain
+ * must report data accumulated >> 1.  Exercises kernel-side tick
+ * accumulation rather than per-tick wakeup.
+ */
+static void
+test_kevent_timer_overrun_count(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    struct timespec timeout = { 1, 0 };
+
+    EV_SET(&kev, 78, EVFILT_TIMER, EV_ADD, 0, 50, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    usleep(500 * 1000);
+
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 1)
+        die("periodic timer didn't fire");
+    if (ret[0].data < 8)
+        die("expected >=8 accumulated ticks, got %ld", (long) ret[0].data);
+
+    kevent_add(ctx->kqfd, &kev, 78, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+}
+
+/*
+ * EV_CLEAR (the kernel sets it implicitly on EVFILT_TIMER) must
+ * reset kev.data to 0 after delivery: a second drain over an idle
+ * gap must return nothing.
+ */
+static void
+test_kevent_timer_ev_clear_resets_data(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    struct timespec timeout = { 1, 0 };
+    struct timespec brief   = { 0, 50 * 1000000 };  /* 50ms */
+
+    /* 50ms periodic.  Drain once, then re-drain quickly without
+     * waiting another period; should see no second event. */
+    EV_SET(&kev, 79, EVFILT_TIMER, EV_ADD, 0, 50, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 1)
+        die("first drain: timer didn't fire");
+    /* Drain immediately again (might still be a tick window so allow
+     * a 50us idle).  EV_CLEAR semantics: data zeroed; the only way
+     * we'd see another event is if a second tick already accumulated.
+     * The data on this re-drain (if it fires) must reset, not carry
+     * the previous value. */
+    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &brief) == 1) {
+        if (ret[0].data > 2)
+            die("EV_CLEAR didn't reset data, got %ld", (long) ret[0].data);
+    }
+
+    kevent_add(ctx->kqfd, &kev, 79, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
+}
+
 void
 test_evfilt_timer(struct test_context *ctx)
 {
     test(kevent_timer_add, ctx);
     test(kevent_timer_del, ctx);
+    test(kevent_timer_del_nonexistent, ctx);
     test(kevent_timer_get, ctx);
+    test(kevent_timer_udata_preserved, ctx);
+    test(kevent_timer_disable_drains, ctx);
+    test(kevent_timer_delete_drains, ctx);
+    test(kevent_timer_multi_kqueue, ctx);
+    test(kevent_timer_negative_interval_rejected, ctx);
+#ifdef NOTE_NSECONDS
+    test(kevent_timer_huge_interval, ctx);
+#endif
+    test(kevent_timer_overrun_count, ctx);
+    test(kevent_timer_ev_clear_resets_data, ctx);
+#if defined(NOTE_NSECONDS) && defined(NOTE_SECONDS)
+    test(kevent_timer_modify_replaces_fflags, ctx);
+#endif
+#ifdef NOTE_ABSOLUTE
+    test(kevent_timer_note_absolute_past, ctx);
+#endif
     test(kevent_timer_oneshot, ctx);
     test(kevent_timer_periodic, ctx);
     test(kevent_timer_periodic_modify, ctx);

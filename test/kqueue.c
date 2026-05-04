@@ -16,6 +16,8 @@
 
 #include "common.h"
 
+#include <limits.h>
+
 #if defined(__linux__) || defined(__FreeBSD__)
 #include <sys/resource.h>
 #endif
@@ -331,6 +333,129 @@ test_close_cleans_up_active_knotes(void *unused)
 }
 #endif
 
+/*
+ * Recursive kqueue: kq1 watches kq2's fd via EVFILT_READ; trigger
+ * an event on kq2 and verify kq1 sees it.  Tests the kqueue's own
+ * f_kqfilter / fo_kqfilter glue and lock-ordering when kqueues
+ * nest.  Native BSD limits depth (XNU MAX_NESTED_KQ=10); this test
+ * pins single-level recursion.
+ */
+static void
+test_kqueue_recursive(void *unused)
+{
+    struct kevent kev, ret[1];
+    int           kq1, kq2;
+    struct timespec poll = { 1, 0 };
+
+    (void) unused;
+    if ((kq1 = kqueue()) < 0) die("kqueue 1");
+    if ((kq2 = kqueue()) < 0) die("kqueue 2");
+
+    /* Watch kq2's fd from kq1. */
+    EV_SET(&kev, kq2, EVFILT_READ, EV_ADD, 0, 0, NULL);
+    if (kevent(kq1, &kev, 1, NULL, 0, NULL) < 0)
+        die("recursive kq: kq1 EV_ADD on kq2 fd");
+
+    /* Fire an EVFILT_USER event on kq2 so kq2 becomes "readable". */
+    EV_SET(&kev, 1, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(kq2, &kev, 1, NULL, 0, NULL) < 0) die("kq2 user add");
+    EV_SET(&kev, 1, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+    if (kevent(kq2, &kev, 1, NULL, 0, NULL) < 0) die("kq2 trigger");
+
+    /* kq1 should report kq2 as readable. */
+    if (kevent(kq1, NULL, 0, ret, 1, &poll) != 1)
+        die("recursive kq: kq1 didn't see kq2 readable");
+    if (ret[0].ident != (uintptr_t) kq2 || ret[0].filter != EVFILT_READ)
+        die("recursive kq: wrong event %s", kevent_to_str(&ret[0]));
+
+    /* Close in adverse order: kq2 (the watched one) first. */
+    close(kq2);
+    close(kq1);
+}
+
+/*
+ * kevent() with negative or absurdly large nevents must reject
+ * with EINVAL, not crash or copyout junk.  FreeBSD added this
+ * check via D30480.
+ */
+static void
+test_kqueue_nevents_validation(void *unused)
+{
+    struct kevent ret[1];
+    int           kq;
+
+    (void) unused;
+    if ((kq = kqueue()) < 0) die("kqueue");
+
+    /* Negative nevents must reject with EINVAL (FreeBSD D30480). */
+    if (kevent(kq, NULL, 0, ret, -1, NULL) != -1 || errno != EINVAL)
+        die("kevent(nevents=-1) accepted, expected EINVAL (errno=%d)", errno);
+
+    /* Huge nevents: implementation may clamp internally but must
+     * not crash or copyout a multi-GB buffer.  We poll with no
+     * pending events, expect 0 returned (no events) or EINVAL. */
+    {
+        struct timespec poll = { 0, 1000000 };  /* 1ms */
+        int rv = kevent(kq, NULL, 0, ret, INT_MAX, &poll);
+        if (rv == -1 && errno != EINVAL)
+            die("kevent(nevents=INT_MAX) failed with %d (%s), expected 0 or EINVAL",
+                errno, strerror(errno));
+    }
+
+    close(kq);
+}
+
+/*
+ * fd reuse: register on a pipe fd, close it, open a fresh socket
+ * that ends up at the same fd number, register on the socket, and
+ * verify no events from the old knote leak into the new one.
+ *
+ * Native BSD's knote_fdclose() is the kernel side; libkqueue must
+ * not reference a freed knote when the same fd number is reused.
+ */
+static void
+test_kqueue_fd_reuse_no_stale_events(void *unused)
+{
+    struct kevent kev, ret[1];
+    int           kq;
+    int           pfd[2];
+    int           reused;
+    struct timespec poll = { 0, 100 * 1000 * 1000 };  /* 100ms */
+
+    (void) unused;
+    if ((kq = kqueue()) < 0) die("kqueue");
+    if (pipe(pfd) < 0) die("pipe");
+
+    /* Register on the read end. */
+    EV_SET(&kev, pfd[0], EVFILT_READ, EV_ADD, 0, 0, NULL);
+    if (kevent(kq, &kev, 1, NULL, 0, NULL) < 0) die("EV_ADD on pipe");
+
+    /* Close the watched fd; close write end too so any kernel-side
+     * residual events would have something to fire on. */
+    close(pfd[0]);
+    close(pfd[1]);
+
+    /* Try to claim the same fd number for a new socket.  May or may
+     * not succeed depending on kernel fd allocation; only run the
+     * stale-event check if we actually got the same number. */
+    reused = socket(AF_INET, SOCK_DGRAM, 0);
+    if (reused < 0) die("socket");
+
+    if (reused == pfd[0]) {
+        /*
+         * Same fd number recycled.  The old knote (if libkqueue
+         * doesn't clean up on close) would now think this socket
+         * is its watch target.  Drain - no event must surface.
+         */
+        if (kevent(kq, NULL, 0, ret, 1, &poll) != 0)
+            die("stale knote fired on reused fd: %s",
+                kevent_to_str(&ret[0]));
+    }
+
+    close(reused);
+    close(kq);
+}
+
 void
 test_kqueue(struct test_context *ctx)
 {
@@ -338,6 +463,18 @@ test_kqueue(struct test_context *ctx)
 
     test(kqueue_alloc, ctx);
     test(kevent, ctx);
+    /*
+     * Recursive kqueue: requires the kqueue's own fd to be pollable
+     * by EVFILT_READ on another kqueue.  Native BSD/macOS support
+     * this; libkqueue's POSIX/Linux backends don't yet expose the
+     * kqfd as a generic readable fd.  Gate to native until the
+     * backends grow kq->kq_id pollability.
+     */
+#ifdef NATIVE_KQUEUE
+    test(kqueue_recursive, ctx);
+#endif
+    test(kqueue_nevents_validation, ctx);
+    test(kqueue_fd_reuse_no_stale_events, ctx);
 
 #ifdef HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE
     test(cleanup, ctx);

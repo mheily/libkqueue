@@ -17,6 +17,59 @@
 #ifndef _COMMON_H
 #define _COMMON_H
 
+/*
+ * Canonical common test set.
+ *
+ * Every EVFILT_* test suite should provide tests covering the
+ * filter-agnostic kqueue contract.  Adding a new filter?  Start
+ * here, then add filter-specific NOTE_* / data semantics.
+ *
+ * 1.  add                       Basic EV_ADD registration succeeds.
+ * 2.  del                       EV_DELETE removes the knote, no
+ *                               further deliveries.
+ * 3.  del_nonexistent           EV_DELETE on a never-registered
+ *                               ident returns ENOENT.
+ * 4.  disable_and_enable        EV_DISABLE suppresses delivery,
+ *                               EV_ENABLE restores.
+ * 5.  oneshot                   EV_ONESHOT fires once then auto-
+ *                               deletes (subsequent EV_DELETE on
+ *                               the same ident returns ENOENT).
+ * 6.  dispatch                  EV_DISPATCH fires once then auto-
+ *                               disables; EV_ENABLE re-arms.
+ * 7.  receipt_preserved         EV_RECEIPT echoes the kev in the
+ *                               eventlist with EV_ERROR=0.
+ * 8.  udata_preserved           udata set on EV_ADD round-trips
+ *                               through delivery unchanged.
+ * 9.  modify_clobbers_udata     Re-EV_ADD modify replaces udata
+ *                               (BSD overwrites on every modify).
+ * 10. modify_replaces_fflags    Re-EV_ADD with new fflags replaces,
+ *                               not ORs (n/a where filter has no
+ *                               fflags - document and skip).
+ * 11. disable_drains            EV_DISABLE drops a pending event
+ *                               queued before the disable.
+ * 12. delete_drains             EV_DELETE drops a pending event.
+ * 13. multi_kqueue              Same ident in two kqueues - state
+ *                               is independent.
+ * 14. ev_clear (filter-dependent) Edge-trigger semantics: data /
+ *                               accumulator zeroes after delivery
+ *                               so a second drain returns nothing
+ *                               unless a fresh event happened.
+ *
+ * Filters whose underlying source can fire events while the knote
+ * is disabled (EVFILT_PROC: child can exit; EVFILT_SIGNAL: signal
+ * can be sent) should also have:
+ *
+ *  +. disable_preserves_events  Underlying event happens during
+ *                               disable; EV_ENABLE must surface it
+ *                               on the next drain.
+ *
+ * Where a backend genuinely can't pass a test (architectural
+ * limit, e.g. POSIX stat-snapshot polling can't detect mtime-only
+ * writes), gate it with `#if !defined(LIBKQUEUE_BACKEND_X)` and a
+ * comment citing the kernel/syscall that's missing.  Don't gate
+ * to silence flakes - investigate the cause.
+ */
+
 #if HAVE_ERR_H
 # include <err.h>
 #else
@@ -190,6 +243,11 @@ unsigned int get_fd_limit(void);
 /* From test.c */
 void    test_begin(struct test_context *, const char *);
 void    test_end(struct test_context *);
+
+/* Where on-disk test files live; --tmpdir override, $TMPDIR, then
+ * platform default ("/tmp" usually). */
+const char *test_tmpdir(void);
+void        test_tmpdir_set(const char *path);
 void    test_atexit(void);
 void    testing_begin(void);
 void    testing_end(void);

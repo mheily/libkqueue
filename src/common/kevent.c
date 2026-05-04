@@ -50,11 +50,15 @@ kevent_fflags_dump(const struct kevent *kev)
 #ifdef EVFILT_VNODE
     case EVFILT_VNODE:
         KEVFFL_DUMP(NOTE_DELETE);
+#ifdef NOTE_WRITE
         KEVFFL_DUMP(NOTE_WRITE);
+#endif
         KEVFFL_DUMP(NOTE_EXTEND);
         KEVFFL_DUMP(NOTE_ATTRIB);
         KEVFFL_DUMP(NOTE_LINK);
+#ifdef NOTE_RENAME
         KEVFFL_DUMP(NOTE_RENAME);
+#endif
         break;
 #endif
 #ifdef EVFILT_USER
@@ -213,12 +217,14 @@ kevent_copyin_one(const struct knote **out, struct kqueue *kq, const struct keve
             assert(filt->kn_create);
             rv = filt->kn_create(filt, kn);
             if (rv < 0) {
+                int saved_errno = errno;
+
                 dbg_puts("kn_create failed");
 
                 kn->kn_flags |= KNFL_KNOTE_DELETED;
                 knote_release(kn);
 
-                errno = EFAULT;
+                errno = saved_errno ? saved_errno : EFAULT;
                 *out = NULL;
                 return (-1);
             }
@@ -435,6 +441,16 @@ kevent(int kqfd,
     unsigned int myid = 0;
     (void) myid;
 #endif
+    /*
+     * Reject negative nchanges/nevents up front (FreeBSD D30480
+     * fix).  Without the check, negative nevents flows into the
+     * el_p/el_end pointer arithmetic below and the per-filter
+     * copyout loops with undefined behaviour.
+     */
+    if (nchanges < 0 || nevents < 0) {
+        errno = EINVAL;
+        return -1;
+    }
     /* deal with ubsan "runtime error: applying zero offset to null pointer" */
     if (eventlist) {
         if (nevents > MAX_KEVENT)

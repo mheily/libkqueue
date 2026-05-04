@@ -474,6 +474,252 @@ test_kevent_user_modify_clobbers_udata(struct test_context *ctx)
     test_no_kevents(ctx->kqfd);
 }
 
+/*
+ * EV_DELETE on a never-registered ident returns ENOENT.
+ */
+static void
+test_kevent_user_del_nonexistent(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    EV_SET(&kev, 999, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+        die("EV_DELETE on never-added knote should fail");
+    if (errno != ENOENT)
+        die("expected ENOENT, got %d (%s)", errno, strerror(errno));
+}
+
+/*
+ * udata round-trips through delivery.
+ */
+static void
+test_kevent_user_udata_preserved(struct test_context *ctx)
+{
+    struct kevent kev, tmp, ret[1];
+    void         *marker = (void *) 0xBEEFDEADUL;
+
+    test_no_kevents(ctx->kqfd);
+    EV_SET(&kev, 50, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, marker);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    /* TRIGGER without overriding udata.  BSD's modify clobbers
+     * udata on every modify, but the kevent_add helper passes NULL,
+     * so use EV_SET directly with the same marker to avoid clobber. */
+    EV_SET(&tmp, 50, EVFILT_USER, 0, NOTE_TRIGGER, 0, marker);
+    if (kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL) < 0) die("kevent trigger");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].udata != marker)
+        die("udata not preserved: got %p expected %p", ret[0].udata, marker);
+
+    EV_SET(&tmp, 50, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL);
+}
+
+/*
+ * Two kqueues with the same EVFILT_USER ident: independent state.
+ * Trigger on kq1 must not surface on kq2.
+ */
+static void
+test_kevent_user_multi_kqueue(struct test_context *ctx)
+{
+    struct kevent kev, tmp;
+    int           kq2;
+
+    if ((kq2 = kqueue()) < 0) die("kqueue(2)");
+
+    EV_SET(&kev, 51, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent kq1");
+    EV_SET(&kev, 51, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(kq2, &kev, 1, NULL, 0, NULL) < 0) die("kevent kq2");
+
+    /* Trigger only on kq1. */
+    EV_SET(&tmp, 51, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+    if (kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL) < 0) die("trigger");
+
+    /* kq1 fires. */
+    {
+        struct kevent ret[1];
+        kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    }
+    /* kq2 must NOT fire (state per-kqueue). */
+    {
+        struct timespec poll = { 0, 50 * 1000000 };
+        struct kevent   ret[1];
+        if (kevent(kq2, NULL, 0, ret, 1, &poll) != 0)
+            die("kq2 fired but trigger only went to kq1");
+    }
+
+    EV_SET(&tmp, 51, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL);
+    close(kq2);
+}
+
+/*
+ * NOTE_FFCOPY: writer's low fflags REPLACE the stored fflags.
+ */
+static void
+test_kevent_user_note_ffcopy(struct test_context *ctx)
+{
+    struct kevent kev, tmp, ret[1];
+
+    test_no_kevents(ctx->kqfd);
+    EV_SET(&kev, 60, EVFILT_USER, EV_ADD | EV_CLEAR, NOTE_FFCOPY | 0xAA, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    /* Trigger with FFCOPY|0xBB|TRIGGER: stored fflags becomes 0xBB. */
+    EV_SET(&tmp, 60, EVFILT_USER, 0, NOTE_FFCOPY | 0xBB | NOTE_TRIGGER, 0, NULL);
+    if (kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL) < 0) die("trigger");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if ((ret[0].fflags & NOTE_FFLAGSMASK) != 0xBB)
+        die("NOTE_FFCOPY: expected fflags 0xBB, got 0x%x",
+            ret[0].fflags & NOTE_FFLAGSMASK);
+
+    EV_SET(&tmp, 60, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL);
+}
+
+/*
+ * NOTE_FFAND: writer's low fflags ANDed into stored fflags.
+ */
+static void
+test_kevent_user_note_ffand(struct test_context *ctx)
+{
+    struct kevent kev, tmp, ret[1];
+
+    test_no_kevents(ctx->kqfd);
+    /* Seed via FFCOPY 0x0F. */
+    EV_SET(&kev, 61, EVFILT_USER, EV_ADD | EV_CLEAR,
+           NOTE_FFCOPY | 0x0F, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent seed");
+
+    /* AND with 0x0C and TRIGGER: stored becomes 0x0F & 0x0C = 0x0C. */
+    EV_SET(&tmp, 61, EVFILT_USER, 0, NOTE_FFAND | 0x0C | NOTE_TRIGGER, 0, NULL);
+    if (kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL) < 0) die("trigger");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if ((ret[0].fflags & NOTE_FFLAGSMASK) != 0x0C)
+        die("NOTE_FFAND: expected 0x0C, got 0x%x",
+            ret[0].fflags & NOTE_FFLAGSMASK);
+
+    EV_SET(&tmp, 61, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL);
+}
+
+/*
+ * NOTE_FFOR: writer's low fflags ORed into stored fflags.
+ */
+static void
+test_kevent_user_note_ffor(struct test_context *ctx)
+{
+    struct kevent kev, tmp, ret[1];
+
+    test_no_kevents(ctx->kqfd);
+    EV_SET(&kev, 62, EVFILT_USER, EV_ADD | EV_CLEAR,
+           NOTE_FFCOPY | 0x01, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent seed");
+
+    /* OR with 0x06 and TRIGGER: stored becomes 0x01 | 0x06 = 0x07. */
+    EV_SET(&tmp, 62, EVFILT_USER, 0, NOTE_FFOR | 0x06 | NOTE_TRIGGER, 0, NULL);
+    if (kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL) < 0) die("trigger");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if ((ret[0].fflags & NOTE_FFLAGSMASK) != 0x07)
+        die("NOTE_FFOR: expected 0x07, got 0x%x",
+            ret[0].fflags & NOTE_FFLAGSMASK);
+
+    EV_SET(&tmp, 62, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL);
+}
+
+/*
+ * NOTE_FFNOP: writer's low fflags ignored, stored unchanged.
+ */
+static void
+test_kevent_user_note_ffnop(struct test_context *ctx)
+{
+    struct kevent kev, tmp, ret[1];
+
+    test_no_kevents(ctx->kqfd);
+    EV_SET(&kev, 63, EVFILT_USER, EV_ADD | EV_CLEAR,
+           NOTE_FFCOPY | 0x42, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent seed");
+
+    /* FFNOP|0xFF|TRIGGER: 0xFF must be ignored, stored stays 0x42. */
+    EV_SET(&tmp, 63, EVFILT_USER, 0, NOTE_FFNOP | 0xFF | NOTE_TRIGGER, 0, NULL);
+    if (kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL) < 0) die("trigger");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if ((ret[0].fflags & NOTE_FFLAGSMASK) != 0x42)
+        die("NOTE_FFNOP: expected 0x42, got 0x%x",
+            ret[0].fflags & NOTE_FFLAGSMASK);
+
+    EV_SET(&tmp, 63, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL);
+}
+
+/*
+ * NOTE_FFLAGSMASK enforcement: writer's high bits (incl. NOTE_TRIGGER
+ * itself) must not leak into stored fflags via FFCOPY.
+ */
+static void
+test_kevent_user_note_fflagsmask(struct test_context *ctx)
+{
+    struct kevent kev, tmp, ret[1];
+
+    test_no_kevents(ctx->kqfd);
+    EV_SET(&kev, 64, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    /* Try to copy 0x01ffffff: low 24 bits (0xffffff) survive,
+     * NOTE_TRIGGER (bit 24) and high control bits do not. */
+    EV_SET(&tmp, 64, EVFILT_USER, 0,
+           NOTE_FFCOPY | 0x01ffffff | NOTE_TRIGGER, 0, NULL);
+    if (kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL) < 0) die("trigger");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if ((ret[0].fflags & ~NOTE_FFLAGSMASK) != 0)
+        die("NOTE_FFLAGSMASK leak: high bits in delivered fflags 0x%x",
+            ret[0].fflags);
+    if ((ret[0].fflags & NOTE_FFLAGSMASK) != NOTE_FFLAGSMASK)
+        die("expected delivered low bits 0x%x, got 0x%x",
+            NOTE_FFLAGSMASK, ret[0].fflags & NOTE_FFLAGSMASK);
+
+    EV_SET(&tmp, 64, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL);
+}
+
+/*
+ * Multi-trigger fflags accumulation: three FFOR triggers between
+ * drains deliver the unioned bits in a single coalesced event.
+ */
+static void
+test_kevent_user_multi_trigger_fflags_or(struct test_context *ctx)
+{
+    struct kevent kev, tmp, ret[1];
+
+    test_no_kevents(ctx->kqfd);
+    EV_SET(&kev, 65, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    /* Three OR triggers: 0x1, 0x2, 0x4. */
+    EV_SET(&tmp, 65, EVFILT_USER, 0, NOTE_FFOR | 0x1 | NOTE_TRIGGER, 0, NULL);
+    if (kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL) < 0) die("trigger 1");
+    EV_SET(&tmp, 65, EVFILT_USER, 0, NOTE_FFOR | 0x2 | NOTE_TRIGGER, 0, NULL);
+    if (kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL) < 0) die("trigger 2");
+    EV_SET(&tmp, 65, EVFILT_USER, 0, NOTE_FFOR | 0x4 | NOTE_TRIGGER, 0, NULL);
+    if (kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL) < 0) die("trigger 3");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if ((ret[0].fflags & NOTE_FFLAGSMASK) != 0x07)
+        die("multi-trigger OR accumulation: expected 0x07, got 0x%x",
+            ret[0].fflags & NOTE_FFLAGSMASK);
+
+    EV_SET(&tmp, 65, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL);
+}
+
 void
 test_evfilt_user(struct test_context *ctx)
 {
@@ -488,13 +734,20 @@ test_evfilt_user(struct test_context *ctx)
     test(kevent_user_modify_clobbers_udata, ctx);
     test(kevent_user_oneshot, ctx);
     test(kevent_user_multi_trigger_merged, ctx);
+    test(kevent_user_del_nonexistent, ctx);
+    test(kevent_user_udata_preserved, ctx);
+    test(kevent_user_multi_kqueue, ctx);
+    test(kevent_user_note_ffcopy, ctx);
+    test(kevent_user_note_ffand, ctx);
+    test(kevent_user_note_ffor, ctx);
+    test(kevent_user_note_ffnop, ctx);
+    test(kevent_user_note_fflagsmask, ctx);
+    test(kevent_user_multi_trigger_fflags_or, ctx);
 #ifdef EV_DISPATCH
     test(kevent_user_dispatch, ctx);
     test(kevent_user_dispatch_durable, ctx);
     test(kevent_user_dispatch_enable_and_trigger_atomic, ctx);
 #endif
-#ifdef NATIVE_KQUEUE
     test(kevent_user_trigger_from_thread, ctx);
-#endif
     /* TODO: try different fflags operations */
 }

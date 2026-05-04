@@ -580,6 +580,12 @@ struct kqueue {
                                                ///< platforms with KEVENT_WAIT_DROP_LOCK; on the
                                                ///< rest the field is dead weight (one bool).
 
+    int                    kq_knote_count;     //!< Total live knotes across all filters on this
+                                               ///< kqueue.  Bumped by knote_insert, decremented
+                                               ///< by knote_delete.  Backends use it to detect
+                                               ///< "only always-ready knotes registered" state
+                                               ///< and adjust their wait policy accordingly.
+
 #if defined(KQUEUE_PLATFORM_SPECIFIC)
     KQUEUE_PLATFORM_SPECIFIC;
 #endif
@@ -734,6 +740,27 @@ struct kqueue_vtable {
      * @return The file descriptor.
      */
     int    (*eventfd_descriptor)(struct eventfd *efd);
+
+    /** Set the poll interval for always-ready file knotes
+     *
+     * Optional, NULL on backends with kernel-driven file-knote
+     * dispatch (Linux/epoll, Solaris/event ports, Windows/IOCP).
+     * The POSIX backend uses this to clamp pselect's timeout
+     * when the only readiness sources are KNFL_FILE knotes,
+     * so the kqueue can sleep between polls instead of busy-
+     * looping.
+     *
+     * @param[in] kq            kqueue whose interval to set.
+     * @param[in] interval_ns   Polling interval in nanoseconds.
+     *                          0 disables auto-poll: the kqueue
+     *                          may sleep indefinitely and file
+     *                          knotes are only re-evaluated when
+     *                          something else wakes the kq.
+     * @return
+     *      - 0 on success.
+     *      - -1 on failure (errno set).
+     */
+    int    (*set_file_poll_interval)(struct kqueue *kq, intptr_t interval_ns);
 };
 LIST_HEAD(kqueue_head, kqueue);
 

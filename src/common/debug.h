@@ -32,12 +32,33 @@
 # include <sys/syscall.h>
 # define THREAD_ID ((pid_t)  syscall(__NR_gettid))
 #elif defined(LIBKQUEUE_BACKEND_SOLARIS) || defined(LIBKQUEUE_BACKEND_POSIX)
+# if defined(__linux__)
 /*
- * pthread_self() returns an opaque pointer-or-integer; cast via
- * uintptr_t so this compiles cleanly on platforms where it's a
- * struct pointer (e.g. Darwin) without losing useful entropy.
+ * Linux: prefer SYS_gettid so the debug prefix carries a real
+ * TID instead of the truncated pthread_t pointer that
+ * pthread_self() returns under glibc.  syscall(2)'s prototype
+ * sits behind _GNU_SOURCE in glibc; declare it locally to avoid
+ * widening the feature flags for the whole POSIX backend.
  */
-# define THREAD_ID ((int)(uintptr_t) pthread_self())
+#  include <sys/syscall.h>
+extern long syscall(long number, ...);
+#  define THREAD_ID ((pid_t) syscall(__NR_gettid))
+# elif defined(__APPLE__)
+#  include <pthread.h>
+static inline int posix_thread_id(void) {
+    uint64_t tid = 0;
+    pthread_threadid_np(NULL, &tid);
+    return (int) tid;
+}
+#  define THREAD_ID posix_thread_id()
+# else
+/*
+ * Fallback: pthread_self() through uintptr_t.  Platforms with
+ * an opaque pointer pthread_t will produce ugly numbers, but at
+ * least the value is stable per thread.
+ */
+#  define THREAD_ID ((int)(uintptr_t) pthread_self())
+# endif
 #elif defined(LIBKQUEUE_BACKEND_WINDOWS)
 # define THREAD_ID (int)(GetCurrentThreadId())
 #else

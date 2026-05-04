@@ -413,6 +413,8 @@ usage(void)
            " --watchdog-cmd=CMD         Run CMD <pid> for the stack dump on\n"
            "                            timeout, e.g. 'pstack' or\n"
            "                            '/usr/bin/eu-stack -p'\n"
+           " --tmpdir=DIR               Directory for on-disk test files\n"
+           "                            (override $TMPDIR, default /tmp).\n"
            " testclass[:<num>|:<start>-<end>] Tests suites to run:\n"
            "           ["
            "kqueue "
@@ -531,10 +533,12 @@ main(int argc, char **argv)
         enum {
             OPT_WATCHDOG_TIMEOUT = 256,
             OPT_WATCHDOG_CMD,
+            OPT_TMPDIR,
         };
         static const struct option long_opts[] = {
             { "watchdog-timeout", required_argument, NULL, OPT_WATCHDOG_TIMEOUT },
             { "watchdog-cmd",     required_argument, NULL, OPT_WATCHDOG_CMD     },
+            { "tmpdir",           required_argument, NULL, OPT_TMPDIR           },
             { NULL,               0,                 NULL, 0                    },
         };
         while ((c = getopt_long(argc, argv, "hn:", long_opts, NULL)) != -1) {
@@ -554,6 +558,9 @@ main(int argc, char **argv)
                     break;
                 case OPT_WATCHDOG_CMD:
                     watchdog_parse_cmd(optarg);
+                    break;
+                case OPT_TMPDIR:
+                    test_tmpdir_set(optarg);
                     break;
                 default:
                     usage();

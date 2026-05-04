@@ -237,38 +237,52 @@ evfilt_vnode_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
     struct knote *src, void *ptr UNUSED)
 {
     uint8_t buf[sizeof(struct inotify_event) + NAME_MAX + 1] __attribute__ ((aligned(__alignof__(struct inotify_event))));
-    struct inotify_event *evt;
+    struct inotify_event *evt = (struct inotify_event *)buf;
     struct stat sb;
+    uint32_t merged_mask = 0;
 
-    evt = (struct inotify_event *)buf;
-    {
+    /*
+     * Drain every inotify event currently readable for this knote's
+     * watch and OR-merge their masks.  Matches BSD's VFS-layer
+     * coalescing: multiple VOPs between two kevent() drains deliver
+     * one event whose fflags is the union of every triggering bit.
+     * One inotify fd per knote, so all drained events belong here.
+     */
+    for (;;) {
         int rv = get_one_event(evt, sizeof(buf), src->kn_vnode.inotifyfd);
         if (rv < 0) return (-1);
-        /*
-         * Another waiter drained the inotify fd before us; skip
-         * dispatch.  Without IN_NONBLOCK + this short-circuit, the
-         * losing read would block forever in multi-waiter setups.
-         */
-        if (rv == 0) return (0);
-    }
+        if (rv == 0) break;
 
-    dbg_printf("inotify event: %s", inotify_event_dump(evt));
-    if (evt->mask & IN_IGNORED) {
-        /* TODO: possibly return error when fs is unmounted */
-        dst->filter = 0;
-        return (0);
+        dbg_printf("inotify event: %s", inotify_event_dump(evt));
+
+        if (evt->mask & IN_IGNORED) {
+            /*
+             * IN_IGNORED follows any rm_watch (incl. our own
+             * EV_DISABLE/EV_ENABLE cycle, which generates a
+             * stale IN_IGNORED on a wd the kernel may then
+             * reuse for the new watch).  Skip it: real file
+             * deletion already surfaces via IN_DELETE_SELF.
+             */
+            continue;
+        }
+        /*
+         * IN_CLOSE_WRITE / IN_CLOSE_NOWRITE: any process closed
+         * an fd to the file.  That doesn't mean the watch should
+         * end; multiple processes can hold fds.  No NOTE_* maps
+         * to this, so drop the bit before merging.
+         */
+        merged_mask |= evt->mask & ~(IN_CLOSE_WRITE | IN_CLOSE_NOWRITE);
     }
 
     /*
-     * Check if the watched file has been closed, and
-       XXX-this may not exactly match the kevent() behavior if multiple file de
-scriptors reference the same file.
+     * Race: another waiter drained the inotify fd before we got
+     * here, leaving us with nothing to deliver.  IN_NONBLOCK on
+     * the inotify fd lets the losing read return rv=0 instead of
+     * blocking forever.  Also reaches here when every drained bit
+     * was IN_IGNORED / IN_CLOSE_* (informational, no NOTE_* map).
      */
-    if (evt->mask & IN_CLOSE_WRITE || evt->mask & IN_CLOSE_NOWRITE) {
-        src->kev.flags |= EV_ONESHOT; /* KLUDGE: causes the knote to be deleted */
-        dst->filter = 0; /* KLUDGE: causes the event to be discarded */
+    if (merged_mask == 0)
         return (0);
-    }
 
     memcpy(dst, &src->kev, sizeof(*dst));
     dst->data = 0;
@@ -280,7 +294,7 @@ scriptors reference the same file.
         if (src->kev.fflags & NOTE_DELETE)
             dst->fflags |= NOTE_DELETE;
     } else {
-        if ((evt->mask & IN_ATTRIB || evt->mask & IN_MODIFY)) {
+        if (merged_mask & (IN_ATTRIB | IN_MODIFY)) {
             if (sb.st_nlink == 0 && src->kev.fflags & NOTE_DELETE)
                 dst->fflags |= NOTE_DELETE;
             if (sb.st_nlink != src->kn_vnode.nlink &&
@@ -312,13 +326,13 @@ scriptors reference the same file.
         }
     }
 
-    if (evt->mask & IN_MODIFY && src->kev.fflags & NOTE_WRITE)
+    if (merged_mask & IN_MODIFY && src->kev.fflags & NOTE_WRITE)
         dst->fflags |= NOTE_WRITE;
-    if (evt->mask & IN_ATTRIB && src->kev.fflags & NOTE_ATTRIB)
+    if (merged_mask & IN_ATTRIB && src->kev.fflags & NOTE_ATTRIB)
         dst->fflags |= NOTE_ATTRIB;
-    if (evt->mask & IN_MOVE_SELF && src->kev.fflags & NOTE_RENAME)
+    if (merged_mask & IN_MOVE_SELF && src->kev.fflags & NOTE_RENAME)
         dst->fflags |= NOTE_RENAME;
-    if (evt->mask & IN_DELETE_SELF && src->kev.fflags & NOTE_DELETE)
+    if (merged_mask & IN_DELETE_SELF && src->kev.fflags & NOTE_DELETE)
         dst->fflags |= NOTE_DELETE;
 
     if (knote_copyout_flag_actions(filt, src) < 0) return -1;

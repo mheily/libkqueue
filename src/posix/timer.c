@@ -165,6 +165,16 @@ timer_alloc(struct knote *kn)
     }
 #endif
 
+    /*
+     * Reject negative intervals up front - FreeBSD's filt_timervalidate
+     * returns EINVAL for them.  Zero is allowed (clamps to 1ns minimum
+     * below) for parity with BSD's "fire immediately" semantic.
+     */
+    if (kn->kev.data < 0) {
+        free(t);
+        errno = EINVAL;
+        return NULL;
+    }
     ns = timer_data_to_ns(kn->kev.data, kn->kev.fflags);
     if (ns < 1) ns = 1;
     t->interval_ns = t->oneshot ? 0 : ns;

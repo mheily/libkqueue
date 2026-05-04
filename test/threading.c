@@ -759,7 +759,7 @@ test_kevent_threading_vnode_delete_race(struct test_context *ctx)
 
     (void) ctx;
 
-    snprintf(path, sizeof(path), "/tmp/libkqueue-vnode-race.%d", (int) getpid());
+    snprintf(path, sizeof(path), "%s/libkqueue-vnode-race.%d", test_tmpdir(), (int) getpid());
     fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) die("open");
 
@@ -768,8 +768,12 @@ test_kevent_threading_vnode_delete_race(struct test_context *ctx)
     ready = spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
 
     for (i = 0; i < N_ITERATIONS; i++) {
+        unsigned int mask = NOTE_DELETE;
+#ifdef NOTE_WRITE
+        mask |= NOTE_WRITE;
+#endif
         EV_SET(&kev, fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
-               NOTE_WRITE | NOTE_DELETE, 0, NULL);
+               mask, 0, NULL);
         if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
             die("kevent (vnode add)");
 
@@ -1346,7 +1350,7 @@ test_kevent_threading_vnode_single_delivery(struct test_context *ctx)
 
     (void) ctx;
 
-    snprintf(path, sizeof(path), "/tmp/libkqueue-vnode-single.%d", (int) getpid());
+    snprintf(path, sizeof(path), "%s/libkqueue-vnode-single.%d", test_tmpdir(), (int) getpid());
     fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) die("open");
     fire_ctx.fd = fd;
@@ -1354,7 +1358,11 @@ test_kevent_threading_vnode_single_delivery(struct test_context *ctx)
     kqfd = kqueue();
     if (kqfd < 0) die("kqueue");
 
+#ifdef NOTE_WRITE
     EV_SET(&kev, fd, EVFILT_VNODE, EV_ADD | EV_CLEAR, NOTE_WRITE, 0, NULL);
+#else
+    EV_SET(&kev, fd, EVFILT_VNODE, EV_ADD | EV_CLEAR, NOTE_EXTEND, 0, NULL);
+#endif
     if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent (vnode add)");
 
     run_single_delivery(kqfd, 4, 1, _vnode_single_delivery_fire, &fire_ctx, "EVFILT_VNODE");
@@ -1443,6 +1451,130 @@ test_kevent_threading_write_single_delivery(struct test_context *ctx)
     if (close(pipefd[1]) < 0) die("close pipe[1]");
 }
 
+/*
+ * fd-reuse stress: thread A spam-EV_ADDs an EVFILT_READ knote on
+ * a pipe; thread B closes the pipe and reopens, recycling fd
+ * numbers.  Native BSD's knote_fdclose hooks in close(2) keep the
+ * kqueue's view consistent; libkqueue must not deliver stale
+ * events to the new fd or UAF on knote_drop racing close.
+ */
+struct fd_reuse_args {
+    int           kqfd;
+    atomic_int    stop;
+};
+
+static void *
+_fd_reuse_recycler(void *arg)
+{
+    struct fd_reuse_args *a = arg;
+    while (!atomic_load(&a->stop)) {
+        int p[2];
+        if (pipe(p) < 0) continue;
+        struct kevent kev;
+        EV_SET(&kev, p[0], EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
+        (void) kevent(a->kqfd, &kev, 1, NULL, 0, NULL);
+        EV_SET(&kev, p[0], EVFILT_READ, EV_DELETE, 0, 0, NULL);
+        (void) kevent(a->kqfd, &kev, 1, NULL, 0, NULL);
+        close(p[0]);
+        close(p[1]);
+    }
+    return NULL;
+}
+
+static void
+test_kevent_threading_fd_reuse_stress(struct test_context *ctx)
+{
+    enum { N_THREADS = 4, N_ITERATIONS = 5000 };
+    pthread_t            th[N_THREADS];
+    struct fd_reuse_args args = { .kqfd = ctx->kqfd };
+    int                  i;
+
+    atomic_init(&args.stop, 0);
+    for (i = 0; i < N_THREADS; i++) {
+        if (pthread_create(&th[i], NULL, _fd_reuse_recycler, &args) != 0)
+            die("pthread_create");
+    }
+
+    /* Drain in main thread. */
+    for (i = 0; i < N_ITERATIONS; i++) {
+        struct kevent ret[16];
+        struct timespec poll = { 0, 100 * 1000 };  /* 100us */
+        (void) kevent(ctx->kqfd, NULL, 0, ret, NUM_ELEMENTS(ret), &poll);
+    }
+
+    atomic_store(&args.stop, 1);
+    for (i = 0; i < N_THREADS; i++) {
+        pthread_join(th[i], NULL);
+    }
+}
+
+/*
+ * EVFILT_USER NOTE_TRIGGER racing EV_DELETE in a tight loop across
+ * threads.  FreeBSD's filt_userdetach is a no-op (kqueue framework
+ * handles the synchronisation via KN_INFLUX); libkqueue's posix and
+ * linux backends need equivalent guards.  Run under TSan/ASan.
+ */
+struct user_trigger_delete_args {
+    int        kqfd;
+    atomic_int stop;
+};
+
+static void *
+_user_trigger_delete_worker(void *arg)
+{
+    struct user_trigger_delete_args *a = arg;
+    while (!atomic_load(&a->stop)) {
+        struct kevent kev;
+        uintptr_t ident = (uintptr_t)(rand() % 8 + 1);
+        EV_SET(&kev, ident, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+        (void) kevent(a->kqfd, &kev, 1, NULL, 0, NULL);
+        EV_SET(&kev, ident, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+        (void) kevent(a->kqfd, &kev, 1, NULL, 0, NULL);
+        EV_SET(&kev, ident, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+        (void) kevent(a->kqfd, &kev, 1, NULL, 0, NULL);
+    }
+    return NULL;
+}
+
+static void
+test_kevent_threading_user_trigger_delete_race(struct test_context *ctx)
+{
+    enum { N_THREADS = 4, DURATION_MS = 200 };
+    pthread_t                          th[N_THREADS];
+    struct user_trigger_delete_args    args = { .kqfd = ctx->kqfd };
+    int                                i;
+    struct timespec                    deadline;
+
+    atomic_init(&args.stop, 0);
+    for (i = 0; i < N_THREADS; i++) {
+        if (pthread_create(&th[i], NULL, _user_trigger_delete_worker, &args) != 0)
+            die("pthread_create");
+    }
+
+    /* Drain in main thread until deadline. */
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_nsec += DURATION_MS * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    for (;;) {
+        struct timespec now;
+        struct kevent   ret[16];
+        struct timespec poll = { 0, 1000000 };  /* 1ms */
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (now.tv_sec > deadline.tv_sec ||
+            (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec))
+            break;
+        (void) kevent(ctx->kqfd, NULL, 0, ret, NUM_ELEMENTS(ret), &poll);
+    }
+
+    atomic_store(&args.stop, 1);
+    for (i = 0; i < N_THREADS; i++) {
+        pthread_join(th[i], NULL);
+    }
+}
+
 void
 test_threading(struct test_context *ctx)
 {
@@ -1503,4 +1635,6 @@ test_threading(struct test_context *ctx)
 #endif
 	test(kevent_threading_read_single_delivery, ctx);
 	test(kevent_threading_write_single_delivery, ctx);
+	test(kevent_threading_fd_reuse_stress, ctx);
+	test(kevent_threading_user_trigger_delete_race, ctx);
 }

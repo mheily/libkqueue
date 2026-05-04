@@ -21,9 +21,19 @@
 
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <fcntl.h>
 
 #ifndef SIOCOUTQ
 # define SIOCOUTQ TIOCOUTQ
+#endif
+
+/*
+ * F_GETPIPE_SZ requires _GNU_SOURCE; private.h sets that already
+ * but the macro can still be missing in older glibc fcntl.h.  The
+ * kernel constant is stable, so define it locally as a fallback.
+ */
+#ifndef F_GETPIPE_SZ
+# define F_GETPIPE_SZ 1032
 #endif
 
 int
@@ -60,11 +70,28 @@ evfilt_write_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
         dst->flags |= EV_EOF;
     }
 
-    /* On return, data contains the the amount of space remaining in the write buffer */
-    if (!(dst->flags & EV_EOF) && (ioctl(dst->ident, SIOCOUTQ, &dst->data) < 0)) {
-            /* race condition with socket close, so ignore this error */
-            dbg_puts("ioctl(2) of socket failed");
+    /*
+     * kev.data carries free space in the write buffer.  Sockets use
+     * SIOCOUTQ; pipes/FIFOs use F_GETPIPE_SZ minus FIONREAD (the
+     * read-end's pending byte count, which equals the writer's
+     * occupied bytes for an anonymous pipe).
+     */
+    if (!(dst->flags & EV_EOF)) {
+        if (src->kn_flags & KNFL_PIPE) {
+            int pipe_sz = fcntl((int) dst->ident, F_GETPIPE_SZ);
+            int pending = 0;
+            if (pipe_sz < 0 || ioctl(dst->ident, FIONREAD, &pending) < 0) {
+                dbg_puts("F_GETPIPE_SZ/FIONREAD failed on pipe");
+                dst->data = 0;
+            } else {
+                dst->data = pipe_sz - pending;
+                if (dst->data < 0) dst->data = 0;
+            }
+        } else if (ioctl(dst->ident, SIOCOUTQ, &dst->data) < 0) {
+            /* race with socket close; tolerate. */
+            dbg_puts("ioctl(SIOCOUTQ) failed");
             dst->data = 0;
+        }
     }
 
 done:

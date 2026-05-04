@@ -78,6 +78,7 @@ knote_insert(struct filter *filt, struct knote *kn)
 {
     kqueue_mutex_assert(filt->kf_kqueue, MTX_LOCKED);
     RB_INSERT(knote_index, &filt->kf_index, kn);
+    filt->kf_kqueue->kq_knote_count++;
 }
 
 struct knote *
@@ -168,6 +169,8 @@ knote_delete(struct filter *filt, struct knote *kn)
         dbg_printf("kn=%p - conflicting entry in filter tree", kn);
 
     RB_REMOVE(knote_index, &filt->kf_index, kn);
+    if (filt->kf_kqueue->kq_knote_count > 0)
+        filt->kf_kqueue->kq_knote_count--;
 
     if (LIST_INSERTED(kn, kn_ready))
         LIST_REMOVE_ZERO(kn, kn_ready);

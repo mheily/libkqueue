@@ -217,19 +217,24 @@ if(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "posix")
   #
   #  Per-filter availability.  READ/WRITE/USER/SIGNAL ride on
   #  pselect+sigaction+a self-pipe and are enabled together when
-  #  those primitives are present.  TIMER and PROC are
-  #  separately gated.  VNODE is not offered: portable POSIX has
-  #  no file-change notification primitive, and the only honest
-  #  fallback (periodic fstat polling) costs O(N) syscalls per
-  #  tick and still can't see RENAME/REVOKE through the watched
-  #  fd.  Systems that need vnode events have inotify/kqueue/
-  #  port_associate and use the matching native backend.
+  #  those primitives are present.  TIMER, PROC and VNODE are
+  #  separately gated.
   #
   if(HAVE_PSELECT AND HAVE_SIGACTION)
     set(LIBKQUEUE_HAVE_FILT_READ   1)
     set(LIBKQUEUE_HAVE_FILT_WRITE  1)
     set(LIBKQUEUE_HAVE_FILT_USER   1)
     set(LIBKQUEUE_HAVE_FILT_SIGNAL 1)
+    #
+    #  VNODE on POSIX is implemented via per-knote fstat
+    #  snapshots polled at the wait-loop cadence (see
+    #  NOTE_FILE_POLL_INTERVAL on EVFILT_LIBKQUEUE).  Costs
+    #  O(N_vnodes) fstats per re-evaluation and can't detect
+    #  NOTE_RENAME (fstat through the fd doesn't see path
+    #  changes).  Backends with kernel-driven vnode dispatch
+    #  (inotify, kqueue, port_associate) override.
+    #
+    set(LIBKQUEUE_HAVE_FILT_VNODE 1)
   endif()
   if(HAVE_TIMER_CREATE OR HAVE_SETITIMER)
     set(LIBKQUEUE_HAVE_FILT_TIMER 1)
@@ -278,6 +283,21 @@ foreach(_filt READ WRITE AIO VNODE PROC SIGNAL TIMER NETDEV FS LIO USER LIBKQUEU
     set(LIBKQUEUE_PUBLIC_FILT_${_filt} 0)
   endif()
 endforeach()
+
+#
+#  Per-backend NOTE_* gating.  POSIX stat-snapshot polling cannot
+#  distinguish data writes from utimes, and fstat-through-fd doesn't
+#  see path changes - so NOTE_WRITE / NOTE_RENAME aren't deliverable
+#  there and we redact them from the public header rather than ship
+#  a half-functional API.
+#
+if(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "posix")
+  set(LIBKQUEUE_PUBLIC_NOTE_WRITE 0)
+  set(LIBKQUEUE_PUBLIC_NOTE_RENAME 0)
+else()
+  set(LIBKQUEUE_PUBLIC_NOTE_WRITE 1)
+  set(LIBKQUEUE_PUBLIC_NOTE_RENAME 1)
+endif()
 configure_file(${CMAKE_CURRENT_SOURCE_DIR}/include/sys/event.h.in
                ${CMAKE_CURRENT_BINARY_DIR}/include/sys/event.h
                @ONLY)

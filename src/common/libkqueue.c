@@ -61,6 +61,15 @@ common_libkqueue_knote_create(struct filter *filt, struct knote *kn)
     }
         break;
 
+    case NOTE_FILE_POLL_INTERVAL:
+        if (kqops.set_file_poll_interval == NULL) {
+            errno = ENOSYS;
+            return (-1);
+        }
+        if (kqops.set_file_poll_interval(filt->kf_kqueue, kn->kev.data) < 0)
+            return (-1);
+        break;
+
 #ifndef NDEBUG
     case NOTE_DEBUG:
     {

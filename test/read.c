@@ -726,13 +726,16 @@ void
 test_kevent_regular_file_reactivate(struct test_context *ctx)
 {
     struct kevent   kev, ret[1];
-    char            path[] = "/tmp/libkqueue-test-XXXXXX";
+    char            path[1024];
     struct timespec timeout = { 2, 0 };
-    int             rfd, wfd, tmpfd;
+    int             rfd, wfd, tmpfd, i;
+    const int       cycles = 3;
 
+    snprintf(path, sizeof(path), "%s/libkqueue-test-XXXXXX", test_tmpdir());
+
+    /* Empty file: mkstemp creates it with size 0. */
     tmpfd = mkstemp(path);
     if (tmpfd < 0) die("mkstemp");
-    if (write(tmpfd, "abcd", 4) != 4) die("write initial");
     close(tmpfd);
 
     rfd = open(path, O_RDONLY);
@@ -741,33 +744,158 @@ test_kevent_regular_file_reactivate(struct test_context *ctx)
     EV_SET(&kev, rfd, EVFILT_READ, EV_ADD, 0, 0, &rfd);
     kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
 
-    /* Initial: 4 bytes available. */
-    if (kevent_get_timeout(ret, 1, ctx->kqfd, &timeout) != 1)
-        die("initial: no event");
-    if (ret[0].data != 4)
-        die("initial: expected data=4, got %ld", (long) ret[0].data);
-
-    /* Seek to EOF; knote should now be quiet. */
-    if (lseek(rfd, 4, SEEK_SET) != 4) die("lseek");
+    /*
+     * Zero-size file: knote must not be active.  size == position
+     * == 0, so data == 0 and BSD's "active when size > position"
+     * rule says no fire.
+     */
     test_no_kevents(ctx->kqfd);
 
-    /* Append through a separate write fd.  Native BSD's KNOTE() in
-     * the vfs write path should re-activate the knote. */
+    /*
+     * Cycle: append, expect a fire, drain by seeking to EOF,
+     * expect quiet.  Repeat to verify the re-activation path
+     * works more than once (one-shot re-arm regressions would
+     * pass cycle 1 and fail cycle 2).
+     */
     wfd = open(path, O_WRONLY | O_APPEND);
     if (wfd < 0) die("open(wfd)");
-    if (write(wfd, "efgh", 4) != 4) die("write append");
-    close(wfd);
 
-    /* size=8 pos=4 -> data=4. */
-    if (kevent_get_timeout(ret, 1, ctx->kqfd, &timeout) != 1)
-        die("re-activation: no event after file grew");
-    if (ret[0].data != 4)
-        die("re-activation: expected data=4, got %ld", (long) ret[0].data);
+    for (i = 1; i <= cycles; i++) {
+        off_t expect_pos = (off_t) (4 * i);
+
+        if (write(wfd, "abcd", 4) != 4) die("write cycle %d", i);
+
+        if (kevent_get_timeout(ret, 1, ctx->kqfd, &timeout) != 1)
+            die("cycle %d: no event after file grew", i);
+        if (ret[0].data != 4)
+            die("cycle %d: expected data=4, got %ld",
+                i, (long) ret[0].data);
+
+        /* Drain: seek to current EOF; knote must go quiet. */
+        if (lseek(rfd, expect_pos, SEEK_SET) != expect_pos)
+            die("lseek cycle %d", i);
+        test_no_kevents(ctx->kqfd);
+    }
+    close(wfd);
 
     kev.flags = EV_DELETE;
     kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
     close(rfd);
     unlink(path);
+}
+
+/*
+ * POSIX semantics: a file unlinked while open remains fully usable
+ * through its still-open fds until the last one closes; the inode
+ * persists, reads/writes work, fstat reports the live size.
+ * EVFILT_READ on the read-fd should keep working through unlink, and
+ * subsequent writes through the still-open write-fd must continue to
+ * re-activate the knote.
+ */
+static void
+test_kevent_regular_file_unlinked_continues(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    char            path[1024];
+    struct timespec timeout = { 2, 0 };
+    int             rfd, wfd, tmpfd, i;
+
+    snprintf(path, sizeof(path), "%s/libkqueue-test-XXXXXX", test_tmpdir());
+
+    tmpfd = mkstemp(path);
+    if (tmpfd < 0) die("mkstemp");
+    close(tmpfd);
+
+    rfd = open(path, O_RDONLY);
+    if (rfd < 0) die("open(rfd)");
+    wfd = open(path, O_WRONLY | O_APPEND);
+    if (wfd < 0) die("open(wfd)");
+
+    /* Remove the directory entry while both fds are open. */
+    if (unlink(path) != 0) die("unlink");
+
+    EV_SET(&kev, rfd, EVFILT_READ, EV_ADD, 0, 0, &rfd);
+    kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
+
+    test_no_kevents(ctx->kqfd);  /* size still 0 post-unlink */
+
+    for (i = 1; i <= 2; i++) {
+        off_t expect_pos = (off_t) (4 * i);
+
+        if (write(wfd, "abcd", 4) != 4) die("write cycle %d", i);
+
+        if (kevent_get_timeout(ret, 1, ctx->kqfd, &timeout) != 1)
+            die("cycle %d: no event on unlinked file", i);
+        if (ret[0].data != 4)
+            die("cycle %d: expected data=4, got %ld",
+                i, (long) ret[0].data);
+
+        if (lseek(rfd, expect_pos, SEEK_SET) != expect_pos)
+            die("lseek cycle %d", i);
+        test_no_kevents(ctx->kqfd);
+    }
+
+    kev.flags = EV_DELETE;
+    kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
+    close(rfd);
+    close(wfd);
+}
+
+/*
+ * rename(2) preserves the inode; the watcher's fd points at the same
+ * underlying file at a different path.  EVFILT_READ should be
+ * unaffected: subsequent writes through the still-open write-fd must
+ * continue to re-activate.
+ */
+static void
+test_kevent_regular_file_renamed_continues(struct test_context *ctx)
+{
+    struct kevent   kev, ret[1];
+    char            path1[1024];
+    char            path2[1024 + 16];
+    struct timespec timeout = { 2, 0 };
+    int             rfd, wfd, tmpfd, i;
+
+    snprintf(path1, sizeof(path1), "%s/libkqueue-test-XXXXXX", test_tmpdir());
+
+    tmpfd = mkstemp(path1);
+    if (tmpfd < 0) die("mkstemp");
+    close(tmpfd);
+    snprintf(path2, sizeof(path2), "%s.renamed", path1);
+
+    rfd = open(path1, O_RDONLY);
+    if (rfd < 0) die("open(rfd)");
+    wfd = open(path1, O_WRONLY | O_APPEND);
+    if (wfd < 0) die("open(wfd)");
+
+    EV_SET(&kev, rfd, EVFILT_READ, EV_ADD, 0, 0, &rfd);
+    kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
+
+    if (rename(path1, path2) != 0) die("rename");
+
+    test_no_kevents(ctx->kqfd);
+
+    for (i = 1; i <= 2; i++) {
+        off_t expect_pos = (off_t) (4 * i);
+
+        if (write(wfd, "abcd", 4) != 4) die("write cycle %d", i);
+
+        if (kevent_get_timeout(ret, 1, ctx->kqfd, &timeout) != 1)
+            die("cycle %d: no event after rename+grow", i);
+        if (ret[0].data != 4)
+            die("cycle %d: expected data=4, got %ld",
+                i, (long) ret[0].data);
+
+        if (lseek(rfd, expect_pos, SEEK_SET) != expect_pos)
+            die("lseek cycle %d", i);
+        test_no_kevents(ctx->kqfd);
+    }
+
+    kev.flags = EV_DELETE;
+    kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
+    close(rfd);
+    close(wfd);
+    unlink(path2);
 }
 
 /* Test transitioning a socket from EVFILT_WRITE to EVFILT_READ */
@@ -888,6 +1016,206 @@ test_kevent_socket_modify_clobbers_udata(struct test_context *ctx)
                EV_DELETE, 0, 0, NULL);
 }
 
+/*
+ * EV_DELETE on a never-registered fd returns ENOENT.
+ */
+static void
+test_kevent_read_del_nonexistent(struct test_context *ctx)
+{
+    struct kevent kev;
+    int           pfd[2];
+
+    if (pipe(pfd) < 0) die("pipe");
+    EV_SET(&kev, pfd[0], EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+        die("EV_DELETE on never-added knote should fail");
+    if (errno != ENOENT)
+        die("expected ENOENT, got %d (%s)", errno, strerror(errno));
+    close(pfd[0]);
+    close(pfd[1]);
+}
+
+/*
+ * udata round-trips through delivery.
+ */
+static void
+test_kevent_read_udata_preserved(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    void         *marker = (void *) 0xABCDEF01UL;
+    int           pfd[2];
+
+    if (pipe(pfd) < 0) die("pipe");
+    EV_SET(&kev, pfd[0], EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, marker);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (write(pfd[1], "x", 1) != 1) die("write");
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].udata != marker)
+        die("udata not preserved: got %p expected %p", ret[0].udata, marker);
+
+    close(pfd[0]);
+    close(pfd[1]);
+}
+
+/*
+ * Two kqueues on the same fd: change must fire on both, draining
+ * one must not affect the other.
+ */
+static void
+test_kevent_read_multi_kqueue(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    int           kq2;
+    int           pfd[2];
+
+    if (pipe(pfd) < 0) die("pipe");
+    if ((kq2 = kqueue()) < 0) die("kqueue(2)");
+
+    EV_SET(&kev, pfd[0], EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent(kq1)");
+    EV_SET(&kev, pfd[0], EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
+    if (kevent(kq2, &kev, 1, NULL, 0, NULL) < 0) die("kevent(kq2)");
+
+    if (write(pfd[1], "x", 1) != 1) die("write");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    kevent_get(ret, NUM_ELEMENTS(ret), kq2, 1);
+
+    close(kq2);
+    close(pfd[0]);
+    close(pfd[1]);
+}
+
+/*
+ * Listen socket with N pending connections: kev.data must be N,
+ * not just 1.  FreeBSD filt_soread sets kn_data = sol_qlen
+ * (uipc_socket.c:4599).
+ */
+static void
+test_kevent_read_listen_backlog_count(struct test_context *ctx)
+{
+    struct kevent      kev, ret[1];
+    struct sockaddr_in sain;
+    socklen_t          slen = sizeof(sain);
+    int                lst, c1, c2;
+    int                one = 1;
+
+    memset(&sain, 0, sizeof(sain));
+    sain.sin_family      = AF_INET;
+    sain.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if ((lst = socket(AF_INET, SOCK_STREAM, 0)) < 0) die("socket(listen)");
+    if (setsockopt(lst, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) die("SO_REUSEADDR");
+    if (bind(lst, (struct sockaddr *)&sain, slen) < 0) die("bind");
+    if (getsockname(lst, (struct sockaddr *)&sain, &slen) < 0) die("getsockname");
+    if (listen(lst, 8) < 0) die("listen");
+
+    if ((c1 = socket(AF_INET, SOCK_STREAM, 0)) < 0) die("socket(c1)");
+    if ((c2 = socket(AF_INET, SOCK_STREAM, 0)) < 0) die("socket(c2)");
+    if (connect(c1, (struct sockaddr *)&sain, slen) < 0) die("connect c1");
+    if (connect(c2, (struct sockaddr *)&sain, slen) < 0) die("connect c2");
+
+    /* Brief pause so the listen queue settles. */
+    usleep(10 * 1000);
+
+    EV_SET(&kev, lst, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].data < 2)
+        die("listen-backlog with 2 pending: kev.data=%lld, expected >= 2",
+            (long long) ret[0].data);
+
+    close(c1);
+    close(c2);
+    close(lst);
+}
+
+/*
+ * Pipe with N bytes written: kev.data must equal N.  Two writes
+ * before drain: data carries the total, single event delivered.
+ */
+static void
+test_kevent_read_pipe_data_exact_count(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    int           pfd[2];
+    const char    payload[] = "hello world";
+    const size_t  len = sizeof(payload) - 1;
+
+    if (pipe(pfd) < 0) die("pipe");
+    EV_SET(&kev, pfd[0], EVFILT_READ, EV_ADD, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    /* Two writes between drains. */
+    if (write(pfd[1], payload, len) != (ssize_t) len) die("write 1");
+    if (write(pfd[1], payload, len) != (ssize_t) len) die("write 2");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].data != (intptr_t)(len * 2))
+        die("pipe data: got %lld, expected %zu (2 writes coalesced)",
+            (long long) ret[0].data, len * 2);
+
+    EV_SET(&kev, pfd[0], EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
+    close(pfd[0]);
+    close(pfd[1]);
+}
+
+/*
+ * Peer writes N then shutdown(SHUT_WR): expect a single event
+ * carrying both EV_EOF and kev.data == N.  FreeBSD filt_soread
+ * gates EOF on SBS_CANTRCVMORE regardless of sb_cc, so EOF arrives
+ * with the buffered bytes still drainable.
+ */
+static void
+test_kevent_read_socket_eof_with_buffered(struct test_context *ctx)
+{
+    struct kevent      kev, ret[1];
+    struct sockaddr_in sain;
+    socklen_t          slen = sizeof(sain);
+    int                lst, c, s;
+    int                one = 1;
+    const char         payload[] = "buffered";
+    const size_t       len = sizeof(payload) - 1;
+
+    memset(&sain, 0, sizeof(sain));
+    sain.sin_family      = AF_INET;
+    sain.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    if ((lst = socket(AF_INET, SOCK_STREAM, 0)) < 0) die("socket");
+    if (setsockopt(lst, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) die("SO_REUSEADDR");
+    if (bind(lst, (struct sockaddr *)&sain, slen) < 0) die("bind");
+    if (getsockname(lst, (struct sockaddr *)&sain, &slen) < 0) die("getsockname");
+    if (listen(lst, 8) < 0) die("listen");
+
+    if ((c = socket(AF_INET, SOCK_STREAM, 0)) < 0) die("socket(c)");
+    if (connect(c, (struct sockaddr *)&sain, slen) < 0) die("connect");
+    if ((s = accept(lst, NULL, NULL)) < 0) die("accept");
+    close(lst);
+
+    /* Peer writes then shuts the write side. */
+    if (send(s, payload, len, 0) != (ssize_t) len) die("send");
+    if (shutdown(s, SHUT_WR) < 0) die("shutdown");
+
+    /* Brief settle so the FIN reaches our side. */
+    usleep(10 * 1000);
+
+    EV_SET(&kev, c, EVFILT_READ, EV_ADD, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (!(ret[0].flags & EV_EOF))
+        die("expected EV_EOF: %s", kevent_to_str(&ret[0]));
+    if (ret[0].data != (intptr_t) len)
+        die("expected data=%zu with EV_EOF, got %lld",
+            len, (long long) ret[0].data);
+
+    close(c);
+    close(s);
+}
+
 void
 test_evfilt_read(struct test_context *ctx)
 {
@@ -932,10 +1260,36 @@ test_evfilt_read(struct test_context *ctx)
     test(kevent_socket_delete_drains, ctx);
     test(kevent_socket_modify_clobbers_udata, ctx);
 
+    test(kevent_read_del_nonexistent, ctx);
+    test(kevent_read_udata_preserved, ctx);
+    test(kevent_read_multi_kqueue, ctx);
+    /*
+     * Listen-socket backlog count reporting requires a kernel
+     * ioctl that exposes sol_qlen.  FreeBSD/macOS native kqueue
+     * read it directly from the socket struct; Linux has no
+     * portable equivalent for listen sockets, and the POSIX
+     * backend hardcodes 1.  Gate on backends that can deliver.
+     */
+#if !defined(LIBKQUEUE_BACKEND_POSIX) && !defined(LIBKQUEUE_BACKEND_LINUX)
+    test(kevent_read_listen_backlog_count, ctx);
+#endif
+    test(kevent_read_pipe_data_exact_count, ctx);
+    /*
+     * POSIX backend defers EV_EOF until the peer-buffered bytes
+     * are drained (FIONREAD-zero is the only EOF signal pselect
+     * exposes).  BSD/macOS/Linux deliver EOF + buffered-bytes
+     * together because they observe the kernel's CANTRCVMORE flag
+     * directly.
+     */
+#if !defined(LIBKQUEUE_BACKEND_POSIX)
+    test(kevent_read_socket_eof_with_buffered, ctx);
+#endif
     test(kevent_pipe_eof, ctx);
     test(kevent_pipe_eof_multi, ctx);
     test(kevent_regular_file, ctx);
     test(kevent_regular_file_reactivate, ctx);
+    test(kevent_regular_file_unlinked_continues, ctx);
+    test(kevent_regular_file_renamed_continues, ctx);
     close(ctx->client_fd);
     close(ctx->server_fd);
     close(ctx->listen_fd);

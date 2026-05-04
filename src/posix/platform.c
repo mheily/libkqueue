@@ -87,6 +87,26 @@ posix_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state)
     TAILQ_REMOVE(&kq->kq_inflight, state, entry);
 }
 
+/*
+ * Set the per-kqueue file-knote poll interval (NOTE_FILE_POLL_INTERVAL
+ * on EVFILT_LIBKQUEUE).  Negative is rejected; 0 disables auto-poll
+ * (kqueue sleeps indefinitely with file knotes registered,
+ * re-evaluation only on other wake sources).  Positive values clamp
+ * pselect's timeout when the only readiness sources are KNFL_FILE
+ * knotes.
+ */
+static int
+posix_set_file_poll_interval(struct kqueue *kq, intptr_t interval_ns)
+{
+    if (interval_ns < 0) {
+        errno = EINVAL;
+        return (-1);
+    }
+    kq->kq_file_poll_interval_ns = (long) interval_ns;
+    posix_wake_kqueue(kq);              /* parked pselects need to re-clamp */
+    return (0);
+}
+
 int
 posix_kqueue_init(struct kqueue *kq)
 {
@@ -206,23 +226,60 @@ posix_kevent_wait(struct kqueue *kq, UNUSED int numevents, const struct timespec
 {
     int n;
     fd_set rfds, wfds;
-    struct timespec zero = { 0, 0 };
+    struct timespec file_poll_to;
 
     /*
-     * If any always-ready knote (e.g. EVFILT_READ on a regular
-     * file) is registered, force pselect to return immediately.
-     * The dispatch path emits those knotes unconditionally; we
-     * must not block waiting for an unrelated wake source.
+     * Always-ready knotes (EVFILT_VNODE, EVFILT_READ on regular
+     * files) have no kernel-level wake source - their state is
+     * derived from periodic fstat.  Whenever ANY always-ready
+     * knote is registered we must drive the pselect loop, even
+     * if non-always-ready knotes are also registered: the
+     * non-always-ready ones might never fire while the
+     * always-ready one is the thing that actually changed.
+     *
+     *  - kq_file_poll_interval_ns > 0: clamp pselect's timeout to
+     *    that many ns (the kqueue actually sleeps between polls).
+     *  - kq_file_poll_interval_ns == 0 (default): sched_yield()
+     *    each loop iteration with timeout=0 (cooperative spin).
+     *    Only safe when the entire knote set is always-ready;
+     *    otherwise the spin would burn CPU forever waiting on
+     *    a co-resident kernel-wake knote.
      */
-    if (kq->kq_always_ready > 0)
-        timeout = &zero;
+    bool any_always_ready  = (kq->kq_always_ready > 0);
+    bool only_always_ready = any_always_ready &&
+                             (kq->kq_knote_count == kq->kq_always_ready);
+    if (any_always_ready) {
+        /*
+         * If the user set NOTE_FILE_POLL_INTERVAL, honour it.
+         * Otherwise pick a 100ms default so a caller blocking on
+         * kevent(timeout=NULL) wakes up periodically to drive
+         * the always-ready knote's stat-poll.  The cooperative
+         * sched_yield path below kicks in additionally when the
+         * entire knote set is always-ready.
+         */
+        long ns = kq->kq_file_poll_interval_ns;
+        if (ns <= 0) ns = 100L * 1000L * 1000L;  /* 100ms default */
+        file_poll_to.tv_sec  = ns / 1000000000L;
+        file_poll_to.tv_nsec = ns % 1000000000L;
+        if (timeout == NULL ||
+            timeout->tv_sec > file_poll_to.tv_sec ||
+            (timeout->tv_sec == file_poll_to.tv_sec &&
+             timeout->tv_nsec > file_poll_to.tv_nsec))
+            timeout = &file_poll_to;
+    }
 
     for (;;) {
+        static const struct timespec zero = { 0, 0 };
         char buf[64];
         bool real_event;
         struct timespec timer_to;
         const struct timespec *use_to = timeout;
         long timer_ns;
+
+        if (only_always_ready && kq->kq_file_poll_interval_ns == 0) {
+            sched_yield();
+            use_to = &zero;
+        }
 
         /*
          * Clamp the pselect timeout against the next EVFILT_TIMER
@@ -355,6 +412,9 @@ posix_dispatch_filter(struct filter *filt, struct kevent *eventlist,
 #endif
 #ifdef EVFILT_TIMER
             filt->kf_id == EVFILT_TIMER ||
+#endif
+#ifdef EVFILT_VNODE
+            filt->kf_id == EVFILT_VNODE ||
 #endif
             0) {
             rv = filt->kf_copyout(eventlist, nevents, filt, NULL, NULL);
@@ -547,6 +607,22 @@ posix_kevent_copyout(struct kqueue *kq, UNUSED int nready,
             continue;
         }
 #endif
+#ifdef EVFILT_VNODE
+        /*
+         * EVFILT_VNODE on POSIX is fstat-snapshot polling: no
+         * eventfd, knotes don't link to kf_ready, copyout walks
+         * the knote index itself.  Run it every pass; the wait
+         * loop's poll-interval mechanism gates how often "every
+         * pass" actually happens.
+         */
+        if (filt->kf_id == EVFILT_VNODE) {
+            rv = posix_dispatch_filter(filt, eventlist + nout, nevents - nout);
+            if (rv < 0)
+                return (-1);
+            nout += rv;
+            continue;
+        }
+#endif
 
         /*
          * Eventfd-keyed filters (USER, PROC, SIGNAL):
@@ -585,4 +661,5 @@ const struct kqueue_vtable kqops = {
     .eventfd_raise      = posix_eventfd_raise,
     .eventfd_lower      = posix_eventfd_lower,
     .eventfd_descriptor = posix_eventfd_descriptor,
+    .set_file_poll_interval = posix_set_file_poll_interval,
 };

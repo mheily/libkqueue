@@ -1,0 +1,51 @@
+# Doxygen configuration for libkqueue.
+#
+# Most options inherit doxygen defaults.  This file exists to capture
+# project-specific ALIASES that document cross-platform behaviour
+# divergences in source comments.
+#
+# Run: doxygen Doxyfile
+
+PROJECT_NAME           = "libkqueue"
+PROJECT_BRIEF          = "kqueue() compatibility library"
+
+INPUT                  = src include
+RECURSIVE              = YES
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+JAVADOC_AUTOBRIEF      = YES
+
+OUTPUT_DIRECTORY       = doc
+GENERATE_LATEX         = NO
+GENERATE_HTML          = YES
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+
+#
+# Behaviour divergence aliases.  BSD/macOS native kqueue is the
+# reference implementation; document any backend that observably
+# differs from it on the same code path.
+#
+# Usage:
+#   /**
+#    * \reference vop_setattr_post fires per VOP and the kqueue layer
+#    *            ORs fflags between drains.
+#    * \diverges{Linux, inotify drain-and-union in copyout matches
+#    *           the BSD union}
+#    * \diverges{POSIX, stat-snapshot only sees end state - touch +
+#    *           ftruncate-up loses NOTE_ATTRIB because size_changed
+#    *           gates the ctime-only path}
+#    */
+#
+# Use \reference once per code path for the BSD/macOS canonical
+# behaviour; follow with one \diverges per backend that deviates.
+#
+ALIASES += "reference=\par Reference (BSD/macOS) behaviour:^^"
+ALIASES += "diverges{2}=^^\par Diverges on \1:^^\2^^"
+
+#
+# Cross-reference page: every \diverges entry also lands on a single
+# "Cross-platform divergences" page so reviewers can audit them in
+# one place.
+#
+ALIASES += "diverges_xref{2}=\xrefitem divergences \"Cross-platform divergence\" \"Cross-platform divergences\" **\1**: \2"

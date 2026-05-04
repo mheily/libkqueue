@@ -472,13 +472,243 @@ test_kevent_signal_receipt_preserved(struct test_context *ctx)
     kevent_rv_cmp(0, kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL));
 }
 
+/*
+ * EV_DELETE on a never-registered signum returns ENOENT.
+ */
+static void
+test_kevent_signal_del_nonexistent(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    EV_SET(&kev, SIGUSR2, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+        die("EV_DELETE on non-existent signal knote should fail");
+    if (errno != ENOENT)
+        die("expected ENOENT, got %d (%s)", errno, strerror(errno));
+}
+
+/*
+ * udata round-trips through delivery.
+ */
+static void
+test_kevent_signal_udata_preserved(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    void         *marker = (void *) 0xC0FFEEUL;
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, marker);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (kill(getpid(), SIGUSR1) < 0) die("kill");
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].udata != marker)
+        die("udata not preserved: got %p expected %p", ret[0].udata, marker);
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent delete");
+}
+
+/*
+ * Signum 0 and out-of-range signums must reject with EINVAL on
+ * EV_ADD.  FreeBSD filt_signalattach checks ident < SIGRTMAX.
+ */
+static void
+test_kevent_signal_invalid_signum_rejected(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    /* Signum 0 is reserved (used by kill(pid, 0) to test pid existence). */
+    EV_SET(&kev, 0, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+        die("signum 0 should reject");
+    if (errno != EINVAL)
+        die("signum 0: expected EINVAL, got %d (%s)", errno, strerror(errno));
+
+    /* Way out of range. */
+    EV_SET(&kev, 9999, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+        die("signum 9999 should reject");
+    if (errno != EINVAL)
+        die("signum 9999: expected EINVAL, got %d (%s)", errno, strerror(errno));
+}
+
+/*
+ * EV_CLEAR resets kev.data to 0 after delivery: a second drain
+ * with no further fires must return 0.
+ */
+static void
+test_kevent_signal_ev_clear_resets_data(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (kill(getpid(), SIGUSR1) < 0) die("kill");
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+
+    /* No further fires; EV_CLEAR must zero the accumulator. */
+    test_no_kevents(ctx->kqfd);
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent delete");
+}
+
+/*
+ * pthread_kill(self) must fire the knote: BSD's signal-generation
+ * path posts to the proc-level klist regardless of the source
+ * thread.
+ */
+#include <pthread.h>
+static void
+test_kevent_signal_pthread_kill_self(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (pthread_kill(pthread_self(), SIGUSR1) != 0)
+        die("pthread_kill");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].ident != SIGUSR1)
+        die("expected SIGUSR1, got %llu", (unsigned long long) ret[0].ident);
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent delete");
+}
+
+/*
+ * Signal blocked via sigprocmask still fires the knote: BSD posts
+ * the knote in the signal-generation path before mask check.  The
+ * blocked signal stays pending in the proc bitmap, but EVFILT_SIGNAL
+ * is independent.
+ */
+static void
+test_kevent_signal_fires_while_blocked(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+    sigset_t      block, oldmask;
+
+    sigemptyset(&block);
+    sigaddset(&block, SIGUSR1);
+    if (pthread_sigmask(SIG_BLOCK, &block, &oldmask) != 0) die("sigmask");
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (kill(getpid(), SIGUSR1) < 0) die("kill");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].ident != SIGUSR1)
+        die("blocked-signal: knote didn't fire");
+
+    /* Unmask before drain to let any pending delivery complete. */
+    pthread_sigmask(SIG_SETMASK, &oldmask, NULL);
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent delete");
+}
+
+/*
+ * EVFILT_SIGNAL fires on SIGCONT just like any normal signal.
+ * BSD's KNOTE() runs in the signal-generation path before the
+ * stop/cont special-case, so even signals the kernel handles
+ * specially still notify kqueue.
+ */
+static void
+test_kevent_signal_sigcont(struct test_context *ctx)
+{
+    struct kevent kev, ret[1];
+
+    signal(SIGCONT, SIG_IGN);
+
+    EV_SET(&kev, SIGCONT, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (kill(getpid(), SIGCONT) < 0) die("kill(SIGCONT)");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].ident != SIGCONT)
+        die("expected SIGCONT, got %llu", (unsigned long long) ret[0].ident);
+    if (ret[0].data < 1)
+        die("expected data >= 1, got %lld", (long long) ret[0].data);
+
+    EV_SET(&kev, SIGCONT, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
+    signal(SIGCONT, SIG_DFL);
+}
+
+/*
+ * EV_DISABLE drops a pending signal-fire (drains).  Distinct from
+ * the existing test_kevent_signal_disable which just tests that
+ * the knote suppresses delivery while in the disabled state.
+ */
+static void
+test_kevent_signal_disable_drains(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (kill(getpid(), SIGUSR1) < 0) die("kill");
+
+    /* Disable before drain. */
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_DISABLE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent disable");
+    test_no_kevents(ctx->kqfd);
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent delete");
+}
+
+/*
+ * EV_DELETE drops a pending fire.
+ */
+static void
+test_kevent_signal_delete_drains(struct test_context *ctx)
+{
+    struct kevent kev;
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
+
+    if (kill(getpid(), SIGUSR1) < 0) die("kill");
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent delete");
+    test_no_kevents(ctx->kqfd);
+}
+
 void
 test_evfilt_signal(struct test_context *ctx)
 {
     signal(SIGUSR1, SIG_IGN);
+    signal(SIGUSR2, SIG_IGN);
 
     test(kevent_signal_add, ctx);
     test(kevent_signal_del, ctx);
+    test(kevent_signal_del_nonexistent, ctx);
+    test(kevent_signal_udata_preserved, ctx);
+    test(kevent_signal_invalid_signum_rejected, ctx);
+    test(kevent_signal_ev_clear_resets_data, ctx);
+    /*
+     * pthread_kill(self) on Linux backend: signalfd-based dispatch
+     * may not see per-thread-targeted signals if the calling thread
+     * doesn't have the signal masked.  BSD's EVFILT_SIGNAL hooks
+     * before thread routing so this works there.  Gate until the
+     * Linux backend either masks signals globally or switches to a
+     * sigaction-based dispatch.
+     */
+#if !defined(LIBKQUEUE_BACKEND_LINUX)
+    test(kevent_signal_pthread_kill_self, ctx);
+#endif
+    test(kevent_signal_fires_while_blocked, ctx);
+    test(kevent_signal_disable_drains, ctx);
+    test(kevent_signal_delete_drains, ctx);
+    test(kevent_signal_sigcont, ctx);
     test(kevent_signal_get, ctx);
     test(kevent_signal_get_pending, ctx);
     test(kevent_signal_disable, ctx);
