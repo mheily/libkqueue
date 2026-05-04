@@ -350,7 +350,13 @@ test_kevent_write_pipe_eof_on_reader_close(struct test_context *ctx)
         die("expected EV_EOF on writer after reader close: %s",
             kevent_to_str(&ret[0]));
 
-    kevent_add(ctx->kqfd, &kev, pfd[1], EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+    /*
+     * EV_DELETE may return ENOENT here: FreeBSD auto-deletes the
+     * knote when the pipe peer closes (EV_EOF is terminal for the
+     * pipe filter).  Tolerate the no-op.
+     */
+    EV_SET(&kev, pfd[1], EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
     close(pfd[1]);
 }
 
