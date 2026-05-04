@@ -603,25 +603,22 @@ test_kevent_timer_huge_interval(struct test_context *ctx)
 #endif
 
 /*
- * Negative interval: native BSDs (FreeBSD, OpenBSD, NetBSD, macOS)
- * don't validate - the timer fires immediately as a one-shot
- * already-expired.  libkqueue's POSIX/Linux backends emulate this
- * for parity.  Verify the immediate-fire contract.
+ * Negative interval contract diverges:
+ *  - FreeBSD's filt_timervalidate + libkqueue POSIX/Linux: EINVAL.
+ *  - OpenBSD/NetBSD: silently accept, fire immediately or busy-loop.
+ *  - macOS: behaviour varies.
+ * Test the strict-rejection contract on backends that pin to it.
  */
 static void
-test_kevent_timer_negative_interval_fires_immediately(struct test_context *ctx)
+test_kevent_timer_negative_interval_rejected(struct test_context *ctx)
 {
-    struct kevent   kev, ret[1];
-    struct timespec poll = { 1, 0 };  /* 1s budget */
+    struct kevent kev;
 
     EV_SET(&kev, 75, EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0, -1, NULL);
-    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0)
-        die("negative interval should be accepted (fires immediately)");
-
-    if (kevent(ctx->kqfd, NULL, 0, ret, 1, &poll) != 1)
-        die("negative interval timer didn't fire immediately");
-    if (ret[0].ident != 75 || ret[0].filter != EVFILT_TIMER)
-        die("unexpected event %s", kevent_to_str(&ret[0]));
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) == 0)
+        die("negative interval should reject");
+    if (errno != EINVAL)
+        die("expected EINVAL, got %d (%s)", errno, strerror(errno));
 }
 
 #ifdef NOTE_ABSOLUTE
@@ -717,7 +714,14 @@ test_evfilt_timer(struct test_context *ctx)
     test(kevent_timer_disable_drains, ctx);
     test(kevent_timer_delete_drains, ctx);
     test(kevent_timer_multi_kqueue, ctx);
-    test(kevent_timer_negative_interval_fires_immediately, ctx);
+    /*
+     * Negative interval contract: FreeBSD and libkqueue reject;
+     * OpenBSD/NetBSD/macOS don't validate.  Run only where the
+     * EINVAL contract holds.
+     */
+#if !defined(NATIVE_KQUEUE) || defined(__FreeBSD__)
+    test(kevent_timer_negative_interval_rejected, ctx);
+#endif
 #ifdef NOTE_NSECONDS
     test(kevent_timer_huge_interval, ctx);
 #endif

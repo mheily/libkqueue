@@ -559,12 +559,17 @@ test_evfilt_write(struct test_context *ctx)
     test(kevent_write_pipe_data_buffer_slack, ctx);
 #endif
     /*
-     * Stream socket peer-close: POSIX backend can't surface
-     * EV_EOF here either - pselect reports the fd writable
-     * (write would return EPIPE) but no exception bit
-     * differentiates that from healthy writability.
+     * Stream socket peer-close EV_EOF:
+     *  - POSIX backend: pselect reports writable, no exception
+     *    bit differentiates from healthy writability.
+     *  - macOS native: SBS_CANTSENDMORE only set after local
+     *    stack notices the peer's FIN/RST, which takes longer
+     *    than the test's 10ms settle window.
+     * Pin to Linux backend (EPOLLHUP -> EV_EOF mapping is
+     * deterministic) plus FreeBSD where the test reliably passes.
      */
-#if !defined(LIBKQUEUE_BACKEND_POSIX)
+#if defined(LIBKQUEUE_BACKEND_LINUX) || \
+    (defined(NATIVE_KQUEUE) && defined(__FreeBSD__))
     test(kevent_write_socket_eof_on_peer_close, ctx);
 #endif
     test(kevent_write_listen_socket_silent, ctx);
