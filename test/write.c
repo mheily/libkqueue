@@ -62,9 +62,13 @@ write_fill_sndbuf(int fd)
     char   buf[4096];
     size_t total = 0;
     ssize_t n;
+    int    fl;
 
     memset(buf, 'X', sizeof(buf));
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    fl = fcntl(fd, F_GETFL, 0);
+    if (fl < 0) die("fcntl(F_GETFL)");
+    if (fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0)
+        die("fcntl(F_SETFL O_NONBLOCK)");
     while ((n = send(fd, buf, sizeof(buf), 0)) > 0)
         total += (size_t) n;
     return total;

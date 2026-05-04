@@ -417,9 +417,21 @@ sl_has_no_knotes(struct sig_link *sl)
 static void
 evfilt_signal_reset_after_fork(void)
 {
+    /*
+     * pthread_atfork child handler: only this thread exists, so the
+     * sig_init_mtx / sig_dispatch_thread_mtx that normally guard these
+     * fields are unreachable.  Reinitialise them to drop any lock state
+     * inherited from the parent (a peer thread could have held them at
+     * fork) and assign without re-locking.
+     */
+    pthread_mutex_init(&sig_init_mtx, NULL);
+    pthread_mutex_init(&sig_dispatch_thread_mtx, NULL);
+
     sig_platform_reset_after_fork();
     sig_dispatch_thread_created = false;
+    /* coverity[missing_lock] */
     sig_dispatch_started        = false;
+    /* coverity[missing_lock] */
     sig_filter_count            = 0;
     sig_pipe[0] = sig_pipe[1]   = -1;
 }

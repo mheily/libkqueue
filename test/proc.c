@@ -848,7 +848,7 @@ test_kevent_proc_del_nonexistent(struct test_context *ctx)
     if (errno != ENOENT)
         die("expected ENOENT, got %d (%s)", errno, strerror(errno));
 
-    kill(child, SIGKILL);
+    kill_or_die(child, SIGKILL);
     waitpid(child, NULL, 0);
 }
 
@@ -878,7 +878,7 @@ test_kevent_proc_udata_preserved(struct test_context *ctx)
 {
     struct kevent kev, ret[1];
     void         *marker = (void *) 0xFEEDF00DUL;
-    int           fflags = NOTE_EXIT;
+    unsigned int  fflags = NOTE_EXIT;
     pid_t         child;
     int           sync_pipe[2];
     char          go = 'g';
@@ -892,7 +892,8 @@ test_kevent_proc_udata_preserved(struct test_context *ctx)
     if (child == 0) {
         char buf;
         close(sync_pipe[1]);
-        (void) read(sync_pipe[0], &buf, 1);
+        /* Drain the gate; ignore short reads. */ 
+            if (read(sync_pipe[0], &buf, 1) <= 0) _exit(1);
         exit(0);
     }
     close(sync_pipe[0]);
@@ -932,7 +933,7 @@ test_kevent_proc_receipt_preserved(struct test_context *ctx)
     if (!(kev[0].flags & EV_ERROR) || kev[0].data != 0)
         die("EV_RECEIPT echo missing EV_ERROR=0 marker");
 
-    kill(child, SIGKILL);
+    kill_or_die(child, SIGKILL);
     waitpid(child, NULL, 0);
 
     EV_SET(&kev[0], child, EVFILT_PROC, EV_DELETE, 0, 0, NULL);
@@ -952,7 +953,7 @@ static void
 test_kevent_proc_disable_preserves_events(struct test_context *ctx)
 {
     struct kevent kev, ret[1];
-    int           fflags = NOTE_EXIT;
+    unsigned int  fflags = NOTE_EXIT;
     pid_t         child;
     int           sync_pipe[2];
     char          go = 'g';
@@ -966,7 +967,8 @@ test_kevent_proc_disable_preserves_events(struct test_context *ctx)
     if (child == 0) {
         char buf;
         close(sync_pipe[1]);
-        (void) read(sync_pipe[0], &buf, 1);
+        /* Drain the gate; ignore short reads. */ 
+            if (read(sync_pipe[0], &buf, 1) <= 0) _exit(1);
         exit(0);
     }
     close(sync_pipe[0]);
@@ -1011,7 +1013,7 @@ static void
 test_kevent_proc_exit_signal_decode(struct test_context *ctx)
 {
     struct kevent kev, ret[1];
-    int           fflags = NOTE_EXIT;
+    unsigned int  fflags = NOTE_EXIT;
     pid_t         child;
 
 #ifdef NOTE_EXITSTATUS
@@ -1070,7 +1072,7 @@ test_kevent_proc_fork_storm(struct test_context *ctx)
     int           seen[N_CHILDREN] = { 0 };
     int           i;
     int           total_seen = 0;
-    int           fflags = NOTE_EXIT;
+    unsigned int  fflags = NOTE_EXIT;
 
 #ifdef NOTE_EXITSTATUS
     fflags |= NOTE_EXITSTATUS;
@@ -1084,7 +1086,8 @@ test_kevent_proc_fork_storm(struct test_context *ctx)
         if (p == 0) {
             char buf;
             close(sync_pipe[1]);
-            (void) read(sync_pipe[0], &buf, 1);
+            /* Drain the gate; ignore short reads. */ 
+            if (read(sync_pipe[0], &buf, 1) <= 0) _exit(1);
             _exit(0);
         }
         pids[i] = p;

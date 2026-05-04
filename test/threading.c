@@ -1523,9 +1523,14 @@ static void *
 _user_trigger_delete_worker(void *arg)
 {
     struct user_trigger_delete_args *a = arg;
+    /*
+     * Counter, not rand() (Coverity DC.WEAK_CRYPTO).  Test only
+     * needs varied idents across iterations, not randomness.
+     */
+    unsigned int   counter = 0;
     while (!atomic_load(&a->stop)) {
         struct kevent kev;
-        uintptr_t ident = (uintptr_t)(rand() % 8 + 1);
+        uintptr_t ident = (uintptr_t)((counter++ % 8) + 1);
         EV_SET(&kev, ident, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
         (void) kevent(a->kqfd, &kev, 1, NULL, 0, NULL);
         EV_SET(&kev, ident, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);

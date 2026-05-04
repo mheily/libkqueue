@@ -734,7 +734,11 @@ test_kevent_regular_file_reactivate(struct test_context *ctx)
     snprintf(path, sizeof(path), "%s/libkqueue-test-XXXXXX", test_tmpdir());
 
     /* Empty file: mkstemp creates it with size 0. */
-    tmpfd = mkstemp(path);
+    {
+        mode_t old_umask = umask(077);
+        tmpfd = mkstemp(path);
+        umask(old_umask);
+    }
     if (tmpfd < 0) die("mkstemp");
     close(tmpfd);
 
@@ -802,7 +806,11 @@ test_kevent_regular_file_unlinked_continues(struct test_context *ctx)
 
     snprintf(path, sizeof(path), "%s/libkqueue-test-XXXXXX", test_tmpdir());
 
-    tmpfd = mkstemp(path);
+    {
+        mode_t old_umask = umask(077);
+        tmpfd = mkstemp(path);
+        umask(old_umask);
+    }
     if (tmpfd < 0) die("mkstemp");
     close(tmpfd);
 
@@ -858,7 +866,11 @@ test_kevent_regular_file_renamed_continues(struct test_context *ctx)
 
     snprintf(path1, sizeof(path1), "%s/libkqueue-test-XXXXXX", test_tmpdir());
 
-    tmpfd = mkstemp(path1);
+    {
+        mode_t old_umask = umask(077);
+        tmpfd = mkstemp(path1);
+        umask(old_umask);
+    }
     if (tmpfd < 0) die("mkstemp");
     close(tmpfd);
     snprintf(path2, sizeof(path2), "%s.renamed", path1);

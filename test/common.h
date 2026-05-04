@@ -91,6 +91,12 @@
     abort();\
 } while (0)
 
+/* Best-effort kill: ESRCH is fine (target already gone), other errors die. */
+#define kill_or_die(_pid, _sig) do { \
+    if (kill((_pid), (_sig)) < 0 && errno != ESRCH) \
+        die("kill(%d, %d)", (int)(_pid), (_sig)); \
+} while (0)
+
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>

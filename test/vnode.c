@@ -461,9 +461,10 @@ test_kevent_vnode_rename_overwrite_ordering(struct test_context *ctx)
         else if (ret[i].ident == (uintptr_t) src_fd && (ret[i].fflags & NOTE_RENAME))
             saw_rename = i;
     }
-    if (saw_delete < 0 || saw_rename < 0)
-        die("rename-overwrite: missing event (delete=%d rename=%d)",
-            saw_delete, saw_rename);
+    if (saw_delete < 0)
+        die("rename-overwrite: missing NOTE_DELETE on tgt_fd");
+    if (saw_rename < 0)
+        die("rename-overwrite: missing NOTE_RENAME on src_fd");
 
     /*
      * BSD orders NOTE_DELETE on tvp before NOTE_RENAME on fvp; with

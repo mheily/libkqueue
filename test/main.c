@@ -187,7 +187,7 @@ watchdog_loop(pid_t parent, int rfd)
             if (waited >= dump_timeout_s) {
                 write(STDERR_FILENO,
                       "watchdog: dump command exceeded 30s, killing\n", 45);
-                kill(child, SIGKILL);
+                kill_or_die(child, SIGKILL);
                 waitpid(child, NULL, 0);
                 break;
             }
@@ -198,7 +198,7 @@ watchdog_loop(pid_t parent, int rfd)
 
     const char *abrt = "=== test watchdog: killing parent ===\n";
     write(STDERR_FILENO, abrt, strlen(abrt));
-    kill(parent, SIGKILL);
+    kill_or_die(parent, SIGKILL);
     _exit(124);
 }
 
@@ -266,7 +266,7 @@ watchdog_stop(void)
     if (watchdog_pid > 0) {
         /* Murderise it - we want it gone now, not waiting on its
          * next poll deadline. */
-        kill(watchdog_pid, SIGKILL);
+        kill_or_die(watchdog_pid, SIGKILL);
         waitpid(watchdog_pid, NULL, 0);
         watchdog_pid = -1;
     }

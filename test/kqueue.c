@@ -392,11 +392,15 @@ static void
 test_kqueue_nevents_validation(void *unused)
 {
     int           kq;
-    long          page = sysconf(_SC_PAGESIZE);
+    long          page_l = sysconf(_SC_PAGESIZE);
+    size_t        page;
     char         *region;
     struct kevent *evlist;
 
     (void) unused;
+    if (page_l <= 0) die("sysconf(_SC_PAGESIZE)");
+    page = (size_t) page_l;
+
     if ((kq = kqueue()) < 0) die("kqueue");
 
     /*
@@ -678,9 +682,15 @@ static void *
 _timer_race_worker(void *arg)
 {
     struct timer_race_args *a = arg;
+    /*
+     * Cycle through ident slots deterministically.  rand() is
+     * inappropriate here (Coverity flags it as DC.WEAK_CRYPTO) and
+     * the test only needs varied identifiers, not randomness.
+     */
+    unsigned int   counter = 0;
     while (!atomic_load(&a->stop)) {
         struct kevent kev;
-        uintptr_t ident = (uintptr_t)(rand() % 32 + 1);
+        uintptr_t ident = (uintptr_t)((counter++ % 32) + 1);
         /* Sub-ms periodic so the callout fires repeatedly. */
         EV_SET(&kev, ident, EVFILT_TIMER, EV_ADD,
                0, 1, NULL);
