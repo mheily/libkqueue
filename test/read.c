@@ -933,8 +933,7 @@ test_kevent_regular_file_renamed_continues(struct test_context *ctx)
  * read wakeup with data > 0.  Backed by the same WSAEventSelect
  * path as AF_INET sockets - no backend change required.
  *
- * Issue #146.  Gated on _WIN32_WINNT >= 0x0A00 so older SDKs
- * still compile.
+ * Gated on _WIN32_WINNT >= 0x0A00 so older SDKs still compile.
  */
 #include <afunix.h>     /* SOCKADDR_UN */
 

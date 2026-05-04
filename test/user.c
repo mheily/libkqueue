@@ -722,10 +722,10 @@ test_kevent_user_multi_trigger_fflags_or(struct test_context *ctx)
 
 #if defined(_WIN32) && defined(EVFILT_USER)
 /*
- * Stress driver for issue #155.  Reporter (Tim @timwoj) hit a
- * non-deterministic UAF in windows_kevent_copyout under Zeek
- * after ~1300 polls, with no minimal reproducer.  This drive is
- * the smallest churn we can build that exercises the same shape:
+ * Stress driver for a non-deterministic UAF reported in
+ * windows_kevent_copyout under Zeek after ~1300 polls, with no
+ * minimal reproducer.  This drive is the smallest churn we can
+ * build that exercises the same shape:
  * N worker threads racing EV_ADD / NOTE_TRIGGER / EV_DELETE on
  * EVFILT_USER knotes against one consumer thread parked in
  * kevent().  The expected pattern is that every queued completion

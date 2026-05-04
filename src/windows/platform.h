@@ -24,7 +24,7 @@
  *   - GetSystemTimePreciseAsFileTime (Win8)
  *   - FileStandardInfo / GetFileInformationByHandleEx (Win8)
  *   - AF_UNIX SOCK_STREAM (Win10 1803+, used by the AF_UNIX smoke
- *     test for issue #146)
+ *     test)
  *   - GetFinalPathNameByHandleW (Vista, baseline)
  * Win10 went GA in 2015; older targets are out of practical use.
  */

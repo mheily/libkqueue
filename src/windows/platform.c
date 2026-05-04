@@ -44,6 +44,83 @@ extern dbg_func_t windows_dbg_default(void);
 
 static atomic_int kq_close_pipe_seq;
 
+/*
+ * No-op invalid-parameter handler.  _get_osfhandle on a non-fd
+ * ident invokes the CRT IPH which in Debug builds aborts (or pops
+ * a dialog under MSVC's debug runtime).  Install this around
+ * _get_osfhandle so the call simply returns -1 + EBADF.
+ */
+static void
+windows_iph_noop(const wchar_t *expr, const wchar_t *func,
+                 const wchar_t *file, unsigned int line, uintptr_t reserved)
+{
+  (void) expr; (void) func; (void) file; (void) line; (void) reserved;
+}
+
+int
+windows_get_descriptor_type(struct knote *kn)
+{
+  /*
+   * kev.ident is a SOCKET for socket knotes and a CRT file
+   * descriptor for files/pipes (the test harness adopts HANDLEs
+   * via _open_osfhandle).  Detection order:
+   *
+   *   1. getsockopt(SO_TYPE) - succeeds iff ident is a SOCKET.
+   *   2. _get_osfhandle(ident) - succeeds iff ident is a CRT fd.
+   *      Wrap with a no-op invalid-parameter handler so a non-fd
+   *      ident doesn't trip the CRT debug abort.
+   */
+  socklen_t slen;
+  int       lsock = 0, stype = 0, i;
+  HANDLE    h = INVALID_HANDLE_VALUE;
+
+  /* Step 1: SOCKET check via getsockopt. */
+  slen = sizeof(stype);
+  i = getsockopt(kn->kev.ident, SOL_SOCKET, SO_TYPE,
+                 (char *) &stype, &slen);
+  if (i == 0) {
+    slen = sizeof(lsock);
+    i = getsockopt(kn->kev.ident, SOL_SOCKET, SO_ACCEPTCONN,
+                   (char *) &lsock, &slen);
+    if (i == 0 && lsock)
+      kn->kn_flags |= KNFL_SOCKET_PASSIVE;
+    if (stype == SOCK_STREAM)
+      kn->kn_flags |= KNFL_SOCKET_STREAM;
+    return 0;
+  }
+
+  /* Step 2: CRT fd via _get_osfhandle, with IPH suppressed. */
+  {
+    _invalid_parameter_handler oldh =
+        _set_thread_local_invalid_parameter_handler(windows_iph_noop);
+    h = (HANDLE) _get_osfhandle((int) kn->kev.ident);
+    _set_thread_local_invalid_parameter_handler(oldh);
+  }
+
+  if (h == INVALID_HANDLE_VALUE)
+    return -1;
+
+  switch (GetFileType(h)) {
+  case FILE_TYPE_PIPE:
+    dbg_printf("ident=%d - classified as pipe", (int) kn->kev.ident);
+    kn->kn_flags |= KNFL_PIPE;
+    break;
+  case FILE_TYPE_DISK:
+    dbg_printf("ident=%d - classified as regular file", (int) kn->kev.ident);
+    kn->kn_flags |= KNFL_FILE;
+    break;
+  default:
+    /* FILE_TYPE_CHAR (console etc.), FILE_TYPE_REMOTE, FILE_TYPE_UNKNOWN.
+     * Treat as a generic file source for now. */
+    dbg_printf("ident=%d - unknown GetFileType, treating as file",
+               (int) kn->kev.ident);
+    kn->kn_flags |= KNFL_FILE;
+    break;
+  }
+
+  return 0;
+}
+
 int
 windows_kqueue_init(struct kqueue *kq)
 {
@@ -62,7 +139,7 @@ windows_kqueue_init(struct kqueue *kq)
     }
 
     /*
-     * Issue #151: kqueue() must return a value the consumer can
+     * kqueue() must return a value the consumer can
      * close() without tripping the CRT debug-runtime assert.
      * _open_osfhandle rejects IOCP handles (EBADF) but accepts
      * pipe handles, so we synthesise a closeable fd by giving the
@@ -729,86 +806,6 @@ windows_libkqueue_init(void)
      * just no console-control bridge.
      */
     (void) windows_signal_init();
-}
-
-/* Externally referenced from src/windows/{read,write}.c per-knote      */
-/* create paths.                                                        */
-
-/*
- * No-op invalid-parameter handler.  _get_osfhandle on a non-fd
- * ident invokes the CRT IPH which in Debug builds aborts (or pops
- * a dialog under MSVC's debug runtime).  Install this around
- * _get_osfhandle so the call simply returns -1 + EBADF.
- */
-static void
-windows_iph_noop(const wchar_t *expr, const wchar_t *func,
-                 const wchar_t *file, unsigned int line, uintptr_t reserved)
-{
-  (void) expr; (void) func; (void) file; (void) line; (void) reserved;
-}
-
-int
-windows_get_descriptor_type(struct knote *kn)
-{
-  /*
-   * kev.ident is a SOCKET for socket knotes and a CRT file
-   * descriptor for files/pipes (the test harness adopts HANDLEs
-   * via _open_osfhandle).  Detection order:
-   *
-   *   1. getsockopt(SO_TYPE) - succeeds iff ident is a SOCKET.
-   *   2. _get_osfhandle(ident) - succeeds iff ident is a CRT fd.
-   *      Wrap with a no-op invalid-parameter handler so a non-fd
-   *      ident doesn't trip the CRT debug abort.
-   */
-  socklen_t slen;
-  int       lsock = 0, stype = 0, i;
-  HANDLE    h = INVALID_HANDLE_VALUE;
-
-  /* Step 1: SOCKET check via getsockopt. */
-  slen = sizeof(stype);
-  i = getsockopt(kn->kev.ident, SOL_SOCKET, SO_TYPE,
-                 (char *) &stype, &slen);
-  if (i == 0) {
-    slen = sizeof(lsock);
-    i = getsockopt(kn->kev.ident, SOL_SOCKET, SO_ACCEPTCONN,
-                   (char *) &lsock, &slen);
-    if (i == 0 && lsock)
-      kn->kn_flags |= KNFL_SOCKET_PASSIVE;
-    if (stype == SOCK_STREAM)
-      kn->kn_flags |= KNFL_SOCKET_STREAM;
-    return 0;
-  }
-
-  /* Step 2: CRT fd via _get_osfhandle, with IPH suppressed. */
-  {
-    _invalid_parameter_handler oldh =
-        _set_thread_local_invalid_parameter_handler(windows_iph_noop);
-    h = (HANDLE) _get_osfhandle((int) kn->kev.ident);
-    _set_thread_local_invalid_parameter_handler(oldh);
-  }
-
-  if (h == INVALID_HANDLE_VALUE)
-    return -1;
-
-  switch (GetFileType(h)) {
-  case FILE_TYPE_PIPE:
-    dbg_printf("ident=%d - classified as pipe", (int) kn->kev.ident);
-    kn->kn_flags |= KNFL_PIPE;
-    break;
-  case FILE_TYPE_DISK:
-    dbg_printf("ident=%d - classified as regular file", (int) kn->kev.ident);
-    kn->kn_flags |= KNFL_FILE;
-    break;
-  default:
-    /* FILE_TYPE_CHAR (console etc.), FILE_TYPE_REMOTE, FILE_TYPE_UNKNOWN.
-     * Treat as a generic file source for now. */
-    dbg_printf("ident=%d - unknown GetFileType, treating as file",
-               (int) kn->kev.ident);
-    kn->kn_flags |= KNFL_FILE;
-    break;
-  }
-
-  return 0;
 }
 
 const struct kqueue_vtable kqops = {

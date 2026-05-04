@@ -23,8 +23,8 @@
 
 /*
  * Synchronous per-line WriteFile to conhost dominates the runtime of
- * KQUEUE_DEBUG=1 on Win32 (issue #156: 30 minutes vs 10 seconds to
- * reach the same point).  Route debug output through
+ * KQUEUE_DEBUG=1 on Win32 (30 minutes vs 10 seconds to reach the
+ * same point).  Route debug output through
  * OutputDebugStringA's kernel-side ring buffer instead - DebugView,
  * WinDbg, and the VS Output pane all pick it up - and let the user
  * override via KQUEUE_DEBUG_OUTPUT=stderr|odbg|both.

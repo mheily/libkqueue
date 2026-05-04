@@ -38,7 +38,7 @@ static void dbg_stderr(char const *fmt, ...);
  * Defaults to dbg_stderr.  Backends that prefer a different default
  * (e.g. Win32's OutputDebugStringA route, which sidesteps the
  * conhost synchronous-write bottleneck that made KQUEUE_DEBUG=1
- * take 30 minutes vs 10 seconds; issue #156) implement
+ * take 30 minutes vs 10 seconds) implement
  * kqops.libkqueue_dbg_default; libkqueue_debug_func_init consults
  * it on first kqueue().
  */
