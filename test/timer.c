@@ -722,7 +722,16 @@ test_evfilt_timer(struct test_context *ctx)
 #if !defined(NATIVE_KQUEUE) || defined(__FreeBSD__)
     test(kevent_timer_negative_interval_rejected, ctx);
 #endif
-#ifdef NOTE_NSECONDS
+    /*
+     * Huge NOTE_NSECONDS interval: FreeBSD's filt_timervalidate
+     * conversion path fires immediately for INTPTR_MAX/2 ns
+     * (suspected sbintime conversion overflow); audit flagged
+     * "Only LP64 has the SBT_MAX clamp; on 32-bit the data << 32
+     * overflows silently".  libkqueue handles it sanely.  Gate
+     * to libkqueue until the kernel-side overflow is verified
+     * fixed across BSDs.
+     */
+#if defined(NOTE_NSECONDS) && !defined(NATIVE_KQUEUE)
     test(kevent_timer_huge_interval, ctx);
 #endif
     test(kevent_timer_overrun_count, ctx);

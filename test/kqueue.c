@@ -437,11 +437,14 @@ test_kqueue_nevents_validation(void *unused)
 #endif
     }
 
+#if !defined(NATIVE_KQUEUE)
     /*
-     * INT_MAX nevents: a kernel that allocates nevents *
-     * sizeof(struct kevent) without overflow check could OOM
-     * or wrap.  Guard pages catch any actual write past the
-     * single valid slot.
+     * INT_MAX nevents: NetBSD hangs in the eventlist iteration
+     * loop here; FreeBSD/OpenBSD/macOS clamp safely.  Gate to
+     * libkqueue where MAX_KEVENT capping is enforced explicitly.
+     * Guard pages above remain in force for the entire call so
+     * any kernel-side overrun on the surviving backends still
+     * traps to SIGSEGV.
      */
     {
         struct timespec poll = { 0, 1000000 };  /* 1ms */
@@ -450,6 +453,7 @@ test_kqueue_nevents_validation(void *unused)
             die("kevent(nevents=INT_MAX) errno=%d (%s)",
                 errno, strerror(errno));
     }
+#endif
 
     munmap(region, 3 * page);
     close(kq);

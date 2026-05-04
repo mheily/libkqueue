@@ -1103,7 +1103,17 @@ test_evfilt_vnode(struct test_context *ctx)
      * Detecting both bits would require kernel-side hooks we
      * don't have on POSIX.
      */
-#if !defined(LIBKQUEUE_BACKEND_POSIX)
+    /*
+     * Accumulation gated off:
+     *  - POSIX backend: stat-snapshot only sees end state; the
+     *    ftruncate's size change masks the touch's ctime advance,
+     *    so only NOTE_EXTEND survives the diff.
+     *  - OpenBSD/NetBSD: same kernel bug as note_extend_ftruncate -
+     *    ufs_setattr doesn't fire NOTE_EXTEND on grow, so only
+     *    NOTE_ATTRIB from the touch survives.
+     */
+#if !defined(LIBKQUEUE_BACKEND_POSIX) && \
+    !defined(__OpenBSD__) && !defined(__NetBSD__)
     test(kevent_vnode_fflag_accumulation, ctx);
 #endif
 #ifdef NOTE_RENAME
