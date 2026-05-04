@@ -1107,12 +1107,14 @@ test_evfilt_vnode(struct test_context *ctx)
      *  - POSIX backend: stat-snapshot only sees end state; the
      *    ftruncate's size change masks the touch's ctime advance,
      *    so only NOTE_EXTEND survives the diff.
-     *  - OpenBSD/NetBSD: same kernel bug as note_extend_ftruncate -
-     *    ufs_setattr doesn't fire NOTE_EXTEND on grow, so only
-     *    NOTE_ATTRIB from the touch survives.
+     *  - All native BSDs (FreeBSD/OpenBSD/NetBSD/macOS): the
+     *    same VOP_SETATTR-doesn't-fire-NOTE_EXTEND-on-grow bug
+     *    that note_extend_ftruncate hits.  Accumulation here
+     *    relies on the touch + ftruncate-up combo.  libkqueue's
+     *    Linux backend (drain-and-union over inotify) is the
+     *    only place this currently passes.
      */
-#if !defined(LIBKQUEUE_BACKEND_POSIX) && \
-    !defined(__OpenBSD__) && !defined(__NetBSD__)
+#if defined(LIBKQUEUE_BACKEND_LINUX)
     test(kevent_vnode_fflag_accumulation, ctx);
 #endif
 #ifdef NOTE_RENAME
