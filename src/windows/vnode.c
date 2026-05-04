@@ -136,7 +136,7 @@ evfilt_vnode_callback(void *param, BOOLEAN fired)
      * dropped here on post failure).
      */
     knote_retain(kn);
-    if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, (ULONG_PTR) 0,
+    if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter),
                                     (LPOVERLAPPED) kn)) {
         dbg_lasterror("PostQueuedCompletionStatus()");
         knote_release(kn);

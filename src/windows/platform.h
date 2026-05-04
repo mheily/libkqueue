@@ -115,7 +115,7 @@
 
 /*
  * IOCP completion key reserved for close-detect completions.
- * Filter ids (used by the eventfd doorbell shim) are negative
+ * Filter ids (encoded via KQ_FILTER_KEY below) are negative
  * shorts that sign-extend to UINT64_MAX-N when cast through
  * ULONG_PTR; the small positive value here can't collide.
  */
@@ -128,6 +128,24 @@
  * offsetof in windows_kevent_copyout.
  */
 #define KQ_PIPE_READ_KEY ((ULONG_PTR)2)
+
+/*
+ * IOCP completion key for synthetic posts that target a specific
+ * filter: encodes the kev.filter value (a negative short) into the
+ * sign-extended high bits of the ULONG_PTR.  windows_kevent_copyout
+ * extracts it and dispatches to the matching kqops filter slot.
+ *
+ * Used by:
+ *   - per-knote synthetic posts (overlap = knote pointer; the filter
+ *     that owns the knote drains it on dispatch).
+ *   - eventfd doorbell posts (overlap = NULL; filter drains its own
+ *     pending state without touching a knote).
+ *
+ * Posts with key == 0 and overlap == NULL are treated as a bare
+ * "wake the parked GQCS" sentinel (windows_kqueue_interrupt) - no
+ * filter id, no knote, just bring the waiter out of the kernel.
+ */
+#define KQ_FILTER_KEY(_fid) ((ULONG_PTR)(LONG_PTR)(short)(_fid))
 
 /*
  * Per-kevent() in-flight tracking.  Stack-allocated in the common

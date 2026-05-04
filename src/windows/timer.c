@@ -126,7 +126,7 @@ static VOID CALLBACK evfilt_timer_callback(void* param, BOOLEAN fired){
          * KNFL_KNOTE_DELETED'd by the time we drain).
          */
         knote_retain(kn);
-        if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, (ULONG_PTR) 0, (LPOVERLAPPED) kn)) {
+        if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter), (LPOVERLAPPED) kn)) {
             dbg_lasterror("PostQueuedCompletionStatus()");
             knote_release(kn);
             (void) atomic_exchange(&kn->kn_fire_count, 0);

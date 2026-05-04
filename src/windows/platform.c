@@ -271,12 +271,12 @@ windows_kqueue_free(struct kqueue *kq)
      * cleared FOPEN) or punt the unrelated process-wide slot the
      * runtime has since recycled.
      */
-    int consumer_already_closed = 0;
+    bool consumer_already_closed = false;
     if (atomic_load(&kq->kq_consumer_closed))
-        consumer_already_closed = 1;
+        consumer_already_closed = true;
     else if (kq->kq_close_read != NULL &&
              HasOverlappedIoCompleted(&kq->kq_close_ov))
-        consumer_already_closed = 1;
+        consumer_already_closed = true;
 
     /*
      * Cancel the close-detect ReadFile before closing handles -
@@ -337,7 +337,7 @@ windows_kqueue_close_cleanup(PTP_CALLBACK_INSTANCE inst, PVOID ctx)
 {
     struct kqueue *kq = (struct kqueue *) ctx;
     struct kqueue *iter;
-    int alive = 0;
+    bool alive = false;
     (void) inst;
 
     /*
@@ -356,7 +356,7 @@ windows_kqueue_close_cleanup(PTP_CALLBACK_INSTANCE inst, PVOID ctx)
      */
     tracing_mutex_lock(&kq_mtx);
     LIST_FOREACH(iter, &kq_list, kq_entry) {
-        if (iter == kq) { alive = 1; break; }
+        if (iter == kq) { alive = true; break; }
     }
     if (alive)
         kqueue_free(kq);
@@ -536,21 +536,18 @@ windows_kevent_copyout(struct kqueue *kq, int nready,
      * watching multiple fds that wake together) needs that.
      */
     for (;;) {
+        short fid;
+
         eventlist->filter = 0;
 
+        /*
+         * Close-detect (kernel-posted via the kq_close_read pipe):
+         * consumer's close(kqfd) dropped the last write reference.
+         * Schedule the deferred free on the thread pool and return
+         * EBADF so the kevent() caller unwinds without dispatching
+         * anything from this batch.
+         */
         if (iocp_buf.key == KQ_CLOSE_DETECT_KEY) {
-            /*
-             * Consumer closed the write end of the kq's pipe
-             * (close(kqfd)).
-             *
-             * Mark the kq consumer-closed (windows_kevent_wait
-             * short-circuits on this), then schedule kqueue_free
-             * on the system thread pool.  Can't free inline -
-             * we're holding the per-kq lock here and
-             * kqueue_free needs to take it (and the global
-             * kq_mtx).  The map removal happens inside
-             * kqueue_free.
-             */
             dbg_puts("close-detect completion - kq fd was closed");
             atomic_store(&kq->kq_consumer_closed, 1);
             /*
@@ -577,107 +574,82 @@ windows_kevent_copyout(struct kqueue *kq, int nready,
             return -1;
         }
 
-        if (iocp_buf.overlap == NULL) {
-            /*
-             * eventfd doorbell post (see windows_eventfd_raise):
-             * IOCP key carries the originating filter id, route
-             * via filter_lookup and let that filter's kf_copyout
-             * drain its own pending state.  Win32 analogue of
-             * Solaris's PORT_SOURCE_USER dispatch.
-             */
-            short fid = (short)(LONG_PTR) iocp_buf.key;
-            if (filter_lookup(&filt, kq, fid) < 0) {
-                dbg_printf("eventfd doorbell with unsupported filter id %d", fid);
-                rv = 0;
-            } else {
-                rv = filt->kf_copyout(eventlist, nevents, filt, NULL, &iocp_buf);
-                if (rv < 0) {
-                    dbg_puts("eventfd-routed copyout failed");
-                    rv = 0;
-                }
-            }
-            if (rv > 0 && eventlist->filter != 0) {
-                eventlist += rv;
-                nevents -= rv;
-                produced += rv;
-                if (nevents <= 0)
-                    return produced;
-                goto drain_more;
-            }
-        } else if (iocp_buf.key == KQ_PIPE_READ_KEY) {
-            /*
-             * Pipe-HANDLE EVFILT_READ completion: overlap is the
-             * &knote->kn_read.pipe_ov we passed to ReadFile; recover
-             * the knote via offsetof.  Route through evfilt_read.
-             */
-            kn = (struct knote *)((char *) iocp_buf.overlap -
-                                  offsetof(struct knote, kn_read.pipe_ov));
-            if (produced > 0 && kn->kn_dispatch_seq == batch_seq) {
-                dbg_puts("drain: duplicate level-trigger for already-"
-                         "delivered knote, re-queueing for next kevent()");
-                PostQueuedCompletionStatus(kq->kq_iocp, 1, (ULONG_PTR) 0,
-                                           (LPOVERLAPPED) kn);
-                return produced;
-            }
-            {
-                int filt_index = ~(kn->kev.filter);
-                if (filt_index >= 0 && filt_index < EVFILT_SYSCOUNT) {
-                    filt = &kq->kq_filt[filt_index];
-                    /*
-                     * Stamp the dispatch seq BEFORE kf_copyout: the
-                     * filter may release the knote (EV_ONESHOT runs
-                     * knote_delete + knote_release inside flag_actions),
-                     * so any read of kn after the call is a use-
-                     * after-free.  asan caught exactly that on
-                     * test_kevent_threading_close_multi.
-                     */
-                    kn->kn_dispatch_seq = batch_seq;
-                    rv = filt->kf_copyout(eventlist, nevents, filt, kn, &iocp_buf);
-                    if (unlikely(rv < 0)) {
-                        dbg_puts("knote_copyout failed");
-                        abort();
-                    }
-                    if (rv > 0 && eventlist->filter != 0) {
-                        eventlist += rv;
-                        nevents -= rv;
-                        produced += rv;
-                        if (nevents <= 0)
-                            return produced;
-                        goto drain_more;
-                    }
-                }
-            }
+        /*
+         * Bare wake-up sentinel posted by windows_kqueue_interrupt
+         * (key == 0, overlap == NULL).  Nothing to dispatch; let
+         * the drain loop pick up the next entry, or return 0 if
+         * the queue is empty.
+         */
+        if (iocp_buf.key == 0 && iocp_buf.overlap == NULL)
+            goto drain_more;
+
+        /*
+         * Recover the owning knote and the filter id.  Two shapes
+         * land here:
+         *
+         *   - KQ_PIPE_READ_KEY: kernel-posted overlapped read on a
+         *     pipe HANDLE.  overlap = &knote->kn_read.pipe_ov; the
+         *     knote sits at a known offset from it and the filter
+         *     id is read from the recovered knote.
+         *
+         *   - KQ_FILTER_KEY(fid): synthetic post (filter callback
+         *     re-arming a knote, or eventfd doorbell waking a
+         *     filter).  Key encodes the filter id; overlap is the
+         *     knote pointer, or NULL for the doorbell case where
+         *     the filter drains its own pending state without a
+         *     specific knote.
+         */
+        if (iocp_buf.key == KQ_PIPE_READ_KEY) {
+            kn  = (struct knote *)((char *) iocp_buf.overlap -
+                                   offsetof(struct knote, kn_read.pipe_ov));
+            fid = kn->kev.filter;
         } else {
-            kn = (struct knote *) iocp_buf.overlap;
-            if (produced > 0 && kn->kn_dispatch_seq == batch_seq) {
-                dbg_puts("drain: duplicate level-trigger for already-"
-                         "delivered knote, re-queueing for next kevent()");
-                PostQueuedCompletionStatus(kq->kq_iocp, 1, (ULONG_PTR) 0,
-                                           (LPOVERLAPPED) kn);
+            fid = (short)(LONG_PTR) iocp_buf.key;
+            kn  = (struct knote *) iocp_buf.overlap;   /* NULL for doorbell */
+        }
+
+        /*
+         * Dedup duplicate level-trigger self-posts for a knote
+         * already delivered in this batch (e.g. the EV_EOF re-
+         * level for sockets and pipes).  Re-queue for the next
+         * kevent() call rather than stacking the same event into
+         * the caller's eventlist.
+         */
+        if (kn != NULL && produced > 0 && kn->kn_dispatch_seq == batch_seq) {
+            dbg_puts("drain: duplicate level-trigger for already-"
+                     "delivered knote, re-queueing for next kevent()");
+            PostQueuedCompletionStatus(kq->kq_iocp, 1,
+                                       KQ_FILTER_KEY(kn->kev.filter),
+                                       (LPOVERLAPPED) kn);
+            return produced;
+        }
+
+        if (filter_lookup(&filt, kq, fid) < 0) {
+            dbg_printf("completion with unsupported filter id %d", fid);
+            goto drain_more;
+        }
+
+        /*
+         * Stamp the dispatch seq BEFORE kf_copyout: the filter may
+         * release the knote (EV_ONESHOT runs knote_delete +
+         * knote_release inside flag_actions), so any read of kn
+         * after the call is a use-after-free.  asan caught exactly
+         * that on test_kevent_threading_close_multi.
+         */
+        if (kn != NULL)
+            kn->kn_dispatch_seq = batch_seq;
+
+        rv = filt->kf_copyout(eventlist, nevents, filt, kn, &iocp_buf);
+        if (unlikely(rv < 0)) {
+            dbg_puts("knote_copyout failed");
+            abort();
+        }
+        if (rv > 0 && eventlist->filter != 0) {
+            eventlist += rv;
+            nevents -= rv;
+            produced += rv;
+            if (nevents <= 0)
                 return produced;
-            }
-            {
-                int filt_index = ~(kn->kev.filter);
-                if (filt_index >= 0 && filt_index < EVFILT_SYSCOUNT) {
-                    filt = &kq->kq_filt[filt_index];
-                    kn->kn_dispatch_seq = batch_seq;       /* before kf_copyout, see above */
-                    rv = filt->kf_copyout(eventlist, nevents, filt, kn, &iocp_buf);
-                    if (unlikely(rv < 0)) {
-                        dbg_puts("knote_copyout failed");
-                        abort();
-                    }
-                    if (rv > 0 && eventlist->filter != 0) {
-                        eventlist += rv;
-                        nevents -= rv;
-                        produced += rv;
-                        if (nevents <= 0)
-                            return produced;
-                        goto drain_more;
-                    }
-                } else {
-                    dbg_puts("bad filter index in windows_kevent_copyout");
-                }
-            }
         }
 
 drain_more:
@@ -809,6 +781,11 @@ windows_libkqueue_init(void)
 }
 
 const struct kqueue_vtable kqops = {
+    .libkqueue_init     = windows_libkqueue_init,
+#ifndef NDEBUG
+    .libkqueue_dbg_default = windows_dbg_default,
+#endif
+
     .kqueue_init        = windows_kqueue_init,
     .kqueue_free        = windows_kqueue_free,
     .kqueue_interrupt   = windows_kqueue_interrupt,
@@ -816,10 +793,6 @@ const struct kqueue_vtable kqops = {
     .kevent_copyout     = windows_kevent_copyout,
     .filter_init        = windows_filter_init,
     .filter_free        = windows_filter_free,
-    .libkqueue_init     = windows_libkqueue_init,
-#ifndef NDEBUG
-    .libkqueue_dbg_default = windows_dbg_default,
-#endif
     .eventfd_register   = windows_eventfd_register,
     .eventfd_unregister = windows_eventfd_unregister,
     .eventfd_init       = windows_eventfd_init,

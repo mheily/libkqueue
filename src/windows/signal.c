@@ -84,7 +84,7 @@ evfilt_signal_callback(void *param, BOOLEAN fired)
 
     kq = kn->kn_kq;
     assert(kq);
-    if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, (ULONG_PTR) 0,
+    if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter),
                                     (LPOVERLAPPED) kn)) {
         dbg_lasterror("PostQueuedCompletionStatus()");
         knote_release(kn);

@@ -91,7 +91,7 @@ evfilt_read_callback(void *param, BOOLEAN fired)
     if (kn->kev.flags & (EV_CLEAR | EV_DISPATCH)) {
         unsigned long now_bytes = 0;
         int last;
-        int real_edge = (events.lNetworkEvents & (FD_CLOSE | FD_ACCEPT)) != 0;
+        bool real_edge = (events.lNetworkEvents & (FD_CLOSE | FD_ACCEPT)) != 0;
 
         if (!real_edge) {
             if (ioctlsocket(kn->kev.ident, FIONREAD, &now_bytes) != 0)
@@ -113,7 +113,7 @@ evfilt_read_callback(void *param, BOOLEAN fired)
      * paths and timer/vnode callbacks).  Released in copyout.
      */
     knote_retain(kn);
-    if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, (ULONG_PTR) 0,
+    if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter),
                                     (LPOVERLAPPED) kn)) {
         dbg_lasterror("PostQueuedCompletionStatus()");
         knote_release(kn);
@@ -307,9 +307,11 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
      * don't read src->* fields after flag_actions; use locals.
      */
     {
-        int is_synthetic = src->kn_read.file_synthetic;
-        int is_pipe      = (src->kn_flags & KNFL_PIPE) != 0;
-        int is_disabled  = (src->kev.flags & EV_DISABLE) != 0;
+        bool is_synthetic = src->kn_read.file_synthetic;
+        bool is_pipe = (src->kn_flags & KNFL_PIPE) != 0;
+        bool is_disabled = (src->kev.flags & EV_DISABLE) != 0;
+        bool is_deleted = (src->kn_flags & KNFL_KNOTE_DELETED) != 0;
+
         /*
          * Once a socket peer has closed, FD_CLOSE only fires once
          * on Win32; the auto-reset event won't re-trigger.  For
@@ -336,7 +338,6 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
          * callback handles will retain again.
          */
         if (is_pipe && !is_disabled) {
-            int is_deleted = (src->kn_flags & KNFL_KNOTE_DELETED) != 0;
             if (is_deleted || src->kn_handle == NULL) {
                 knote_release(src);
             } else if (atomic_load(&src->kn_read.eof)) {
@@ -351,7 +352,7 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
                  * evfilt_read_copyout which sees kn_read.eof and
                  * delivers another EV_EOF.
                  */
-                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, (ULONG_PTR) 0,
+                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter),
                                                 (LPOVERLAPPED) src)) {
                     dbg_lasterror("PostQueuedCompletionStatus(pipe-eof relevel)");
                     knote_release(src);
@@ -379,9 +380,9 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
                 } /* synchronous success: completion will arrive via IOCP. */
             }
         } else if ((is_synthetic || eof_relevel) && !is_disabled) {
-            int is_deleted = (src->kn_flags & KNFL_KNOTE_DELETED) != 0;
+            bool is_deleted = (src->kn_flags & KNFL_KNOTE_DELETED) != 0;
             if (!is_deleted) {
-                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, (ULONG_PTR) 0,
+                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter),
                                                 (LPOVERLAPPED) src)) {
                     dbg_lasterror("PostQueuedCompletionStatus()");
                     knote_release(src);
@@ -413,7 +414,7 @@ evfilt_read_knote_create_file(struct knote *kn)
     kn->kn_read.file_synthetic = 1;
     /* See evfilt_write_knote_create for the retain/release rationale. */
     knote_retain(kn);
-    if (!PostQueuedCompletionStatus(kn->kn_kq->kq_iocp, 1, (ULONG_PTR) 0,
+    if (!PostQueuedCompletionStatus(kn->kn_kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter),
                                     (LPOVERLAPPED) kn)) {
         dbg_lasterror("PostQueuedCompletionStatus()");
         knote_release(kn);

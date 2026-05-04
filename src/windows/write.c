@@ -45,7 +45,7 @@ evfilt_write_callback(void *param, BOOLEAN fired)
 
     /* Retain across the IOCP queue so EV_DELETE can't free us first. */
     knote_retain(kn);
-    if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, (ULONG_PTR) 0,
+    if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter),
                                     (LPOVERLAPPED) param)) {
         dbg_lasterror("PostQueuedCompletionStatus()");
         knote_release(kn);
@@ -107,8 +107,8 @@ evfilt_write_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
     }
 
     {
-        int is_synthetic = src->kn_write.file_synthetic;
-        int is_disabled  = (src->kev.flags & EV_DISABLE) != 0;
+        bool is_synthetic = src->kn_write.file_synthetic;
+        bool is_disabled  = (src->kev.flags & EV_DISABLE) != 0;
         struct kqueue *kq = src->kn_kq;
 
         if (knote_copyout_flag_actions(filt, src) < 0) {
@@ -117,9 +117,9 @@ evfilt_write_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
         }
 
         if (is_synthetic && !is_disabled) {
-            int is_deleted = (src->kn_flags & KNFL_KNOTE_DELETED) != 0;
+            bool is_deleted = (src->kn_flags & KNFL_KNOTE_DELETED) != 0;
             if (!is_deleted) {
-                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, (ULONG_PTR) 0,
+                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter),
                                                 (LPOVERLAPPED) src)) {
                     dbg_lasterror("PostQueuedCompletionStatus()");
                     knote_release(src);
@@ -166,7 +166,7 @@ evfilt_write_knote_create(struct filter *filt, struct knote *kn)
          * synthetic-post path's own re-post).
          */
         knote_retain(kn);
-        if (!PostQueuedCompletionStatus(kn->kn_kq->kq_iocp, 1, (ULONG_PTR) 0,
+        if (!PostQueuedCompletionStatus(kn->kn_kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter),
                                         (LPOVERLAPPED) kn)) {
             dbg_lasterror("PostQueuedCompletionStatus()");
             knote_release(kn);
