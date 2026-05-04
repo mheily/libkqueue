@@ -107,7 +107,7 @@ evfilt_write_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
     }
 
     {
-        int is_synthetic = src->kn_file_synthetic;
+        int is_synthetic = src->kn_write.file_synthetic;
         int is_disabled  = (src->kev.flags & EV_DISABLE) != 0;
         struct kqueue *kq = src->kn_kq;
 
@@ -158,7 +158,7 @@ evfilt_write_knote_create(struct filter *filt, struct knote *kn)
     if (kn->kn_flags & (KNFL_FILE | KNFL_PIPE)) {
         kn->kn_handle = NULL;
         kn->kn_event_whandle = NULL;
-        kn->kn_file_synthetic = 1;
+        kn->kn_write.file_synthetic = 1;
         /*
          * Hold a ref for the queued completion so an EV_DELETE
          * arriving before this is drained doesn't free the knote

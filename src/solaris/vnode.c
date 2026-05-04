@@ -101,7 +101,7 @@ fd_to_path(int fd)
 }
 
 /*
- * Seed kn->kn_vnode_fobj from the caller-supplied identifier (an
+ * Seed kn->kn_vnode.fobj from the caller-supplied identifier (an
  * open fd), then port_associate.  Stash everything we need to
  * re-arm later in the knote.
  */
@@ -113,9 +113,9 @@ vnode_arm(struct filter *filt, struct knote *kn)
     unsigned int events;
     bool fresh_udata = false;
 
-    if (kn->kn_vnode_path == NULL) {
-        kn->kn_vnode_path = fd_to_path(fd);
-        if (kn->kn_vnode_path == NULL) {
+    if (kn->kn_vnode.path == NULL) {
+        kn->kn_vnode.path = fd_to_path(fd);
+        if (kn->kn_vnode.path == NULL) {
             dbg_perror("readlink(/proc/self/path/<fd>)");
             return (-1);
         }
@@ -126,21 +126,21 @@ vnode_arm(struct filter *filt, struct knote *kn)
         return (-1);
     }
 
-    memset(&kn->kn_vnode_fobj, 0, sizeof(kn->kn_vnode_fobj));
-    kn->kn_vnode_fobj.fo_name  = kn->kn_vnode_path;
-    kn->kn_vnode_fobj.fo_mtime = st.st_mtim;
-    kn->kn_vnode_fobj.fo_atime = st.st_atim;
-    kn->kn_vnode_fobj.fo_ctime = st.st_ctim;
+    memset(&kn->kn_vnode.fobj, 0, sizeof(kn->kn_vnode.fobj));
+    kn->kn_vnode.fobj.fo_name  = kn->kn_vnode.path;
+    kn->kn_vnode.fobj.fo_mtime = st.st_mtim;
+    kn->kn_vnode.fobj.fo_atime = st.st_atim;
+    kn->kn_vnode.fobj.fo_ctime = st.st_ctim;
 
     /*
      * Save current size and nlink as the baseline.  Copyout re-fstats
      * on each delivery and emits NOTE_EXTEND / NOTE_LINK if they changed.
      */
-    kn->kn_vnode_nlink = st.st_nlink;
-    kn->kn_vnode_size  = st.st_size;
+    kn->kn_vnode.nlink = st.st_nlink;
+    kn->kn_vnode.size  = st.st_size;
 
     events = fflags_to_file_events(kn->kev.fflags);
-    kn->kn_vnode_events = events;
+    kn->kn_vnode.events = events;
 
     if (kn->kn_udata == NULL) {
         if (KN_UDATA_ALLOC(kn) == NULL) {
@@ -151,7 +151,7 @@ vnode_arm(struct filter *filt, struct knote *kn)
     }
 
     if (port_associate(filter_epoll_fd(filt), PORT_SOURCE_FILE,
-                       (uintptr_t) &kn->kn_vnode_fobj, events, kn->kn_udata) < 0) {
+                       (uintptr_t) &kn->kn_vnode.fobj, events, kn->kn_udata) < 0) {
         dbg_perror("port_associate(PORT_SOURCE_FILE)");
         if (fresh_udata)
             KN_UDATA_FREE(kn);
@@ -177,7 +177,7 @@ evfilt_vnode_knote_modify(struct filter *filt, struct knote *kn,
      * auto-removed by a prior delivery); just log.
      */
     if (port_dissociate(filter_epoll_fd(filt), PORT_SOURCE_FILE,
-                        (uintptr_t) &kn->kn_vnode_fobj) < 0)
+                        (uintptr_t) &kn->kn_vnode.fobj) < 0)
         dbg_perror("port_dissociate(PORT_SOURCE_FILE) on EV_MODIFY (likely already auto-removed)");
     kn->kev.fflags = kev->fflags;
     return vnode_arm(filt, kn);
@@ -187,10 +187,10 @@ int
 evfilt_vnode_knote_delete(struct filter *filt, struct knote *kn)
 {
     if (port_dissociate(filter_epoll_fd(filt), PORT_SOURCE_FILE,
-                        (uintptr_t) &kn->kn_vnode_fobj) < 0)
+                        (uintptr_t) &kn->kn_vnode.fobj) < 0)
         dbg_perror("port_dissociate(PORT_SOURCE_FILE) on EV_DELETE (likely already auto-removed)");
-    free(kn->kn_vnode_path);
-    kn->kn_vnode_path = NULL;
+    free(kn->kn_vnode.path);
+    kn->kn_vnode.path = NULL;
     if (kn->kn_udata != NULL)
         KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
     return (0);
@@ -206,7 +206,7 @@ int
 evfilt_vnode_knote_disable(struct filter *filt, struct knote *kn)
 {
     if (port_dissociate(filter_epoll_fd(filt), PORT_SOURCE_FILE,
-                        (uintptr_t) &kn->kn_vnode_fobj) < 0)
+                        (uintptr_t) &kn->kn_vnode.fobj) < 0)
         dbg_perror("port_dissociate(PORT_SOURCE_FILE) on EV_DISABLE (likely already auto-removed)");
     return (0);
 }
@@ -234,14 +234,14 @@ evfilt_vnode_copyout(struct kevent *dst, UNUSED int nevents,
      * gave us; deltas just won't be reported for this delivery.
      */
     if (fstat((int) src->kev.ident, &st) == 0) {
-        if ((st.st_size > src->kn_vnode_size) &&
+        if ((st.st_size > src->kn_vnode.size) &&
             (src->kev.fflags & NOTE_EXTEND))
             dst->fflags |= NOTE_EXTEND;
-        if ((st.st_nlink != src->kn_vnode_nlink) &&
+        if ((st.st_nlink != src->kn_vnode.nlink) &&
             (src->kev.fflags & NOTE_LINK))
             dst->fflags |= NOTE_LINK;
-        src->kn_vnode_size  = st.st_size;
-        src->kn_vnode_nlink = st.st_nlink;
+        src->kn_vnode.size  = st.st_size;
+        src->kn_vnode.nlink = st.st_nlink;
     }
 
     /*

@@ -78,13 +78,13 @@ evfilt_read_callback(void *param, BOOLEAN fired)
      * FD_ACCEPT bypass this check - those are real edges.
      */
     if (events.lNetworkEvents & FD_CLOSE) {
-        atomic_store(&kn->kn_eof, 1);
+        atomic_store(&kn->kn_read.eof, 1);
         /*
          * iErrorCode[FD_CLOSE_BIT] carries the close reason: 0 for
          * a graceful FIN, non-zero (typically WSAECONNRESET) for an
          * RST.  Stash for copyout to surface as fflags.
          */
-        atomic_store(&kn->kn_so_error,
+        atomic_store(&kn->kn_read.so_error,
                      events.iErrorCode[FD_CLOSE_BIT]);
     }
 
@@ -96,11 +96,11 @@ evfilt_read_callback(void *param, BOOLEAN fired)
         if (!real_edge) {
             if (ioctlsocket(kn->kev.ident, FIONREAD, &now_bytes) != 0)
                 now_bytes = 0;
-            last = atomic_load(&kn->kn_last_data);
+            last = atomic_load(&kn->kn_read.last_data);
             if ((int)now_bytes <= last) {
                 /* No fresh data; remember the current floor so a
                  * later genuine arrival above it re-fires. */
-                atomic_store(&kn->kn_last_data, (int)now_bytes);
+                atomic_store(&kn->kn_read.last_data, (int)now_bytes);
                 return;
             }
         }
@@ -165,7 +165,7 @@ evfilt_read_copyout_file(struct kevent *dst, struct knote *src)
         remaining = (sb.st_size > curpos) ? (intptr_t)(sb.st_size - curpos) : 0;
     }
     if (remaining == 0) {
-        src->kn_file_synthetic = 0;
+        src->kn_read.file_synthetic = 0;
         return READ_COPYOUT_FILE_EOF;
     }
     dst->data = remaining;
@@ -173,12 +173,12 @@ evfilt_read_copyout_file(struct kevent *dst, struct knote *src)
 }
 
 /*
- * Pipe HANDLE: state is in kn_eof if a previous completion already
+ * Pipe HANDLE: state is in kn_read.eof if a previous completion already
  * detected the broken-pipe (the post path sets it either via the
  * WSAEnumNetworkEvents-style call or via the synth-failure path in
- * the post-flag-actions block below).  If kn_eof is already set, the
+ * the post-flag-actions block below).  If kn_read.eof is already set, the
  * completion came via the synthetic re-post (key=0, overlap=knote
- * ptr) and we should NOT touch &kn_pipe_ov.  Otherwise the completion
+ * ptr) and we should NOT touch &kn_read.pipe_ov.  Otherwise the completion
  * came from the overlapped ReadFile via KQ_PIPE_READ_KEY and
  * GetOverlappedResult tells us the outcome.
  */
@@ -188,18 +188,18 @@ evfilt_read_copyout_pipe(struct kevent *dst, struct knote *src)
     unsigned long avail = 0;
 
     dbg_puts("pipe copyout entered");
-    if (atomic_load(&src->kn_eof)) {
+    if (atomic_load(&src->kn_read.eof)) {
         dst->flags |= EV_EOF;
     } else {
         DWORD got = 0;
-        BOOL  ok  = GetOverlappedResult(src->kn_handle, &src->kn_pipe_ov,
+        BOOL  ok  = GetOverlappedResult(src->kn_handle, &src->kn_read.pipe_ov,
                                         &got, FALSE);
         if (!ok) {
             switch (GetLastError()) {
             case ERROR_BROKEN_PIPE:
             case ERROR_HANDLE_EOF:
             case ERROR_PIPE_NOT_CONNECTED:
-                atomic_store(&src->kn_eof, 1);
+                atomic_store(&src->kn_read.eof, 1);
                 dst->flags |= EV_EOF;
                 break;
             case ERROR_OPERATION_ABORTED:
@@ -207,7 +207,7 @@ evfilt_read_copyout_pipe(struct kevent *dst, struct knote *src)
                 return READ_COPYOUT_DROP;
             default:
                 dbg_lasterror("GetOverlappedResult(pipe)");
-                atomic_store(&src->kn_eof, 1);
+                atomic_store(&src->kn_read.eof, 1);
                 dst->flags |= EV_EOF;
                 break;
             }
@@ -249,9 +249,9 @@ evfilt_read_copyout_socket(struct kevent *dst, struct knote *src)
      * Win32 even though the level didn't transition).
      */
     if (src->kev.flags & (EV_CLEAR | EV_DISPATCH))
-        atomic_store(&src->kn_last_data, (int)bufsize);
+        atomic_store(&src->kn_read.last_data, (int)bufsize);
 
-    if (atomic_load(&src->kn_eof)) {
+    if (atomic_load(&src->kn_read.eof)) {
         int serr;
         dst->flags |= EV_EOF;
         /*
@@ -259,7 +259,7 @@ evfilt_read_copyout_socket(struct kevent *dst, struct knote *src)
          * posix/read.c).  0 stays 0 (clean FIN); a non-zero WSA
          * error gets propagated.
          */
-        serr = atomic_load(&src->kn_so_error);
+        serr = atomic_load(&src->kn_read.so_error);
         if (serr != 0)
             dst->fflags = (unsigned int) serr;
     }
@@ -329,7 +329,7 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
      * don't read src->* fields after flag_actions; use locals.
      */
     {
-        int is_synthetic = src->kn_file_synthetic;
+        int is_synthetic = src->kn_read.file_synthetic;
         int is_pipe      = (src->kn_flags & KNFL_PIPE) != 0;
         int is_disabled  = (src->kev.flags & EV_DISABLE) != 0;
         /*
@@ -361,7 +361,7 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
             int is_deleted = (src->kn_flags & KNFL_KNOTE_DELETED) != 0;
             if (is_deleted || src->kn_handle == NULL) {
                 knote_release(src);
-            } else if (atomic_load(&src->kn_eof)) {
+            } else if (atomic_load(&src->kn_read.eof)) {
                 /*
                  * Pipe is broken: don't keep issuing overlapped
                  * ReadFile against a dead handle (every retry
@@ -370,7 +370,7 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
                  * - that hangs _close on the user fd.  Re-post via
                  * knote-pointer + key=0 like the synthetic-file
                  * path; the dispatcher routes it back into
-                 * evfilt_read_copyout which sees kn_eof and
+                 * evfilt_read_copyout which sees kn_read.eof and
                  * delivers another EV_EOF.
                  */
                 if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, (ULONG_PTR) 0,
@@ -379,9 +379,9 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
                     knote_release(src);
                 }
             } else {
-                memset(&src->kn_pipe_ov, 0, sizeof(src->kn_pipe_ov));
-                if (!ReadFile(src->kn_handle, src->kn_pipe_buf, 0, NULL,
-                              &src->kn_pipe_ov)) {
+                memset(&src->kn_read.pipe_ov, 0, sizeof(src->kn_read.pipe_ov));
+                if (!ReadFile(src->kn_handle, src->kn_read.pipe_buf, 0, NULL,
+                              &src->kn_read.pipe_ov)) {
                     DWORD err = GetLastError();
                     if (err != ERROR_IO_PENDING) {
                         /*
@@ -391,7 +391,7 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
                          * delivers cleanly without a phantom
                          * overlapped on the handle.
                          */
-                        atomic_store(&src->kn_eof, 1);
+                        atomic_store(&src->kn_read.eof, 1);
                         if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
                                                         (ULONG_PTR) 0,
                                                         (LPOVERLAPPED) src))
@@ -432,7 +432,7 @@ evfilt_read_knote_create_file(struct knote *kn)
 {
     kn->kn_handle = NULL;
     kn->kn_event_whandle = NULL;
-    kn->kn_file_synthetic = 1;
+    kn->kn_read.file_synthetic = 1;
     /* See evfilt_write_knote_create for the retain/release rationale. */
     knote_retain(kn);
     if (!PostQueuedCompletionStatus(kn->kn_kq->kq_iocp, 1, (ULONG_PTR) 0,
@@ -451,7 +451,7 @@ evfilt_read_knote_create_file(struct knote *kn)
  * bytes-read=0 (we asked for 0); when the writer closes its end, the
  * read completes with ERROR_BROKEN_PIPE.  Either way the IOCP
  * delivers the completion, the dispatcher recovers the knote via
- * offsetof on kn_pipe_ov, and copyout drains.
+ * offsetof on kn_read.pipe_ov, and copyout drains.
  */
 static __inline int
 evfilt_read_knote_create_pipe(struct knote *kn)
@@ -486,7 +486,7 @@ evfilt_read_knote_create_pipe(struct knote *kn)
     }
     kn->kn_handle = ph;
     kn->kn_event_whandle = NULL;
-    memset(&kn->kn_pipe_ov, 0, sizeof(kn->kn_pipe_ov));
+    memset(&kn->kn_read.pipe_ov, 0, sizeof(kn->kn_read.pipe_ov));
     knote_retain(kn);
     /*
      * 0-byte overlapped read: peek-style pend that wakes on
@@ -500,7 +500,7 @@ evfilt_read_knote_create_pipe(struct knote *kn)
      * own read() blocked because libkqueue had already stolen the
      * single byte the writer pushed in.
      */
-    if (!ReadFile(ph, kn->kn_pipe_buf, 0, NULL, &kn->kn_pipe_ov)) {
+    if (!ReadFile(ph, kn->kn_read.pipe_buf, 0, NULL, &kn->kn_read.pipe_ov)) {
         DWORD err = GetLastError();
         dbg_printf("pipe ReadFile returned FALSE, GLE=%lu", (unsigned long) err);
         if (err != ERROR_IO_PENDING) {
@@ -555,7 +555,7 @@ evfilt_read_knote_create_socket(struct knote *kn)
     ResetEvent(evt);
 
     kn->kn_handle = evt;
-    atomic_store(&kn->kn_last_data, 0);
+    atomic_store(&kn->kn_read.last_data, 0);
 
     if (RegisterWaitForSingleObject(&kn->kn_event_whandle, evt,
         evfilt_read_callback, kn, INFINITE, 0) == 0) {
@@ -614,7 +614,7 @@ evfilt_read_knote_create(UNUSED struct filter *filt, struct knote *kn)
 static __inline int
 evfilt_read_knote_delete_file(struct knote *kn)
 {
-    kn->kn_file_synthetic = 0;
+    kn->kn_read.file_synthetic = 0;
     return (0);
 }
 
@@ -634,7 +634,7 @@ static __inline int
 evfilt_read_knote_delete_pipe(struct knote *kn)
 {
     if (kn->kn_handle != NULL)
-        (void) CancelIoEx(kn->kn_handle, &kn->kn_pipe_ov);
+        (void) CancelIoEx(kn->kn_handle, &kn->kn_read.pipe_ov);
     kn->kn_handle = NULL;
     return (0);
 }
@@ -662,7 +662,7 @@ evfilt_read_knote_delete_socket(struct knote *kn)
 int
 evfilt_read_knote_delete(UNUSED struct filter *filt, struct knote *kn)
 {
-    if (kn->kn_file_synthetic)
+    if (kn->kn_read.file_synthetic)
         return evfilt_read_knote_delete_file(kn);
     if (kn->kn_flags & KNFL_PIPE)
         return evfilt_read_knote_delete_pipe(kn);

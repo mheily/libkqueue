@@ -619,11 +619,11 @@ windows_kevent_copyout(struct kqueue *kq, int nready,
         } else if (iocp_buf.key == KQ_PIPE_READ_KEY) {
             /*
              * Pipe-HANDLE EVFILT_READ completion: overlap is the
-             * &knote->kn_pipe_ov we passed to ReadFile; recover
+             * &knote->kn_read.pipe_ov we passed to ReadFile; recover
              * the knote via offsetof.  Route through evfilt_read.
              */
             kn = (struct knote *)((char *) iocp_buf.overlap -
-                                  offsetof(struct knote, kn_pipe_ov));
+                                  offsetof(struct knote, kn_read.pipe_ov));
             if (produced > 0 && kn->kn_dispatch_seq == batch_seq) {
                 dbg_puts("drain: duplicate level-trigger for already-"
                          "delivered knote, re-queueing for next kevent()");

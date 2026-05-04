@@ -89,7 +89,7 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
 
         if (dst->data == 0) {
             dst->filter = 0;    /* Will cause the kevent to be discarded */
-            if (epoll_ctl(src->kn_epollfd, EPOLL_CTL_DEL, src->kn_eventfd, NULL) < 0) {
+            if (epoll_ctl(src->kn_epollfd, EPOLL_CTL_DEL, src->kn_read.eventfd, NULL) < 0) {
                 dbg_perror("epoll_ctl(2)");
                 return (-1);
             }
@@ -212,10 +212,10 @@ evfilt_read_knote_create(struct filter *filt, struct knote *kn)
             return (-1);
         }
 
-        kn->kn_eventfd = evfd;
+        kn->kn_read.eventfd = evfd;
 
         KN_UDATA_ALLOC(kn);   /* populate this knote's kn_udata field */
-        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kn_eventfd, EPOLL_EV_KN(kn->epoll_events, kn)) < 0) {
+        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kn_read.eventfd, EPOLL_EV_KN(kn->epoll_events, kn)) < 0) {
             dbg_printf("epoll_ctl(2): %s", strerror(errno));
             (void) close(evfd);
             /* Kernel never accepted the registration; free direct. */
@@ -291,8 +291,8 @@ evfilt_read_knote_delete(struct filter *filt, struct knote *kn)
             dbg_perror("setsockopt(restore SO_RCVLOWAT) on EV_DELETE");
     }
 
-    if ((kn->kn_flags & KNFL_FILE) && (kn->kn_eventfd != -1)) {
-        if (kn->kn_registered && epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kn_eventfd, NULL) < 0) {
+    if ((kn->kn_flags & KNFL_FILE) && (kn->kn_read.eventfd != -1)) {
+        if (kn->kn_registered && epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kn_read.eventfd, NULL) < 0) {
             dbg_perror("epoll_ctl(2)");
             return (-1);
         }
@@ -305,8 +305,8 @@ evfilt_read_knote_delete(struct filter *filt, struct knote *kn)
          */
         KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
 
-        (void) close(kn->kn_eventfd);
-        kn->kn_eventfd = -1;
+        (void) close(kn->kn_read.eventfd);
+        kn->kn_read.eventfd = -1;
         return (0);
     }
 
@@ -317,7 +317,7 @@ int
 evfilt_read_knote_enable(struct filter *filt, struct knote *kn)
 {
     if (kn->kn_flags & KNFL_FILE) {
-        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kn_eventfd, EPOLL_EV_KN(kn->epoll_events, kn)) < 0) {
+        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_ADD, kn->kn_read.eventfd, EPOLL_EV_KN(kn->epoll_events, kn)) < 0) {
             dbg_perror("epoll_ctl(2)");
             return (-1);
         }
@@ -332,7 +332,7 @@ int
 evfilt_read_knote_disable(struct filter *filt, struct knote *kn)
 {
     if (kn->kn_flags & KNFL_FILE) {
-        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kn_eventfd, NULL) < 0) {
+        if (epoll_ctl(kn->kn_epollfd, EPOLL_CTL_DEL, kn->kn_read.eventfd, NULL) < 0) {
             dbg_perror("epoll_ctl(2)");
             return (-1);
         }

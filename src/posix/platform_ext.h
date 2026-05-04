@@ -37,16 +37,20 @@
 #define POSIX_EVENTFD_PLATFORM_SPECIFIC \
     int             ef_wfd
 
-/** Additional members of 'struct knote'
+/** Per-knote state for the POSIX proc filter.
  *
- * These should be included in the platform's KNOTE_PLATFORM_SPECIFIC
- * macro definition if using the POSIX proc filter.
+ * Backends that pull in the POSIX proc implementation (POSIX
+ * backend, Solaris, Linux when SYS_pidfd_open is unavailable)
+ * include POSIX_KNOTE_PROC_PLATFORM_SPECIFIC in their
+ * KNOTE_PLATFORM_SPECIFIC.
  */
+struct posix_knote_proc {
+    LIST_ENTRY(knote) waiter;
+    int               status;
+};
+
 #define POSIX_KNOTE_PROC_PLATFORM_SPECIFIC \
-    struct { \
-        LIST_ENTRY(knote) kn_proc_waiter; \
-        int kn_proc_status; \
-    }
+    struct posix_knote_proc kn_proc
 
 /*
  * Per-filter platform state.  Each EVFILT_* that needs any state
@@ -119,7 +123,7 @@ RB_HEAD(posix_timer_tree, posix_timer);
 struct posix_vnode_state;
 #define POSIX_KNOTE_PLATFORM_SPECIFIC \
     POSIX_KNOTE_PROC_PLATFORM_SPECIFIC; \
-    struct posix_timer *kn_timer; \
+    struct posix_timer       *kn_timer; \
     struct posix_vnode_state *kn_vnode
 
 #endif  /* ! _KQUEUE_POSIX_PLATFORM_EXT_H */

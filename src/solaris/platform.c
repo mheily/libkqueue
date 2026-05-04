@@ -27,7 +27,7 @@
  *
  * Per-thread is fine because the buffer is only live for the duration
  * of one kevent() call; we never carry events across calls.  USER
- * coalescing is producer-side via the per-knote kn_user_ctr atomic,
+ * coalescing is producer-side via the per-knote kn_user.ctr atomic,
  * so we drain exactly what the caller asked for and don't need an
  * overflow stash.
  */
@@ -457,12 +457,12 @@ solaris_kevent_copyout(struct kqueue *kq, int nready,
                     uint_t          sub_nget = 0;
                     struct timespec zero = { 0, 0 };
 
-                    if (port_getn(kn->kn_user_subport, sub_buf, sub_max, &sub_nget, &zero) < 0
+                    if (port_getn(kn->kn_user.subport, sub_buf, sub_max, &sub_nget, &zero) < 0
                         && errno != ETIME) {
                         dbg_perror("port_getn(sub)");
                     }
                     if (port_associate(kq->kq_id, PORT_SOURCE_FD,
-                                       kn->kn_user_subport, POLLIN,
+                                       kn->kn_user.subport, POLLIN,
                                        kn->kn_udata) < 0) {
                         dbg_perror("port_associate(re-arm sub)");
                         rv = -1;

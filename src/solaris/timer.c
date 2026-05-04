@@ -177,7 +177,7 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
         return (-1);
     }
 
-    kn->kn_timerid = timerid;
+    kn->kn_timer.timerid = timerid;
     dbg_printf("th=%lu - created timer", (unsigned long) timerid);
 
     return (0);
@@ -220,15 +220,15 @@ evfilt_timer_knote_modify(struct filter *filt, struct knote *kn,
             dbg_perror("timer_create(2) on NOTE_ABSOLUTE toggle");
             return (-1);
         }
-        if (timer_delete(kn->kn_timerid) < 0)
+        if (timer_delete(kn->kn_timer.timerid) < 0)
             dbg_perror("timer_delete(2) on NOTE_ABSOLUTE toggle");
-        kn->kn_timerid = newid;
+        kn->kn_timer.timerid = newid;
     }
 
     convert_timedata_to_itimerspec(&ts, kev->data, kev->fflags,
                                    kev->flags & EV_ONESHOT);
     abstime = (kev->fflags & NOTE_ABSOLUTE) ? TIMER_ABSTIME : 0;
-    if (timer_settime(kn->kn_timerid, abstime, &ts, NULL) < 0) {
+    if (timer_settime(kn->kn_timer.timerid, abstime, &ts, NULL) < 0) {
         dbg_perror("timer_settime(2)");
         return (-1);
     }
@@ -252,8 +252,8 @@ evfilt_timer_knote_delete(struct filter *filt, struct knote *kn)
 {
     int rv;
 
-    dbg_printf("th=%d - deleting timer", kn->kn_timerid);
-    rv = timer_delete(kn->kn_timerid);
+    dbg_printf("th=%d - deleting timer", kn->kn_timer.timerid);
+    rv = timer_delete(kn->kn_timer.timerid);
 
     if (kn->kn_udata != NULL)
         KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
@@ -275,7 +275,7 @@ evfilt_timer_knote_enable(struct filter *filt UNUSED, struct knote *kn)
     convert_timedata_to_itimerspec(&ts, kn->kev.data, kn->kev.fflags,
                                    kn->kev.flags & EV_ONESHOT);
     abstime = (kn->kev.fflags & NOTE_ABSOLUTE) ? TIMER_ABSTIME : 0;
-    if (timer_settime(kn->kn_timerid, abstime, &ts, NULL) < 0) {
+    if (timer_settime(kn->kn_timer.timerid, abstime, &ts, NULL) < 0) {
         dbg_perror("timer_settime(2)");
         return (-1);
     }
@@ -292,8 +292,8 @@ evfilt_timer_knote_disable(struct filter *filt UNUSED, struct knote *kn)
      * picks up the kernel-side overrun counter, matching BSD's
      * EV_DISABLE-then-EV_ENABLE semantics.
      */
-    dbg_printf("th=%d - stopping timer", kn->kn_timerid);
-    if (timer_settime(kn->kn_timerid, 0, &stop, NULL) < 0) {
+    dbg_printf("th=%d - stopping timer", kn->kn_timer.timerid);
+    if (timer_settime(kn->kn_timer.timerid, 0, &stop, NULL) < 0) {
         dbg_perror("timer_settime(2)");
         return (-1);
     }

@@ -96,7 +96,7 @@ evfilt_proc_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
 int
 evfilt_proc_knote_enable(struct filter *filt, struct knote *kn)
 {
-    if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_ADD, kn->kn_procfd, EPOLL_EV_KN(EPOLLIN, kn)) < 0) {
+    if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_ADD, kn->kn_proc.procfd, EPOLL_EV_KN(EPOLLIN, kn)) < 0) {
         dbg_printf("epoll_ctl(2): %s", strerror(errno));
         return -1;
     }
@@ -108,17 +108,17 @@ evfilt_proc_knote_disable(struct filter *filt, struct knote *kn)
 {
     /*
      * kn_create returns 0 without arming a pidfd when no NOTE_*
-     * fflags are set (kn_procfd stays -1).  A subsequent
+     * fflags are set (kn_proc.procfd stays -1).  A subsequent
      * EV_DISABLE / EV_DELETE on such a knote has nothing kernel-
      * side to remove; short-circuit instead of letting epoll_ctl
      * fail with EBADF and having to decide whether that's benign.
      */
-    if (kn->kn_procfd < 0)
+    if (kn->kn_proc.procfd < 0)
         return (0);
 
-    if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_DEL, kn->kn_procfd, NULL) < 0) {
+    if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_DEL, kn->kn_proc.procfd, NULL) < 0) {
         dbg_printf("epoll_ctl(EPOLL_CTL_DEL pidfd=%i): %s",
-                   kn->kn_procfd, strerror(errno));
+                   kn->kn_proc.procfd, strerror(errno));
         return (-1);
     }
     return (0);
@@ -149,12 +149,12 @@ linux_proc_arm(struct filter *filt, struct knote *kn)
         dbg_perror("fcntl(F_SETFD)");
     error_1:
         (void) close(pfd);
-        kn->kn_procfd = -1;
+        kn->kn_proc.procfd = -1;
         goto error_0;
     }
     dbg_printf("created pidfd=%i monitoring pid=%u", pfd, (unsigned int)kn->kev.ident);
 
-    kn->kn_procfd = pfd;
+    kn->kn_proc.procfd = pfd;
 
     if (KN_UDATA_ALLOC(kn) == NULL) {
         dbg_perror("epoll_udata_alloc");
@@ -177,20 +177,20 @@ linux_proc_arm(struct filter *filt, struct knote *kn)
  * Detach pidfd from epoll, defer-free udata, close pidfd.
  *
  * Mirrors posix/proc.c's proc_pid_disarm.  Idempotent on a knote
- * that was never armed (kn_procfd < 0).  The udata is defer-freed
+ * that was never armed (kn_proc.procfd < 0).  The udata is defer-freed
  * (not freed inline) because a concurrent epoll_wait may still
  * have it in its TLS buffer.
  */
 static void
 linux_proc_disarm(struct filter *filt, struct knote *kn)
 {
-    if (kn->kn_procfd < 0) return;
+    if (kn->kn_proc.procfd < 0) return;
 
     if (KNOTE_ENABLED(kn))
         (void) evfilt_proc_knote_disable(filt, kn);
     KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
-    (void) close(kn->kn_procfd);
-    kn->kn_procfd = -1;
+    (void) close(kn->kn_proc.procfd);
+    kn->kn_proc.procfd = -1;
 }
 
 int
@@ -200,7 +200,7 @@ evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
     /* No NOTE_* in fflags = registered but won't deliver. */
     if (!(kn->kev.fflags & NOTE_EXIT)) {
         dbg_printf("not monitoring pid=%u as no NOTE_* fflags set", (unsigned int)kn->kev.ident);
-        kn->kn_procfd = -1;
+        kn->kn_proc.procfd = -1;
         return (0);
     }
 
@@ -230,7 +230,7 @@ evfilt_proc_knote_modify(struct filter *filt, struct knote *kn, const struct kev
     bool want_armed, was_armed;
 
     /* Detect arm-state structurally rather than from a flag bit. */
-    was_armed  = (kn->kn_procfd >= 0);
+    was_armed  = (kn->kn_proc.procfd >= 0);
     want_armed = (kev->fflags & NOTE_EXIT) != 0;
 
     kn->kev.flags  = (kev->flags & ~preserve)

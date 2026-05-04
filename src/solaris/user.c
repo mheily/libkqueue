@@ -24,7 +24,7 @@
  * port_dissociates and close()s the sub-port, which is the revocation
  * port_send itself lacks: queued events vanish with the port.
  *
- * Per-knote kn_user_ctr coalesces NOTE_TRIGGERs (0->1 transition is the
+ * Per-knote kn_user.ctr coalesces NOTE_TRIGGERs (0->1 transition is the
  * only one that issues a port_send), mirroring Linux's eventfd counter.
  */
 
@@ -35,7 +35,7 @@ evfilt_user_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
     struct knote *src, void *ptr UNUSED)
 {
     /* xchg-to-zero drains the trigger counter; 0 means spurious wake. */
-    if (atomic_exchange(&src->kn_user_ctr, 0) == 0)
+    if (atomic_exchange(&src->kn_user.ctr, 0) == 0)
         return (0);
 
     memcpy(dst, &src->kev, sizeof(*dst));
@@ -59,7 +59,7 @@ evfilt_user_knote_create(struct filter *filt, struct knote *kn)
      * knote_new calloc'd this to 0, but 0 is stdin.  Use -1 as the
      * "no sub-port yet" sentinel for the kn_delete teardown check.
      */
-    kn->kn_user_subport = -1;
+    kn->kn_user.subport = -1;
 
     if (kn->kn_udata == NULL && KN_UDATA_ALLOC(kn) == NULL) {
         dbg_puts("port_udata_alloc");
@@ -82,7 +82,7 @@ evfilt_user_knote_create(struct filter *filt, struct knote *kn)
         return (-1);
     }
 
-    kn->kn_user_subport = sub_fd;
+    kn->kn_user.subport = sub_fd;
     return (0);
 }
 
@@ -127,8 +127,8 @@ evfilt_user_knote_modify(struct filter *filt, struct knote *kn,
      * dropped by the consumer's exchange-to-zero.  Only the 0->1
      * transition issues a port_send.
      */
-    if (atomic_fetch_add(&kn->kn_user_ctr, 1) == 0)
-        return (port_send(kn->kn_user_subport, EVFILT_USER, NULL));
+    if (atomic_fetch_add(&kn->kn_user.ctr, 1) == 0)
+        return (port_send(kn->kn_user.subport, EVFILT_USER, NULL));
     return (0);
 }
 
@@ -140,13 +140,13 @@ evfilt_user_knote_delete(struct filter *filt, struct knote *kn)
      * close drops events still queued in the sub-port.  Callers mid-
      * port_getn are covered by the deferred-free epoch fence.
      */
-    if (kn->kn_user_subport >= 0) {
+    if (kn->kn_user.subport >= 0) {
         if (port_dissociate(filter_epoll_fd(filt), PORT_SOURCE_FD,
-                            kn->kn_user_subport) < 0)
+                            kn->kn_user.subport) < 0)
             dbg_perror("port_dissociate(sub)");
-        if (close(kn->kn_user_subport) < 0)
+        if (close(kn->kn_user.subport) < 0)
             dbg_perror("close(sub_port)");
-        kn->kn_user_subport = -1;
+        kn->kn_user.subport = -1;
     }
 
     if (kn->kn_udata != NULL)
@@ -168,7 +168,7 @@ evfilt_user_knote_enable(struct filter *filt, struct knote *kn)
      * which fires the trigger via the now-re-associated path.
      */
     if (port_associate(filter_epoll_fd(filt), PORT_SOURCE_FD,
-                       kn->kn_user_subport, POLLIN, kn->kn_udata) < 0) {
+                       kn->kn_user.subport, POLLIN, kn->kn_udata) < 0) {
         dbg_perror("port_associate(re-enable sub)");
         return (-1);
     }
@@ -186,7 +186,7 @@ evfilt_user_knote_disable(struct filter *filt, struct knote *kn)
      *
      * port_dissociate cancels the in-flight main-port entry; draining
      * the sub-port via port_getn(timeout=0) clears any kernel-side
-     * trigger byte; resetting kn_user_ctr makes the next 0->1
+     * trigger byte; resetting kn_user.ctr makes the next 0->1
      * transition after re-enable fire cleanly.
      */
     port_event_t    drained[1];
@@ -194,14 +194,14 @@ evfilt_user_knote_disable(struct filter *filt, struct knote *kn)
     struct timespec zero = { 0, 0 };
 
     if (port_dissociate(filter_epoll_fd(filt), PORT_SOURCE_FD,
-                        kn->kn_user_subport) < 0)
+                        kn->kn_user.subport) < 0)
         dbg_perror("port_dissociate(sub) on EV_DISABLE");
 
-    if (port_getn(kn->kn_user_subport, drained, 1, &ngot, &zero) < 0
+    if (port_getn(kn->kn_user.subport, drained, 1, &ngot, &zero) < 0
         && errno != ETIME)
         dbg_perror("port_getn(sub) drain on EV_DISABLE");
 
-    atomic_store(&kn->kn_user_ctr, 0);
+    atomic_store(&kn->kn_user.ctr, 0);
     return (0);
 }
 

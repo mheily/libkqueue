@@ -173,44 +173,43 @@ struct event_buf {
 /*
  * Per-knote state for EVFILT_TIMER.  See solaris/timer.c.
  */
-#define SOLARIS_KNOTE_TIMER_PLATFORM_SPECIFIC \
-    timer_t kn_timerid
+struct solaris_knote_timer {
+    timer_t         timerid;
+};
 
 /*
  * Per-knote state for EVFILT_USER.
  *
- * kn_user_ctr coalesces NOTE_TRIGGERs: only the 0->1 transition calls
+ * ctr coalesces NOTE_TRIGGERs: only the 0->1 transition calls
  * port_send; the accumulated count drains on copyout.
- * kn_user_subport is a dedicated port(5) fd that proxies EVFILT_USER
+ * subport is a dedicated port(5) fd that proxies EVFILT_USER
  * wakeups into the platform event loop.  See solaris/user.c.
  */
-#define SOLARIS_KNOTE_USER_PLATFORM_SPECIFIC \
-    struct { \
-        atomic_uint kn_user_ctr; \
-        int         kn_user_subport; \
-    }
+struct solaris_knote_user {
+    atomic_uint     ctr;
+    int             subport;
+};
 
 /*
- * Per-knote state for EVFILT_VNODE / PORT_SOURCE_FILE.  kn_vnode_path
- * is heap-owned by the knote (fobj.fo_name aliases it).  See
+ * Per-knote state for EVFILT_VNODE / PORT_SOURCE_FILE.  path is
+ * heap-owned by the knote (fobj.fo_name aliases it).  See
  * solaris/vnode.c for the protocol.
  */
-#define SOLARIS_KNOTE_VNODE_PLATFORM_SPECIFIC \
-    struct { \
-        struct file_obj kn_vnode_fobj; \
-        char           *kn_vnode_path; \
-        unsigned int    kn_vnode_events; \
-        nlink_t         kn_vnode_nlink; \
-        off_t           kn_vnode_size; \
-    }
+struct solaris_knote_vnode {
+    struct file_obj fobj;
+    char           *path;
+    unsigned int    events;
+    nlink_t         nlink;
+    off_t           size;
+};
 
 #define KNOTE_PLATFORM_SPECIFIC \
     struct port_udata *kn_udata; /* live for all filter types; remaining fields are per-type and share a union */ \
     union { \
-        SOLARIS_KNOTE_TIMER_PLATFORM_SPECIFIC; \
-        SOLARIS_KNOTE_USER_PLATFORM_SPECIFIC; \
+        struct solaris_knote_timer kn_timer; \
+        struct solaris_knote_user  kn_user; \
         POSIX_KNOTE_PROC_PLATFORM_SPECIFIC; \
-        SOLARIS_KNOTE_VNODE_PLATFORM_SPECIFIC; \
+        struct solaris_knote_vnode kn_vnode; \
     }
 
 /*

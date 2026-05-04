@@ -75,10 +75,36 @@ struct filter;
 #include "../posix/platform_ext.h"      /* union posix_filter_state, etc. */
 
 #if HAVE_SYS_PIDFD_OPEN
-#define KNOTE_PROC_PLATFORM_SPECIFIC  int kn_procfd;
+struct linux_knote_proc {
+    int             procfd;
+};
+#define KNOTE_PROC_PLATFORM_SPECIFIC \
+    struct linux_knote_proc kn_proc
 #else
-#define KNOTE_PROC_PLATFORM_SPECIFIC  POSIX_KNOTE_PROC_PLATFORM_SPECIFIC
+#define KNOTE_PROC_PLATFORM_SPECIFIC POSIX_KNOTE_PROC_PLATFORM_SPECIFIC
 #endif
+
+struct linux_knote_timer {
+    int             timerfd;
+};
+
+struct linux_knote_user {
+    int             eventfd;
+};
+
+struct linux_knote_read {
+    int             eventfd;
+};
+
+struct linux_knote_write {
+    int             eventfd;
+};
+
+struct linux_knote_vnode {
+    nlink_t         nlink;
+    off_t           size;
+    int             inotifyfd;
+};
 
 /*
  * C11 atomic operations
@@ -364,6 +390,9 @@ struct fd_state {
 
 /** Additional members of struct knote
  *
+ * Filter-exclusive state lives in named struct members inside a
+ * union; a knote only serves one filter so the slots can share
+ * storage.  Multi-filter fields stay outside.
  */
 #define KNOTE_PLATFORM_SPECIFIC \
     int kn_epollfd;                       /* A copy of filter->epoll_fd */ \
@@ -371,13 +400,11 @@ struct fd_state {
     struct fd_state        *kn_fds;       /* File descriptor's registration state */ \
     int epoll_events;                     /* Which events this file descriptor is registered for */ \
     union { \
-        int kn_timerfd; \
-        int kn_eventfd; \
-        struct { \
-            nlink_t         nlink;  \
-            off_t           size;   \
-            int             inotifyfd; \
-        } kn_vnode; \
+        struct linux_knote_timer kn_timer; \
+        struct linux_knote_user  kn_user; \
+        struct linux_knote_read  kn_read; \
+        struct linux_knote_write kn_write; \
+        struct linux_knote_vnode kn_vnode; \
         KNOTE_PROC_PLATFORM_SPECIFIC; \
     }; \
     struct epoll_udata    *kn_udata      /* Heap-allocated demux header.  The udata's lifecycle

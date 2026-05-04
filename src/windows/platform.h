@@ -124,7 +124,7 @@
 /*
  * Reserved IOCP completion key for pipe-HANDLE EVFILT_READ
  * (overlapped 0-byte ReadFile).  The completion arrives with
- * overlap = &knote->kn_pipe_ov; we recover the owning knote via
+ * overlap = &knote->kn_read.pipe_ov; we recover the owning knote via
  * offsetof in windows_kevent_copyout.
  */
 #define KQ_PIPE_READ_KEY ((ULONG_PTR)2)
@@ -216,6 +216,42 @@ void windows_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state);
     atomic_int efd_raised
 
 /*
+ * Per-filter knote platform state.  Filter-exclusive fields go in
+ * named structs referenced from the union below; multi-filter
+ * fields (kn_event_whandle / kn_handle / kn_fire_count /
+ * kn_dispatch_seq) stay outside.
+ */
+struct windows_knote_read {
+    /* EV_CLEAR/EV_DISPATCH edge-trigger: tracks last reported
+     * FIONREAD byte count so the WSAEventSelect callback can
+     * suppress re-assertions that don't represent fresh data. */
+    atomic_int      last_data;
+    /* Set when WSAEnumNetworkEvents observes FD_CLOSE so
+     * copyout can OR EV_EOF into the delivered event flags. */
+    atomic_int      eof;
+    /* Captured iErrorCode[FD_CLOSE_BIT] on the FD_CLOSE that
+     * latched eof above.  Surfaced as fflags in copyout so a
+     * TCP RST shows up as the actual WSAECONNRESET (parity
+     * with posix/read.c SO_ERROR path). */
+    atomic_int      so_error;
+    /* KNFL_PIPE: 0-byte overlapped ReadFile is attached to
+     * kq_iocp; the OVERLAPPED hangs off the knote and the
+     * dispatcher recovers the knote via CONTAINING_RECORD-
+     * style pointer arithmetic. */
+    OVERLAPPED      pipe_ov;
+    /* KNFL_FILE: marks the knote as a synthetic level-
+     * triggered source so copyout can re-post a completion
+     * when the knote remains armed. */
+    int             file_synthetic;
+    char            pipe_buf[1];
+};
+
+struct windows_knote_write {
+    /* KNFL_FILE: see windows_knote_read.file_synthetic. */
+    int             file_synthetic;
+};
+
+/*
  * Additional members for struct knote
  */
 #define KNOTE_PLATFORM_SPECIFIC \
@@ -224,35 +260,15 @@ void windows_kevent_exit(struct kqueue *kq, struct kqueue_kevent_state *state);
     /* Generic fire-count for filters that need to report */     \
     /* accumulated occurrences in copyout (e.g. EVFILT_TIMER). */\
     atomic_int                 kn_fire_count; \
-    /* EVFILT_READ socket edge-trigger (EV_CLEAR/EV_DISPATCH): */ \
-    /* tracks last reported FIONREAD byte count so the          */\
-    /* WSAEventSelect callback can suppress re-assertions that  */\
-    /* don't represent fresh data.                              */\
-    atomic_int                 kn_last_data;                     \
-    /* For KNFL_FILE EVFILT_READ/WRITE: marks the knote as a    */\
-    /* synthetic level-triggered source so copyout can re-post  */\
-    /* a completion when the knote remains armed.               */\
-    int                        kn_file_synthetic;                \
-    /* EVFILT_READ on sockets: set when WSAEnumNetworkEvents    */\
-    /* observes FD_CLOSE, so copyout can OR EV_EOF into the    */\
-    /* delivered event flags.                                   */\
-    atomic_int                 kn_eof; \
-    /* Captured WSAEnumNetworkEvents.iErrorCode[FD_CLOSE_BIT]  */\
-    /* on the FD_CLOSE that latched kn_eof above.  Surfaced as */\
-    /* fflags in copyout so a TCP RST shows up as the actual   */\
-    /* WSAECONNRESET (parity with posix/read.c SO_ERROR path). */\
-    atomic_int                 kn_so_error; \
-    /* Pipe-HANDLE EVFILT_READ: 0-byte overlapped ReadFile is  */\
-    /* attached to kq_iocp; the OVERLAPPED hangs off the knote */\
-    /* and the dispatcher recovers the knote via CONTAINING    */\
-    /* RECORD-style pointer arithmetic.                        */\
-    OVERLAPPED                 kn_pipe_ov; \
     /* Last value of kq_dispatch_seq at which this knote was   */\
     /* delivered.  Used by the IOCP drain in copyout to avoid  */\
     /* stacking duplicate level-trigger EV_EOF events for the  */\
     /* same knote in a single kevent() call.                   */\
     unsigned long              kn_dispatch_seq; \
-    char                       kn_pipe_buf[1]
+    union { \
+        struct windows_knote_read  kn_read; \
+        struct windows_knote_write kn_write; \
+    }
 
 /*
  * Some datatype forward declarations

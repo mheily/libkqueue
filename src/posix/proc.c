@@ -123,7 +123,7 @@ waiter_notify(struct proc_pid *ppd, int status)
     struct filter *filt;
 
     while ((kn = LIST_FIRST(&ppd->ppd_proc_waiters))) {
-        kn->kn_proc_status = status;
+        kn->kn_proc.status = status;
 
         /*
          * This operates in the context of the kqueue
@@ -138,7 +138,7 @@ waiter_notify(struct proc_pid *ppd, int status)
         kqops.eventfd_raise(&filt->kf_efd);
         LIST_INSERT_HEAD(&filt->kf_ready, kn, kn_ready); /* protected by proc_pid_index_mtx */
 
-        LIST_REMOVE_ZERO(kn, kn_proc_waiter);
+        LIST_REMOVE_ZERO(kn, kn_proc.waiter);
     }
 
     dbg_printf("pid=%u removing waiter list", (unsigned int)ppd->ppd_pid);
@@ -162,7 +162,7 @@ waiter_notify_error(struct proc_pid *ppd, int wait_errno)
         kqops.eventfd_raise(&filt->kf_efd);
         LIST_INSERT_HEAD(&filt->kf_ready, kn, kn_ready); /* protected by proc_pid_index_mtx */
 
-        LIST_REMOVE_ZERO(kn, kn_proc_waiter);
+        LIST_REMOVE_ZERO(kn, kn_proc.waiter);
     }
 
     dbg_printf("pid=%u removing waiter list", (unsigned int)ppd->ppd_pid);
@@ -632,7 +632,7 @@ proc_pid_arm(struct filter *filt, struct knote *kn)
             (void) dup;
         }
     }
-    LIST_INSERT_HEAD(&ppd->ppd_proc_waiters, kn, kn_proc_waiter);
+    LIST_INSERT_HEAD(&ppd->ppd_proc_waiters, kn, kn_proc.waiter);
 
     /*
      * waitid(WNOWAIT) inspects without reaping so an existing
@@ -682,8 +682,8 @@ proc_pid_disarm(struct knote *kn)
 {
     struct proc_pid *ppd;
 
-    if (LIST_INSERTED(kn, kn_proc_waiter))
-        LIST_REMOVE_ZERO(kn, kn_proc_waiter);
+    if (LIST_INSERTED(kn, kn_proc.waiter))
+        LIST_REMOVE_ZERO(kn, kn_proc.waiter);
 
     ppd = RB_FIND(pid_index, &proc_pid_index, &(struct proc_pid){ .ppd_pid = kn->kev.ident });
     if (ppd && LIST_EMPTY(&ppd->ppd_proc_waiters)) {
@@ -715,7 +715,7 @@ evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
      * (EV_ENABLE on a watch whose target has already exited must
      * still surface the pending NOTE_EXIT instead of failing).
      */
-    if (!LIST_INSERTED(kn, kn_proc_waiter) &&
+    if (!LIST_INSERTED(kn, kn_proc.waiter) &&
         kill((pid_t) kn->kev.ident, 0) < 0 && errno == ESRCH) {
         dbg_printf("EVFILT_PROC pid=%u: ESRCH",
                    (unsigned int) kn->kev.ident);
@@ -748,7 +748,7 @@ evfilt_proc_knote_modify(struct filter *filt, struct knote *kn,
      * states like "waiter_notify already moved this knote off the
      * waiter list onto kf_ready" don't masquerade as armed.
      */
-    was_armed  = LIST_INSERTED(kn, kn_proc_waiter);
+    was_armed  = LIST_INSERTED(kn, kn_proc.waiter);
     want_armed = (kev->fflags & NOTE_EXIT) != 0;
 
     /*
@@ -816,8 +816,8 @@ evfilt_proc_knote_disable(struct filter *filt, struct knote *kn)
      * raise.
      */
     tracing_mutex_lock(&proc_pid_index_mtx);
-    if (LIST_INSERTED(kn, kn_proc_waiter))
-        LIST_REMOVE_ZERO(kn, kn_proc_waiter);
+    if (LIST_INSERTED(kn, kn_proc.waiter))
+        LIST_REMOVE_ZERO(kn, kn_proc.waiter);
     if (LIST_INSERTED(kn, kn_ready))
         LIST_REMOVE_ZERO(kn, kn_ready);
     if (LIST_EMPTY(&filt->kf_ready))
@@ -843,7 +843,7 @@ evfilt_proc_knote_copyout(struct kevent *dst, int nevents, struct filter *filt,
      *    the filter as a whole), passes kn=NULL, and expects us
      *    to drain kf_ready ourselves.
      *
-     * proc_pid_index_mtx serialises kn_proc_status against the
+     * proc_pid_index_mtx serialises kn_proc.status against the
      * wait thread (waiter_notify writes it under the same mutex).
      */
     if (kn != NULL) {
@@ -851,7 +851,7 @@ evfilt_proc_knote_copyout(struct kevent *dst, int nevents, struct filter *filt,
         memcpy(dst, &kn->kev, sizeof(*dst));
         dst->fflags = NOTE_EXIT;
         dst->flags |= EV_EOF;
-        dst->data   = kn->kn_proc_status;
+        dst->data   = kn->kn_proc.status;
         tracing_mutex_unlock(&proc_pid_index_mtx);
 
         if (knote_copyout_flag_actions(filt, kn) < 0)
@@ -871,7 +871,7 @@ evfilt_proc_knote_copyout(struct kevent *dst, int nevents, struct filter *filt,
         memcpy(dst_p, &kn->kev, sizeof(*dst_p));
         dst_p->fflags = NOTE_EXIT;
         dst_p->flags |= EV_EOF;
-        dst_p->data   = kn->kn_proc_status;
+        dst_p->data   = kn->kn_proc.status;
         if (knote_copyout_flag_actions(filt, kn) < 0) {
             LIST_INSERT_HEAD(&filt->kf_ready, kn, kn_ready);
             tracing_mutex_unlock(&proc_pid_index_mtx);

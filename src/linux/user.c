@@ -105,7 +105,7 @@ linux_evfilt_user_copyout(struct kevent *dst, UNUSED int nevents, struct filter 
     if (src->kev.flags & EV_CLEAR)
         src->kev.fflags &= ~NOTE_TRIGGER;
     if (src->kev.flags & (EV_DISPATCH | EV_CLEAR | EV_ONESHOT)) {
-        int rv = eventfd_lower(src->kn_eventfd);
+        int rv = eventfd_lower(src->kn_user.eventfd);
         if (rv < 0) return (-1);
         /*
          * Another waiter on the same kq drained the eventfd before
@@ -145,12 +145,12 @@ linux_evfilt_user_knote_create(struct filter *filt, struct knote *kn)
             dbg_perror("eventfd(2)");
         }
         close(evfd);
-        kn->kn_eventfd = -1;
+        kn->kn_user.eventfd = -1;
         return (-1);
     }
 
     dbg_printf("event_fd=%i - created", evfd);
-    kn->kn_eventfd = evfd;
+    kn->kn_user.eventfd = evfd;
     KN_UDATA_ALLOC(kn);   /* populate this knote's kn_udata field */
 
     if (KNOTE_ENABLED(kn)) {
@@ -198,7 +198,7 @@ linux_evfilt_user_knote_modify(struct filter *filt UNUSED, struct knote *kn, con
 
     if ((!(kn->kev.flags & EV_DISABLE)) && kev->fflags & NOTE_TRIGGER) {
         kn->kev.fflags |= NOTE_TRIGGER;
-        if (eventfd_raise(kn->kn_eventfd) < 0)
+        if (eventfd_raise(kn->kn_user.eventfd) < 0)
             return (-1);
     }
 
@@ -215,12 +215,12 @@ linux_evfilt_user_knote_delete(struct filter *filt, struct knote *kn)
 
     KN_UDATA_DEFER_FREE(filt->kf_kqueue, kn);
 
-    dbg_printf("event_fd=%i - closed", kn->kn_eventfd);
-    if (close(kn->kn_eventfd) < 0) {
+    dbg_printf("event_fd=%i - closed", kn->kn_user.eventfd);
+    if (close(kn->kn_user.eventfd) < 0) {
         dbg_perror("close(2)");
         return (-1);
     }
-    kn->kn_eventfd = -1;
+    kn->kn_user.eventfd = -1;
 
     return rv;
 }
@@ -228,11 +228,11 @@ linux_evfilt_user_knote_delete(struct filter *filt, struct knote *kn)
 int
 linux_evfilt_user_knote_enable(struct filter *filt, struct knote *kn)
 {
-    if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_ADD, kn->kn_eventfd, EPOLL_EV_KN(EPOLLIN, kn)) < 0) {
+    if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_ADD, kn->kn_user.eventfd, EPOLL_EV_KN(EPOLLIN, kn)) < 0) {
         dbg_perror("epoll_ctl(2)");
         return (-1);
     }
-    dbg_printf("event_fd=%i - added to epoll_fd=%i", kn->kn_eventfd, filter_epoll_fd(filt));
+    dbg_printf("event_fd=%i - added to epoll_fd=%i", kn->kn_user.eventfd, filter_epoll_fd(filt));
 
     return (0);
 }
@@ -240,11 +240,11 @@ linux_evfilt_user_knote_enable(struct filter *filt, struct knote *kn)
 int
 linux_evfilt_user_knote_disable(struct filter *filt, struct knote *kn)
 {
-    if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_DEL, kn->kn_eventfd, NULL) < 0) {
+    if (epoll_ctl(filter_epoll_fd(filt), EPOLL_CTL_DEL, kn->kn_user.eventfd, NULL) < 0) {
             dbg_perror("epoll_ctl(2)");
             return (-1);
     }
-    dbg_printf("event_fd=%i - removed from epoll_fd=%i", kn->kn_eventfd, filter_epoll_fd(filt));
+    dbg_printf("event_fd=%i - removed from epoll_fd=%i", kn->kn_user.eventfd, filter_epoll_fd(filt));
 
     return (0);
 }
