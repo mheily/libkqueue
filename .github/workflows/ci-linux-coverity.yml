@@ -10,6 +10,10 @@ on:
       - 'src/linux/*'
       - 'test/*'
       - '.github/workflows/ci-linux-coverity.yml'
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux-build-and-test:
     if: github.repository == 'mheily/libkqueue'

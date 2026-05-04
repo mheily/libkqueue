@@ -1,9 +1,18 @@
 name: CI Windows
 
 on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch / tag / SHA to run against"
+        required: false
+        default: ""
   push:
     branches:
       - master
+      - windows-iter
+      - 'ci-debug'
+      - '*-debug'
     paths:
       - 'CMakeLists.txt'
       - 'include/sys/*'
@@ -21,26 +30,169 @@ on:
       - 'test/*'
       - '.github/workflows/ci-windows.yml'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   KQUEUE_DEBUG: yes
 
 jobs:
   windows-build:
-    timeout-minutes: 10
+    #
+    # Job-level cap is generous so that when "Run tests" trips its
+    # own per-step timeout (and fails the job), the tmate-on-failure
+    # step below has room to come up and emit the SSH URL.  Without
+    # the headroom the runner is killed before tmate runs.
+    #
+    timeout-minutes: 90
     runs-on: windows-2022
     name: CI-windows (build)
     strategy:
+      fail-fast: false
       matrix:
-        build_type: [Release, Debug]
+        include:
+          - build_type: Release
+            sanitize: ""
+          - build_type: Debug
+            sanitize: ""
+          # MSVC's /fsanitize=address has been GA since VS 2019
+          # 16.9.  No LSan equivalent in MSVC's ASan port, but the
+          # heap/UAF half is enough to catch the kinds of bugs the
+          # synthetic file paths and IOCP overlap-as-knote dispatch
+          # have hit historically (issues #155 etc.).
+          - build_type: Debug
+            sanitize: "asan"
 
     steps:
       - uses: actions/checkout@v5
 
+      - name: Set up MSVC environment
+        if: matrix.sanitize == 'asan'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Configure build system
         run: |
           cmake --version
-          cmake -S . -B build_x64 -A x64 -G "Visual Studio 17 2022" -DSTATICLIB=ON -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DCMAKE_VERBOSE_MAKEFILE=ON
+          $extra = ""
+          if ("${{ matrix.sanitize }}" -eq "asan") {
+              $extra = "-DCMAKE_C_FLAGS=/fsanitize=address /Zi"
+          }
+          cmake -S . -B build_x64 -A x64 -G "Visual Studio 17 2022" -DSTATICLIB=ON -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DCMAKE_VERBOSE_MAKEFILE=ON -DENABLE_TESTING=YES $extra
 
       - name: Build libkqueue
         run: |
           cmake --build build_x64 --target install --config ${{ matrix.build_type }} --parallel 1
+
+      - name: Build tests
+        run: |
+          cmake --build build_x64 --target libkqueue-test --config ${{ matrix.build_type }} --parallel 1
+
+      - name: "Locate cdb.exe"
+        id: cdb
+        shell: pwsh
+        run: |
+          $cdb = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64" -Filter cdb.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $cdb) {
+            $cdb = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits" -Recurse -Filter cdb.exe -ErrorAction SilentlyContinue | Where-Object { $_.FullName -like "*x64*" } | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $cdb) { Write-Error "cdb.exe not found"; exit 1 }
+          Write-Host "cdb at: $cdb"
+          "path=$cdb" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: "Probe: threading_close in isolation (with watchdog stack dump)"
+        timeout-minutes: 3
+        shell: cmd
+        env:
+          KQUEUE_DEBUG: 1
+          KQUEUE_DEBUG_OUTPUT: stderr
+        run: |
+          set PATH=%CD%\build_x64\${{ matrix.build_type }};%PATH%
+          .\build_x64\test\${{ matrix.build_type }}\libkqueue-test.exe -n 1 --watchdog-timeout=60 "--watchdog-cmd=\"${{ steps.cdb.outputs.path }}\" -pv -c \"~*kb;qd\" -p" threading:0 > test_iso.log 2>&1
+          set RC=%ERRORLEVEL%
+          type test_iso.log
+          exit /b %RC%
+        continue-on-error: true
+
+      - name: "Upload isolation log"
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-iso-${{ matrix.build_type }}-${{ matrix.sanitize || 'plain' }}
+          path: test_iso.log
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Run tests
+        timeout-minutes: 8
+        shell: cmd
+        env:
+          KQUEUE_DEBUG: 1
+          KQUEUE_DEBUG_OUTPUT: stderr
+        run: |
+          set PATH=%CD%\build_x64\${{ matrix.build_type }};%PATH%
+          .\build_x64\test\${{ matrix.build_type }}\libkqueue-test.exe -n 1 --watchdog-timeout=120 "--watchdog-cmd=\"${{ steps.cdb.outputs.path }}\" -pv -c \"~*kb;qd\" -p" > test_full.log 2>&1
+          set RC=%ERRORLEVEL%
+          type test_full.log
+          exit /b %RC%
+
+      - name: "Upload test log on failure"
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log-${{ matrix.build_type }}-${{ matrix.sanitize || 'plain' }}
+          path: test_full.log
+          retention-days: 3
+
+      #
+      # Interactive debug session, FreeRADIUS-style: push to a branch
+      # named `ci-debug` (or any `*-debug` branch) and any failing
+      # job pauses with an SSH rendezvous point.  Limited to the
+      # actor's GitHub SSH keys.  Detached mode + URL artifact so
+      # the connection point is fetchable via gh api - the live log
+      # is gated and not scrapeable from outside the web UI.
+      #
+      - name: "Debug: Start tmate on failure"
+        id: tmate
+        uses: mxschmitt/action-tmate@v3
+        with:
+          limit-access-to-actor: true
+          detached: true
+        if: ${{ failure() && (github.ref == 'refs/heads/ci-debug' || endsWith(github.ref, '-debug')) }}
+
+      - name: "Debug: capture tmate URL"
+        if: ${{ failure() && (github.ref == 'refs/heads/ci-debug' || endsWith(github.ref, '-debug')) }}
+        shell: bash
+        env:
+          TMATE_SSH: ${{ steps.tmate.outputs.ssh-command }}
+        run: |
+          # action-tmate exposes the rendezvous URL via the step output
+          # ssh-command (see mxschmitt/action-tmate src/index.js:221).
+          # That avoids querying the tmate socket directly, which on
+          # Windows runners landed under /c/msys64/tmp and required
+          # waiting for the format variable to be populated.
+          echo "JOB: ${{ matrix.build_type }} ${{ matrix.sanitize }}" > tmate_url.txt
+          echo "URL: $TMATE_SSH" >> tmate_url.txt
+          cat tmate_url.txt
+
+      - name: "Debug: upload tmate URL"
+        if: ${{ failure() && (github.ref == 'refs/heads/ci-debug' || endsWith(github.ref, '-debug')) }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmate-url-${{ matrix.build_type }}-${{ matrix.sanitize || 'plain' }}
+          path: tmate_url.txt
+          retention-days: 1
+
+      - name: "Debug: hold runner for SSH session"
+        if: ${{ failure() && (github.ref == 'refs/heads/ci-debug' || endsWith(github.ref, '-debug')) }}
+        shell: bash
+        run: |
+          # Keep the runner alive for the SSH session.  Bounded by the
+          # job's timeout-minutes.  Exit early if /tmp/done exists so
+          # the SSH user can finish gracefully.
+          for i in $(seq 1 60); do
+            [ -f /tmp/done ] && break
+            sleep 60
+          done
