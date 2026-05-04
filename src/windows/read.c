@@ -352,7 +352,8 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
                  * evfilt_read_copyout which sees kn_read.eof and
                  * delivers another EV_EOF.
                  */
-                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter),
+                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
+                                                KQ_FILTER_KEY(src->kev.filter),
                                                 (LPOVERLAPPED) src)) {
                     dbg_lasterror("PostQueuedCompletionStatus(pipe-eof relevel)");
                     knote_release(src);
@@ -372,7 +373,7 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
                          */
                         atomic_store(&src->kn_read.eof, 1);
                         if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
-                                                        (ULONG_PTR) 0,
+                                                        KQ_FILTER_KEY(src->kev.filter),
                                                         (LPOVERLAPPED) src))
                             knote_release(src);
                     }
@@ -382,7 +383,8 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
         } else if ((is_synthetic || eof_relevel) && !is_disabled) {
             bool is_deleted = (src->kn_flags & KNFL_KNOTE_DELETED) != 0;
             if (!is_deleted) {
-                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter),
+                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
+                                                KQ_FILTER_KEY(src->kev.filter),
                                                 (LPOVERLAPPED) src)) {
                     dbg_lasterror("PostQueuedCompletionStatus()");
                     knote_release(src);
@@ -560,7 +562,7 @@ evfilt_read_knote_create_socket(struct knote *kn)
             pending > 0) {
             knote_retain(kn);
             if (!PostQueuedCompletionStatus(kn->kn_kq->kq_iocp, 1,
-                                            (ULONG_PTR) 0,
+                                            KQ_FILTER_KEY(kn->kev.filter),
                                             (LPOVERLAPPED) kn)) {
                 dbg_lasterror("PostQueuedCompletionStatus()");
                 knote_release(kn);

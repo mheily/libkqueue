@@ -119,7 +119,8 @@ evfilt_write_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
         if (is_synthetic && !is_disabled) {
             bool is_deleted = (src->kn_flags & KNFL_KNOTE_DELETED) != 0;
             if (!is_deleted) {
-                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1, KQ_FILTER_KEY(kn->kev.filter),
+                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
+                                                KQ_FILTER_KEY(src->kev.filter),
                                                 (LPOVERLAPPED) src)) {
                     dbg_lasterror("PostQueuedCompletionStatus()");
                     knote_release(src);
