@@ -122,7 +122,20 @@ test_kevent_timer_periodic_modify(struct test_context *ctx)
      */
     kevent_add(ctx->kqfd, &kev, 3, EVFILT_TIMER, EV_ADD, 0, 500, NULL);
     kev.flags = EV_ADD | EV_CLEAR;
+    /*
+     * Win32 CI VMs have notoriously coarse timer scheduling
+     * (15ms default tick), Sleep() returns can lag by tens of
+     * ms, and Release builds occasionally land the first fire
+     * past the 2x-period mark on shared runners.  Use a 3 *
+     * period window so two ticks are comfortably in the past
+     * before we drain.  Tests are gated on data >= 2, so a
+     * generous wait is the safest knob.
+     */
+#ifdef _WIN32
+    usleep(3000 * 1000);
+#else
     usleep(1200 * 1000);  /* 1200ms - 2 full periods + slack */
+#endif
 
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
     /*
@@ -137,9 +150,19 @@ test_kevent_timer_periodic_modify(struct test_context *ctx)
         !(ret[0].flags & EV_CLEAR))
         die("periodic_modify: unexpected ident/filter/flags in %s",
             kevent_to_str(&ret[0]));
+    /*
+     * Bounds scale with the wait window: POSIX waits 1200ms (~2-3
+     * fires); Win32 waits 3000ms so more fires accumulate (~5-6).
+     */
+#ifdef _WIN32
+    if (ret[0].data < 2 || ret[0].data > 8)
+        die("periodic_modify: expected accumulated data in [2,8], got %ld",
+            (long) ret[0].data);
+#else
     if (ret[0].data < 2 || ret[0].data > 4)
         die("periodic_modify: expected accumulated data in [2,4], got %ld",
             (long) ret[0].data);
+#endif
 
     /* Delete the event */
     kev.flags = EV_DELETE;

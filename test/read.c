@@ -299,8 +299,8 @@ test_kevent_socket_listen_backlog(struct test_context *ctx)
     kevent_cmp(&kev, ret);
     test_no_kevents(ctx->kqfd);
 
-    close(clnt);
-    close(srvr);
+    closesock(clnt);
+    closesock(srvr);
 }
 
 #ifdef EV_DISPATCH
@@ -377,7 +377,7 @@ test_kevent_socket_eof_clear(struct test_context *ctx)
 
     if (shutdown(ctx->server_fd, SHUT_RDWR) < 0)
         die("shutdown(2)");
-    if (close(ctx->server_fd) < 0)
+    if (closesock(ctx->server_fd) < 0)
         die("close(2)");
 
     kev.flags |= EV_EOF;
@@ -389,8 +389,8 @@ test_kevent_socket_eof_clear(struct test_context *ctx)
     /* Delete the watch */
     kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ, EV_DELETE, 0, 0, &ctx->client_fd);
 
-    close(ctx->client_fd);
-    close(ctx->listen_fd);
+    closesock(ctx->client_fd);
+    closesock(ctx->listen_fd);
 
     /* Recreate the socket pair */
     create_socket_connection(&ctx->client_fd, &ctx->server_fd, &ctx->listen_fd);
@@ -440,9 +440,9 @@ test_kevent_socket_eof(struct test_context *ctx)
 
     kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
 
-    close(ctx->client_fd);
-    close(ctx->server_fd);
-    close(ctx->listen_fd);
+    closesock(ctx->client_fd);
+    closesock(ctx->server_fd);
+    closesock(ctx->listen_fd);
 
     /* Recreate the socket pair */
     create_socket_connection(&ctx->client_fd, &ctx->server_fd, &ctx->listen_fd);
@@ -469,9 +469,10 @@ test_kevent_socket_so_error(struct test_context *ctx)
     /* Force RST instead of graceful FIN on close. */
     lin.l_onoff = 1;
     lin.l_linger = 0;
-    if (setsockopt(ctx->server_fd, SOL_SOCKET, SO_LINGER, &lin, sizeof(lin)) < 0)
+    if (setsockopt(ctx->server_fd, SOL_SOCKET, SO_LINGER,
+                   (const char *) &lin, sizeof(lin)) < 0)
         die("setsockopt(SO_LINGER)");
-    if (close(ctx->server_fd) < 0)
+    if (closesock(ctx->server_fd) < 0)
         die("close(server_fd)");
     ctx->server_fd = -1;
 
@@ -490,8 +491,8 @@ test_kevent_socket_so_error(struct test_context *ctx)
                (unsigned int) ret[0].fflags, strerror(ret[0].fflags));
 
     kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
-    close(ctx->client_fd);
-    close(ctx->listen_fd);
+    closesock(ctx->client_fd);
+    closesock(ctx->listen_fd);
 
     /* Recreate the socket pair for subsequent tests. */
     create_socket_connection(&ctx->client_fd, &ctx->server_fd, &ctx->listen_fd);
@@ -502,7 +503,11 @@ test_kevent_socket_so_error(struct test_context *ctx)
  * Send fewer bytes than the threshold and confirm no event fires; send
  * enough to clear it and confirm one does.  Backend translates to
  * SO_RCVLOWAT setsockopt; the kernel does the gating.
+ *
+ * Skipped on Windows: the Win kernel doesn't honour SO_RCVLOWAT or
+ * SO_SNDLOWAT (both setsockopt calls succeed silently with no effect).
  */
+#ifndef _WIN32
 void
 test_kevent_socket_lowat_read(struct test_context *ctx)
 {
@@ -571,10 +576,12 @@ test_kevent_socket_lowat_write(struct test_context *ctx)
 
     kevent_add(ctx->kqfd, &kev, ctx->server_fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
 }
+#endif /* !_WIN32 (lowat) */
 
 /*
  * Different from the socket eof test, as we get EPOLLHUP with no EPOLLIN on close
- * on Linux.
+ * on Linux.  Win32 uses an overlapped 0-byte ReadFile attached to the kq's
+ * IOCP via the test/win32_compat.h pipe() shim - same EOF semantics.
  */
 void
 test_kevent_pipe_eof(struct test_context *ctx)
@@ -591,6 +598,7 @@ test_kevent_pipe_eof(struct test_context *ctx)
 
     if (close(pipefd[1]) < 0)
         die("close(2)");
+    pipefd[1] = -1;     /* avoid double-close on the trailing cleanup pair */
 
     kev.flags |= EV_EOF;
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
@@ -621,7 +629,8 @@ test_kevent_pipe_eof(struct test_context *ctx)
     kevent_add(ctx->kqfd, &kev, pipefd[0], EVFILT_READ, EV_DELETE, 0, 0, NULL);
 
     close(pipefd[0]);
-    close(pipefd[1]);
+    if (pipefd[1] != -1)
+        close(pipefd[1]);
 }
 
 void
@@ -643,8 +652,10 @@ test_kevent_pipe_eof_multi(struct test_context *ctx)
 
     if (close(pipefd_a[1]) < 0)
         die("close(2)");
+    pipefd_a[1] = -1;
     if (close(pipefd_b[1]) < 0)
         die("close(2)");
+    pipefd_b[1] = -1;
 
     kev.flags |= EV_EOF;
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 2);
@@ -668,9 +679,9 @@ test_kevent_pipe_eof_multi(struct test_context *ctx)
     kevent_add(ctx->kqfd, &kev, pipefd_b[0], EVFILT_READ, EV_DELETE, 0, 0, NULL);
 
     close(pipefd_a[0]);
-    close(pipefd_a[1]);
+    if (pipefd_a[1] != -1) close(pipefd_a[1]);
     close(pipefd_b[0]);
-    close(pipefd_b[1]);
+    if (pipefd_b[1] != -1) close(pipefd_b[1]);
 }
 
 /* Test if EVFILT_READ works with regular files */
@@ -681,7 +692,11 @@ test_kevent_regular_file(struct test_context *ctx)
     off_t curpos;
     int fd;
 
+#ifdef _WIN32
+    fd = open("C:\\Windows\\System32\\drivers\\etc\\hosts", O_RDONLY);
+#else
     fd = open("/etc/hosts", O_RDONLY);
+#endif
     if (fd < 0)
         abort();
 
@@ -910,7 +925,78 @@ test_kevent_regular_file_renamed_continues(struct test_context *ctx)
     unlink(path2);
 }
 
+#if defined(_WIN32) && _WIN32_WINNT >= 0x0A00
+/*
+ * Win10 1803+ supports AF_UNIX SOCK_STREAM natively.  Smoke
+ * test: bind a path-based listener, accept a client, register
+ * EVFILT_READ on the accepted server side, send 1 byte, expect a
+ * read wakeup with data > 0.  Backed by the same WSAEventSelect
+ * path as AF_INET sockets - no backend change required.
+ *
+ * Issue #146.  Gated on _WIN32_WINNT >= 0x0A00 so older SDKs
+ * still compile.
+ */
+#include <afunix.h>     /* SOCKADDR_UN */
+
+static void
+test_kevent_socket_af_unix(struct test_context *ctx)
+{
+    SOCKET srv = INVALID_SOCKET, clt = INVALID_SOCKET, acc = INVALID_SOCKET;
+    char tmp[MAX_PATH];
+    SOCKADDR_UN addr = { 0 };
+    struct kevent kev, ret[1];
+    char buf;
+
+    if (GetTempPathA(sizeof(tmp), tmp) == 0)
+        err(1, "GetTempPathA");
+
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path),
+             "%skq-af-unix-%d.sock", tmp, testing_make_uid());
+    DeleteFileA(addr.sun_path); /* idempotent: prior leftover */
+
+    srv = socket(AF_UNIX, SOCK_STREAM, 0);
+    clt = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (srv == INVALID_SOCKET || clt == INVALID_SOCKET)
+        err(1, "socket(AF_UNIX)");
+
+    if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) != 0)
+        err(1, "bind(AF_UNIX, %s)", addr.sun_path);
+    if (listen(srv, 1) != 0)
+        err(1, "listen(AF_UNIX)");
+    if (connect(clt, (struct sockaddr *)&addr, sizeof(addr)) != 0)
+        err(1, "connect(AF_UNIX)");
+
+    acc = accept(srv, NULL, NULL);
+    if (acc == INVALID_SOCKET)
+        err(1, "accept(AF_UNIX)");
+
+    kevent_add(ctx->kqfd, &kev, acc, EVFILT_READ,
+               EV_ADD | EV_ONESHOT, 0, 0, NULL);
+
+    if (send(clt, "x", 1, 0) != 1)
+        err(1, "send(AF_UNIX)");
+
+    kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
+    if (ret[0].ident != (uintptr_t)acc ||
+        ret[0].filter != EVFILT_READ ||
+        ret[0].data < 1)
+        die("af_unix: unexpected event %s", kevent_to_str(&ret[0]));
+
+    /* Drain so a stray FD_READ re-record doesn't surface in the
+     * next test. */
+    if (recv(acc, &buf, 1, 0) != 1)
+        die("recv(AF_UNIX) after fire");
+
+    closesocket(acc);
+    closesocket(clt);
+    closesocket(srv);
+    DeleteFileA(addr.sun_path);
+}
+#endif /* _WIN32 && Win10 */
+
 /* Test transitioning a socket from EVFILT_WRITE to EVFILT_READ */
+#ifndef _WIN32
 void
 test_transition_from_write_to_read(struct test_context *ctx)
 {
@@ -935,6 +1021,7 @@ test_transition_from_write_to_read(struct test_context *ctx)
     close(sd[1]);
     close(kqfd);
 }
+#endif /* !_WIN32 */
 
 /*
  * Flag-behaviour tests for EVFILT_READ on sockets.
@@ -1247,14 +1334,14 @@ test_evfilt_read(struct test_context *ctx)
     test(kevent_socket_eof_clear, ctx);
     test(kevent_socket_eof, ctx);
     test(kevent_socket_so_error, ctx);
-#ifndef __sun
+#if !defined(__sun) && !defined(_WIN32)
     /*
      * SO_RCVLOWAT setsockopt works on Linux glibc; not on Solaris
      * (illumos returns ENOPROTOOPT for both lowat options).
      */
     test(kevent_socket_lowat_read, ctx);
 #endif
-#if !defined(__sun) && !defined(__linux__) && !defined(__APPLE__)
+#if !defined(__sun) && !defined(__linux__) && !defined(__APPLE__) && !defined(_WIN32)
     /*
      * SO_SNDLOWAT setsockopt is unsupported on Linux (socket(7): present
      * for BSD compat only).
@@ -1302,13 +1389,18 @@ test_evfilt_read(struct test_context *ctx)
     test(kevent_regular_file_reactivate, ctx);
     test(kevent_regular_file_unlinked_continues, ctx);
     test(kevent_regular_file_renamed_continues, ctx);
-    close(ctx->client_fd);
-    close(ctx->server_fd);
-    close(ctx->listen_fd);
+#if defined(_WIN32) && _WIN32_WINNT >= 0x0A00
+    test(kevent_socket_af_unix, ctx);
+#endif
+    closesock(ctx->client_fd);
+    closesock(ctx->server_fd);
+    closesock(ctx->listen_fd);
 
     create_socket_connection(&ctx->client_fd, &ctx->server_fd, &ctx->listen_fd);
+#ifndef _WIN32
     test(transition_from_write_to_read, ctx);
-    close(ctx->client_fd);
-    close(ctx->server_fd);
-    close(ctx->listen_fd);
+#endif
+    closesock(ctx->client_fd);
+    closesock(ctx->server_fd);
+    closesock(ctx->listen_fd);
 }

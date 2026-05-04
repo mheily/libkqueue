@@ -14,7 +14,9 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 #include "common.h"
-#include <semaphore.h>
+#ifndef _WIN32
+#  include <semaphore.h>
+#endif
 #include <time.h>
 
 #ifdef EVFILT_LIBKQUEUE
@@ -54,6 +56,7 @@ test_libkqueue_version_str(struct test_context *ctx)
     }
 }
 
+#ifndef _WIN32
 struct fork_no_hang_args {
     struct test_context *ctx;
     sem_t               *ready;
@@ -147,6 +150,7 @@ test_libkqueue_fork_no_hang(struct test_context *ctx)
 
     if (sem_close(ready) != 0) die("sem_close");
 }
+#endif /* !_WIN32 */
 
 #if defined(LIBKQUEUE_BACKEND_POSIX)
 /*

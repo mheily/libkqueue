@@ -720,6 +720,116 @@ test_kevent_user_multi_trigger_fflags_or(struct test_context *ctx)
     (void) kevent(ctx->kqfd, &tmp, 1, NULL, 0, NULL);
 }
 
+#if defined(_WIN32) && defined(EVFILT_USER)
+/*
+ * Stress driver for issue #155.  Reporter (Tim @timwoj) hit a
+ * non-deterministic UAF in windows_kevent_copyout under Zeek
+ * after ~1300 polls, with no minimal reproducer.  This drive is
+ * the smallest churn we can build that exercises the same shape:
+ * N worker threads racing EV_ADD / NOTE_TRIGGER / EV_DELETE on
+ * EVFILT_USER knotes against one consumer thread parked in
+ * kevent().  The expected pattern is that every queued completion
+ * survives a possible-concurrent-EV_DELETE without the dispatcher
+ * dereferencing freed memory.
+ *
+ * Pass criterion: no crash / FailFast across STRESS_ITERS rounds.
+ * Doesn't validate event-counts (the timing is intentionally
+ * unbounded) - just that the backend doesn't fault under load.
+ */
+#define STRESS_THREADS 4
+#define STRESS_IDENTS  16
+#define STRESS_ITERS   200
+
+struct stress_ctx {
+    int kqfd;
+    atomic_int stop;
+    atomic_int churn_count;
+};
+
+static void *
+stress_churn_thread(void *arg)
+{
+    struct stress_ctx *sc = arg;
+    int round = 0;
+
+    while (!atomic_load(&sc->stop)) {
+        struct kevent kev;
+        uintptr_t ident = (round % STRESS_IDENTS) + 1;
+
+        EV_SET(&kev, ident, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, NULL);
+        (void) kevent(sc->kqfd, &kev, 1, NULL, 0, NULL);
+
+        EV_SET(&kev, ident, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+        (void) kevent(sc->kqfd, &kev, 1, NULL, 0, NULL);
+
+        EV_SET(&kev, ident, EVFILT_USER, EV_DELETE, 0, 0, NULL);
+        (void) kevent(sc->kqfd, &kev, 1, NULL, 0, NULL);
+
+        atomic_fetch_add(&sc->churn_count, 1);
+        round++;
+    }
+    return NULL;
+}
+
+static void *
+stress_drain_thread(void *arg)
+{
+    struct stress_ctx *sc = arg;
+    struct kevent ret[8];
+    struct timespec ts = { 0, 1000000 };  /* 1ms */
+
+    while (!atomic_load(&sc->stop)) {
+        (void) kevent(sc->kqfd, NULL, 0, ret, NUM_ELEMENTS(ret), &ts);
+    }
+    return NULL;
+}
+
+static void
+test_kevent_user_stress(struct test_context *ctx)
+{
+    struct stress_ctx sc = { 0 };
+    pthread_t churn[STRESS_THREADS];
+    pthread_t drain;
+    int i;
+
+    sc.kqfd = ctx->kqfd;
+    atomic_init(&sc.stop, 0);
+    atomic_init(&sc.churn_count, 0);
+
+    if (pthread_create(&drain, NULL, stress_drain_thread, &sc) != 0)
+        die("pthread_create(drain)");
+    for (i = 0; i < STRESS_THREADS; i++) {
+        if (pthread_create(&churn[i], NULL, stress_churn_thread, &sc) != 0)
+            die("pthread_create(churn)");
+    }
+
+    /* Let workers run until enough churn has happened.  STRESS_ITERS
+     * is per-thread; total = STRESS_ITERS * STRESS_THREADS.  Cap at
+     * a wall-clock budget (5s) so a slow VM doesn't hang CI. */
+    {
+        DWORD start = GetTickCount();
+        int target = STRESS_ITERS * STRESS_THREADS;
+        while (atomic_load(&sc.churn_count) < target &&
+               (GetTickCount() - start) < 5000) {
+            Sleep(10);
+        }
+    }
+
+    atomic_store(&sc.stop, 1);
+    for (i = 0; i < STRESS_THREADS; i++)
+        pthread_join(churn[i], NULL);
+    pthread_join(drain, NULL);
+
+    /* Drain any final events so the next test starts clean. */
+    {
+        struct kevent ret[16];
+        struct timespec ts = { 0 };
+        while (kevent(ctx->kqfd, NULL, 0, ret, NUM_ELEMENTS(ret), &ts) > 0)
+            ;
+    }
+}
+#endif /* _WIN32 && EVFILT_USER */
+
 void
 test_evfilt_user(struct test_context *ctx)
 {
@@ -749,5 +859,8 @@ test_evfilt_user(struct test_context *ctx)
     test(kevent_user_dispatch_enable_and_trigger_atomic, ctx);
 #endif
     test(kevent_user_trigger_from_thread, ctx);
+#if defined(_WIN32) && defined(EVFILT_USER)
+    test(kevent_user_stress, ctx);
+#endif
     /* TODO: try different fflags operations */
 }
