@@ -116,7 +116,15 @@ filter_register_all(struct kqueue *kq)
 #include "filter_list.h"
 #undef FILTER_ENTRY
     if (rv != 0) {
+        /*
+         * Per-kq lock is required by knote_delete_all's lockset
+         * assertion.  filter_register_all runs from kqueue() before
+         * the kq is reachable from any other thread, so the lock is
+         * uncontended; we just satisfy the invariant.
+         */
+        kqueue_lock(kq);
         filter_unregister_all(kq);
+        kqueue_unlock(kq);
         return (-1);
     } else {
         dbg_puts("complete");

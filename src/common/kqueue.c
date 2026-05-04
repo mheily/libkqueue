@@ -456,7 +456,14 @@ kqueue(void)
 
     if (map_insert(kqmap, kq->kq_id, kq) < 0) {
         dbg_printf("kq=%p - map insertion failed, freeing", kq);
+        /*
+         * Per-kq lock is required by knote_delete_all's assertion;
+         * the kq is unreachable from any other thread but the assert
+         * is purely lockset-based, so satisfy it.
+         */
+        kqueue_lock(kq);
         filter_unregister_all(kq);
+        kqueue_unlock(kq);
         tracing_mutex_unlock(&kq_mtx);
         goto error;
     }
