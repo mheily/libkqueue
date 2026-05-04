@@ -148,7 +148,7 @@ jobs:
 
       #
       # Interactive debug session, FreeRADIUS-style: push to a branch
-      # named `ci-debug` (or any `*-debug` branch) and any failing
+      # named exactly `ci-debug` and any failing
       # job pauses with an SSH rendezvous point.  Limited to the
       # actor's GitHub SSH keys.  Detached mode + URL artifact so
       # the connection point is fetchable via gh api - the live log
@@ -160,10 +160,10 @@ jobs:
         with:
           limit-access-to-actor: true
           detached: true
-        if: ${{ failure() && (github.ref == 'refs/heads/ci-debug' || endsWith(github.ref, '-debug')) }}
+        if: ${{ failure() && github.ref == 'refs/heads/ci-debug' }}
 
       - name: "Debug: capture tmate URL"
-        if: ${{ failure() && (github.ref == 'refs/heads/ci-debug' || endsWith(github.ref, '-debug')) }}
+        if: ${{ failure() && github.ref == 'refs/heads/ci-debug' }}
         shell: bash
         env:
           TMATE_SSH: ${{ steps.tmate.outputs.ssh-command }}
@@ -178,7 +178,7 @@ jobs:
           cat tmate_url.txt
 
       - name: "Debug: upload tmate URL"
-        if: ${{ failure() && (github.ref == 'refs/heads/ci-debug' || endsWith(github.ref, '-debug')) }}
+        if: ${{ failure() && github.ref == 'refs/heads/ci-debug' }}
         uses: actions/upload-artifact@v4
         with:
           name: tmate-url-${{ matrix.build_type }}-${{ matrix.sanitize || 'plain' }}
@@ -186,7 +186,7 @@ jobs:
           retention-days: 1
 
       - name: "Debug: hold runner for SSH session"
-        if: ${{ failure() && (github.ref == 'refs/heads/ci-debug' || endsWith(github.ref, '-debug')) }}
+        if: ${{ failure() && github.ref == 'refs/heads/ci-debug' }}
         shell: bash
         run: |
           # Keep the runner alive for the SSH session.  Bounded by the
