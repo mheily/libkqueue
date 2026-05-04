@@ -588,9 +588,9 @@ windows_kevent_copyout(struct kqueue *kq, int nready,
          * land here:
          *
          *   - KQ_PIPE_READ_KEY: kernel-posted overlapped read on a
-         *     pipe HANDLE.  overlap = &knote->kn_read.pipe_ov; the
-         *     knote sits at a known offset from it and the filter
-         *     id is read from the recovered knote.
+         *     pipe HANDLE.  overlap = &knote->kn_read.pipe_ov;
+         *     CONTAINING_RECORD walks back to the owning knote and
+         *     the filter id is read from there.
          *
          *   - KQ_FILTER_KEY(fid): synthetic post (filter callback
          *     re-arming a knote, or eventfd doorbell waking a
@@ -600,8 +600,8 @@ windows_kevent_copyout(struct kqueue *kq, int nready,
          *     specific knote.
          */
         if (iocp_buf.key == KQ_PIPE_READ_KEY) {
-            kn  = (struct knote *)((char *) iocp_buf.overlap -
-                                   offsetof(struct knote, kn_read.pipe_ov));
+            kn  = CONTAINING_RECORD(iocp_buf.overlap, struct knote,
+                                    kn_read.pipe_ov);
             fid = kn->kev.filter;
         } else {
             fid = (short)(LONG_PTR) iocp_buf.key;

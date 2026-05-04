@@ -124,8 +124,8 @@
 /*
  * Reserved IOCP completion key for pipe-HANDLE EVFILT_READ
  * (overlapped 0-byte ReadFile).  The completion arrives with
- * overlap = &knote->kn_read.pipe_ov; we recover the owning knote via
- * offsetof in windows_kevent_copyout.
+ * overlap = &knote->kn_read.pipe_ov; windows_kevent_copyout
+ * recovers the owning knote via CONTAINING_RECORD.
  */
 #define KQ_PIPE_READ_KEY ((ULONG_PTR)2)
 

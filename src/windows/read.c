@@ -430,7 +430,7 @@ evfilt_read_knote_create_file(struct knote *kn)
  * bytes-read=0 (we asked for 0); when the writer closes its end, the
  * read completes with ERROR_BROKEN_PIPE.  Either way the IOCP
  * delivers the completion, the dispatcher recovers the knote via
- * offsetof on kn_read.pipe_ov, and copyout drains.
+ * CONTAINING_RECORD on kn_read.pipe_ov, and copyout drains.
  */
 static __inline int
 evfilt_read_knote_create_pipe(struct knote *kn)
