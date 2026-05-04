@@ -196,6 +196,7 @@ extern char const *libkqueue_debug_ident;
 extern dbg_func_t libkqueue_debug_func;
 
 void libkqueue_debug_func_set(dbg_func_t func);
+void libkqueue_debug_func_init(void);
 void libkqueue_debug_ident_set(char const *str);
 void libkqueue_debug_ident_clear(void);
 

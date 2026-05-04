@@ -34,13 +34,15 @@ bool libkqueue_fork_cleanup_active;
 static bool libkqueue_in_child = false;
 
 #ifdef _WIN32
+/*
+ * CRITICAL_SECTION can't be statically initialised; runtime init
+ * happens in windows_libkqueue_init.
+ */
 tracing_mutex_t kq_mtx;
-static LONG kq_init_begin = 0;
-static int kq_init_complete = 0;
 #else
 tracing_mutex_t kq_mtx = TRACING_MUTEX_INITIALIZER;
-pthread_once_t kq_is_initialized = PTHREAD_ONCE_INIT;
 #endif
+pthread_once_t kq_is_initialized = PTHREAD_ONCE_INIT;
 
 /** List of all active kqueues
  *
@@ -227,40 +229,26 @@ libkqueue_child_fork(void)
 void
 libkqueue_init(void)
 {
+   /*
+    * Per-backend setup runs first so any platform-specific state
+    * (e.g. Win32 Winsock, the global kq_mtx CRITICAL_SECTION, MSVC
+    * Debug CRT heap surveillance) is in place before common init
+    * touches it.
+    */
+   if (kqops.libkqueue_init)
+       kqops.libkqueue_init();
+
 #ifndef NDEBUG
     char *s = getenv("KQUEUE_DEBUG");
     if ((s != NULL) && (strlen(s) > 0) && (*s != '0')) {
         libkqueue_debug = 1;
-
-#ifdef _WIN32
-    tracing_mutex_init(&kq_mtx, NULL);
-    /* Initialize the Winsock library */
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0)
-        abort();
-#endif
-
-# if defined(_WIN32) && !defined(__GNUC__)
-    /* Enable heap surveillance */
-    {
-        int tmpFlag = _CrtSetDbgFlag( _CRTDBG_REPORT_FLAG );
-        tmpFlag |= _CRTDBG_CHECK_ALWAYS_DF;
-        _CrtSetDbgFlag(tmpFlag);
-    }
-# endif /* _WIN32 */
+        libkqueue_debug_func_init();
     }
 #endif
 
    kqmap = map_new(get_fd_limit()); // INT_MAX
    if (kqmap == NULL)
        abort();
-
-#ifdef _WIN32
-   kq_init_complete = 1;
-#endif
-
-   if (kqops.libkqueue_init)
-       kqops.libkqueue_init();
 
    filter_init_all();
 
@@ -414,38 +402,25 @@ kqueue(void)
 {
     struct kqueue *kq;
 
-#ifdef _WIN32
-    if (InterlockedCompareExchange(&kq_init_begin, 0, 1) == 0) {
-        libkqueue_init();
-    } else {
-        while (kq_init_complete == 0) {
-            sleep(1);
-        }
-    }
-
-    tracing_mutex_init(&kq_mtx, NULL);
-#else
-    int prev_cancel_state;
     /*
-     * pthread_once is its own one-shot barrier: a second thread
-     * entering while another is still running init_routine blocks
-     * until init returns, and POSIX requires "On return from
-     * pthread_once(), init_routine shall have completed", with
-     * memory-ordering guarantees so all writes done in
-     * libkqueue_init are visible to every caller after
-     * pthread_once returns.
+     * pthread_once is the one-shot init barrier.  Concurrent
+     * callers entering while another thread is still running
+     * init_routine block until init returns; POSIX requires "On
+     * return from pthread_once(), init_routine shall have
+     * completed" with memory-ordering visibility, and the Win32
+     * shim (pthread_once -> InitOnceExecuteOnce in
+     * src/windows/platform.h) gives the same semantics natively.
      *
-     * That makes a wrapping kq_mtx redundant.  It was also actively
-     * harmful: libkqueue_init calls pthread_atfork which acquires
-     * libc's atfork-list lock, and fork() acquires the same libc
-     * lock then runs our libkqueue_pre_fork which takes kq_mtx -
-     * the inverse order.  Helgrind flagged it on every proc test
-     * fork.
+     * No wrapping kq_mtx: libkqueue_init calls pthread_atfork
+     * which acquires libc's atfork-list lock, and fork() acquires
+     * that same libc lock then runs our libkqueue_pre_fork which
+     * takes kq_mtx - the inverse order.  Helgrind flagged it on
+     * every proc test fork.
      */
     (void) pthread_once(&kq_is_initialized, libkqueue_init);
-#endif
 
 #ifndef _WIN32
+    int prev_cancel_state;
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &prev_cancel_state);
 #endif
     kq = calloc(1, sizeof(*kq));

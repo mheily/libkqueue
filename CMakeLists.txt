@@ -350,12 +350,18 @@ set(LIBKQUEUE_SOURCES
 
 if(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "windows")
   list(APPEND LIBKQUEUE_SOURCES
+       src/windows/debug.c
+       src/windows/eventfd.c
        src/windows/platform.c
        src/windows/platform.h
+       src/windows/proc.c
        src/windows/read.c
+       src/windows/signal.c
        src/windows/stdint.h
        src/windows/timer.c
        src/windows/user.c
+       src/windows/vnode.c
+       src/windows/write.c
        )
 elseif(LIBKQUEUE_BACKEND_RESOLVED STREQUAL "solaris")
   list(APPEND LIBKQUEUE_SOURCES
@@ -544,6 +550,11 @@ install(FILES
           "${CMAKE_CURRENT_BINARY_DIR}/include/sys/event.h"
         DESTINATION
           "${CMAKE_INSTALL_FULL_INCLUDEDIR}/kqueue/sys"
+        COMPONENT headers)
+install(FILES
+          "${CMAKE_CURRENT_SOURCE_DIR}/include/kqueue/signal.h"
+        DESTINATION
+          "${CMAKE_INSTALL_FULL_INCLUDEDIR}/kqueue/kqueue"
         COMPONENT headers)
 if(TARGET kqueue)
   install(TARGETS kqueue

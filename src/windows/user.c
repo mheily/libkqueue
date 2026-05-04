@@ -31,20 +31,47 @@ int
 evfilt_user_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
     struct knote *src, void* ptr)
 {
+    /*
+     * Stale completion: NOTE_TRIGGER post raced an EV_DELETE.
+     * The post path retains, so by the time we get here the
+     * knote is alive but flagged.  Discard, balance the ref.
+     */
+    if (src->kn_flags & KNFL_KNOTE_DELETED) {
+        knote_release(src);
+        dst->filter = 0;
+        return (0);
+    }
+
+    /*
+     * EV_DISABLE drops pending fires on BSD/Linux; a NOTE_TRIGGER
+     * that was posted before the disable arrived is still queued
+     * in the IOCP - drop it cleanly here.
+     */
+    if (src->kev.flags & EV_DISABLE) {
+        knote_release(src);
+        dst->filter = 0;
+        return (0);
+    }
+
     memcpy(dst, &src->kev, sizeof(struct kevent));
 
     dst->fflags &= ~NOTE_FFCTRLMASK;     //FIXME: Not sure if needed
     dst->fflags &= ~NOTE_TRIGGER;
-    if (src->kev.flags & EV_ADD) {
-        /* NOTE: True on FreeBSD but not consistent behavior with
-           other filters. */
-        dst->flags &= ~EV_ADD;
-    }
+    /*
+     * Linux/Solaris keep EV_ADD set in the returned event; FreeBSD
+     * strips it.  Match the Linux/Solaris flavour so the shared
+     * test suite passes here too.
+     */
     if ((src->kev.flags & EV_CLEAR) || (src->kev.flags & EV_DISPATCH))
         src->kev.fflags &= ~NOTE_TRIGGER;
 
-    if (knote_copyout_flag_actions(filt, src) < 0) return -1;
+    if (knote_copyout_flag_actions(filt, src) < 0) {
+        knote_release(src);
+        return -1;
+    }
 
+    /* Balance the post's ref. */
+    knote_release(src);
     return (1);
 }
 
@@ -85,11 +112,27 @@ evfilt_user_knote_modify(struct filter *filt, struct knote *kn,
             break;
     }
 
-    if ((!(kn->kev.flags & EV_DISABLE)) && kev->fflags & NOTE_TRIGGER) {
+    /*
+     * Coalesce repeated NOTE_TRIGGERs that haven't been delivered
+     * yet: post a single IOCP completion per "armed" -> "fired"
+     * transition.  Otherwise the test's 10x NOTE_TRIGGER ends up
+     * with 9 stale completions still queued in the IOCP after the
+     * first drain, breaking the test_no_kevents() postcondition.
+     */
+    if ((!(kn->kev.flags & EV_DISABLE)) && (kev->fflags & NOTE_TRIGGER)) {
+        int was_pending = kn->kev.fflags & NOTE_TRIGGER;
         kn->kev.fflags |= NOTE_TRIGGER;
-        if (!PostQueuedCompletionStatus(kn->kn_kq->kq_iocp, 1, (ULONG_PTR) 0, (LPOVERLAPPED) kn)) {
-            dbg_lasterror("PostQueuedCompletionStatus()");
-            return (-1);
+        if (!was_pending) {
+            /* Retain across the IOCP queue so a concurrent
+             * EV_DELETE can't free the knote out from under the
+             * dispatcher.  Released in evfilt_user_copyout. */
+            knote_retain(kn);
+            if (!PostQueuedCompletionStatus(kn->kn_kq->kq_iocp, 1,
+                    (ULONG_PTR) 0, (LPOVERLAPPED) kn)) {
+                dbg_lasterror("PostQueuedCompletionStatus()");
+                knote_release(kn);
+                return (-1);
+            }
         }
     }
 

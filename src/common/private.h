@@ -91,8 +91,10 @@ struct kqueue_kevent_state;
  * a state object and call the hooks unconditionally.  The compiler
  * inlines both away.
  */
-#if !defined(LIBKQUEUE_BACKEND_LINUX) && !defined(LIBKQUEUE_BACKEND_SOLARIS) && \
-    !defined(LIBKQUEUE_BACKEND_POSIX)
+#if !defined(LIBKQUEUE_BACKEND_LINUX) && \
+    !defined(LIBKQUEUE_BACKEND_SOLARIS) && \
+    !defined(LIBKQUEUE_BACKEND_POSIX)  && \
+    !defined(LIBKQUEUE_BACKEND_WINDOWS)
 struct kqueue_kevent_state {
     char _unused;
 };
@@ -615,6 +617,16 @@ struct kqueue_vtable {
      *
      */
     void   (*libkqueue_free)(void);
+
+#ifndef NDEBUG
+    /** Optional: pick the per-platform default debug emit function.
+     *
+     * Consulted by libkqueue_debug_func_set(NULL) and the one-shot
+     * libkqueue_debug_func_init().  Backends that don't care leave
+     * this NULL and the common layer keeps dbg_stderr.
+     */
+    dbg_func_t (*libkqueue_dbg_default)(void);
+#endif
 
     /** Called once for every kqueue created
      *

@@ -81,7 +81,8 @@ map_insert(struct map *m, int idx, void *ptr)
            return (-1);
 
     if (atomic_ptr_cas(&(m->data[idx]), NULL, ptr)) {
-        dbg_printf("idx=%i - inserted ptr=%p into map", idx, ptr);
+        dbg_printf("idx=%i - inserted ptr=%p into map; verify slot=%p value=%p",
+                   idx, ptr, (void *)&m->data[idx], (void *)m->data[idx]);
         return (0);
     } else {
         dbg_printf("idx=%i - tried to insert ptr=%p into a non-empty location (cur_ptr=%p)",

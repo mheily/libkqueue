@@ -33,7 +33,14 @@ static char *libkqueue_debug_ident_copy;
 
 static void dbg_stderr(char const *fmt, ...);
 
-/** Custom logging function
+/** Custom logging function.
+ *
+ * Defaults to dbg_stderr.  Backends that prefer a different default
+ * (e.g. Win32's OutputDebugStringA route, which sidesteps the
+ * conhost synchronous-write bottleneck that made KQUEUE_DEBUG=1
+ * take 30 minutes vs 10 seconds; issue #156) implement
+ * kqops.libkqueue_dbg_default; libkqueue_debug_func_init consults
+ * it on first kqueue().
  */
 dbg_func_t libkqueue_debug_func = dbg_stderr;
 
@@ -48,15 +55,35 @@ dbg_stderr(char const *fmt, ...)
 }
 
 /** Set a new logging debug function
+ *
+ * NULL resets to the per-platform default (kqops.libkqueue_dbg_default
+ * if the backend provides one, else dbg_stderr).
  */
 void
 libkqueue_debug_func_set(dbg_func_t func)
 {
     if (!func) {
-        libkqueue_debug_func = dbg_stderr;
+        if (kqops.libkqueue_dbg_default)
+            libkqueue_debug_func = kqops.libkqueue_dbg_default();
+        else
+            libkqueue_debug_func = dbg_stderr;
     } else {
         libkqueue_debug_func = func;
     }
+}
+
+/** One-shot init from libkqueue_init: resolve the platform default.
+ *
+ * Only intended to be called once, while we hold kq_mtx during the
+ * first kqueue() call - so no atomic protection here.  No-op if the
+ * consumer already swapped in a custom func via
+ * libkqueue_debug_func_set().
+ */
+void
+libkqueue_debug_func_init(void)
+{
+    if (libkqueue_debug_func == dbg_stderr && kqops.libkqueue_dbg_default)
+        libkqueue_debug_func = kqops.libkqueue_dbg_default();
 }
 
 /** Set a new debug identity
