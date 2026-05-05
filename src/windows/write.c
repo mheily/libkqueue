@@ -267,12 +267,8 @@ evfilt_write_knote_create(struct filter *filt, struct knote *kn)
     }
 
     /*
-     * Level-triggered fire-on-enable: every EV_ADD / EV_ENABLE
-     * delivers one event if the socket is currently writable,
-     * regardless of whether a transition just happened.  The
-     * select() probe gives the level signal; the prior Reset +
-     * WSAEnumNetworkEvents suppresses the auto-reset event so we
-     * don't double-fire alongside this synth.
+     * WSAEventSelect only returns edges, it doesn't fire continuously,
+     * so we need to determine the current write status of the event.
      */
     {
         fd_set         wfds;
