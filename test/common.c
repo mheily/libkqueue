@@ -44,6 +44,23 @@ test_tmpdir(void)
     }
 #ifdef __ANDROID__
     return "/data/local/tmp";
+#elif defined(_WIN32)
+    /*
+     * Win32 has no /tmp.  Resolve via GetTempPathA's standard
+     * TMP -> TEMP -> USERPROFILE -> WinDir lookup, strip the
+     * trailing backslash so the "%s/foo" snprintf style stays
+     * uniform with POSIX, and cache in test_tmpdir_buf.
+     */
+    {
+        DWORD n = GetTempPathA((DWORD) sizeof(test_tmpdir_buf),
+                               test_tmpdir_buf);
+        if (n == 0 || n > sizeof(test_tmpdir_buf))
+            return "C:\\Windows\\Temp";
+        if (n > 0 && (test_tmpdir_buf[n - 1] == '\\' ||
+                      test_tmpdir_buf[n - 1] == '/'))
+            test_tmpdir_buf[n - 1] = '\0';
+        return test_tmpdir_buf;
+    }
 #else
     return "/tmp";
 #endif
