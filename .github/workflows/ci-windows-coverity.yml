@@ -5,11 +5,9 @@ on:
     branches:
       - master
     paths:
-      - 'include/sys/*'
-      - 'src/common/*'
       - 'src/windows/*'
-      - 'test/*'
       - '.github/workflows/ci-windows-coverity.yml'
+  workflow_dispatch:
 
 jobs:
   windows-coverity:

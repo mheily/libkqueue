@@ -405,7 +405,7 @@ test_kqueue_nevents_validation(void *unused)
     struct kevent *evlist;
 
     (void) unused;
-    if (page_l <= 0) die("sysconf(_SC_PAGESIZE)");
+    if (page_l <= 0 || page_l > 65536) die("sysconf(_SC_PAGESIZE)");
     page = (size_t) page_l;
 
     if ((kq = kqueue()) < 0) die("kqueue");

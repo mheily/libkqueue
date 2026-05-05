@@ -112,7 +112,13 @@ vnode_state_alloc(int fd)
  * fall back to seconds otherwise.  Linux glibc, FreeBSD, illumos
  * and macOS all expose st_mtim / st_ctim.
  */
-#if defined(__APPLE__) && !defined(_DARWIN_FEATURE_64_BIT_INODE)
+#if defined(__APPLE__)
+/*
+ * Apple keeps the BSD-flavour st_*timespec names regardless of
+ * 64-bit-inode setting; they never added the POSIX-2008 st_mtim
+ * spelling.  All other supported targets (Linux glibc, FreeBSD,
+ * illumos) ship the POSIX names.
+ */
 #  define ST_MTIM(s)  ((s)->st_mtimespec)
 #  define ST_CTIM(s)  ((s)->st_ctimespec)
 #else

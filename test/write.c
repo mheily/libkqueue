@@ -72,8 +72,10 @@ write_fill_sndbuf(int fd)
     if (fl < 0) die("fcntl(F_GETFL)");
     if (fcntl(fd, F_SETFL, fl | O_NONBLOCK) < 0)
         die("fcntl(F_SETFL O_NONBLOCK)");
-    while ((n = send(fd, buf, sizeof(buf), 0)) > 0)
+    while ((n = send(fd, buf, sizeof(buf), 0)) > 0) {
+        assert(n > 0);
         total += (size_t) n;
+    }
     return total;
 }
 

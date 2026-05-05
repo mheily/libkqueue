@@ -14,6 +14,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <stdbool.h>
 #include "common.h"
 
 /* Create an empty file */
@@ -504,7 +505,7 @@ test_kevent_vnode_rename_overwrite_ordering(struct test_context *ctx)
     char          tgt_path[1024];
     int           src_fd, tgt_fd;
     int           rv;
-    int           saw_delete = -1, saw_rename = -1;
+    bool          found_delete = false, found_rename = false;
 
     snprintf(src_path, sizeof(src_path), "%s.ros_src", ctx->testfile);
     snprintf(tgt_path, sizeof(tgt_path), "%s.ros_tgt", ctx->testfile);
@@ -545,13 +546,13 @@ test_kevent_vnode_rename_overwrite_ordering(struct test_context *ctx)
 
     for (int i = 0; i < 2; i++) {
         if (ret[i].ident == (uintptr_t) tgt_fd && (ret[i].fflags & NOTE_DELETE))
-            saw_delete = i;
+            found_delete = true;
         else if (ret[i].ident == (uintptr_t) src_fd && (ret[i].fflags & NOTE_RENAME))
-            saw_rename = i;
+            found_rename = true;
     }
-    if (saw_delete < 0)
+    if (!found_delete)
         die("rename-overwrite: missing NOTE_DELETE on tgt_fd");
-    if (saw_rename < 0)
+    if (!found_rename)
         die("rename-overwrite: missing NOTE_RENAME on src_fd");
 
     /*
