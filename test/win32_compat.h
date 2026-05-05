@@ -253,6 +253,25 @@ clock_gettime(clockid_t id, struct timespec *ts)
 }
 
 /*
+ * POSIX close() unifies fd-close and socket-close; Win32 splits the
+ * two (closesocket on SOCKET, _close on CRT fd) and CRT _close on a
+ * SOCKET asserts in Debug builds while silently leaking the socket
+ * in Release.  Test code written portably calls close() on both
+ * shapes - intercept and route to the right call.  Try closesocket
+ * first; WSAENOTSOCK means it's a CRT fd, fall back to _close.
+ */
+static __inline int
+kq_close_shim(int fd)
+{
+    if (closesocket((SOCKET) fd) == 0)
+        return 0;
+    if (WSAGetLastError() != WSAENOTSOCK)
+        return -1;
+    return _close(fd);
+}
+#define close(fd) kq_close_shim(fd)
+
+/*
  * pipe() shim: anonymous _pipe creates handles that don't support
  * overlapped I/O, so they can't be attached to an IOCP - which the
  * libkqueue read filter requires for pipe HANDLEs.  Instead make a
@@ -365,6 +384,153 @@ fcntl(int fd, int cmd, ...)
         return -1;
     }
 }
+
+/*
+ * POSIX open(2) lets a file be renamed/unlinked while still held
+ * open by another fd; Win32 CRT _open opens with share mode that
+ * excludes delete, so MoveFileEx and DeleteFile against an
+ * already-open file fail with EACCES.  Reroute open() through
+ * CreateFileA with FILE_SHARE_DELETE|READ|WRITE and adopt the
+ * resulting HANDLE as a CRT fd via _open_osfhandle.
+ *
+ * Variadic: O_CREAT supplies a third mode argument the way POSIX
+ * open() does.  We only honour read-only vs read-write; the mode
+ * bits don't translate to Win32 ACLs in any meaningful way.
+ */
+static __inline int
+kq_open_shim(const char *path, int flags, ...)
+{
+    DWORD  access = 0;
+    DWORD  disp;
+    HANDLE h;
+    int    fd;
+
+    if ((flags & O_RDWR) || flags == O_RDWR) {
+        access = GENERIC_READ | GENERIC_WRITE;
+    } else if (flags & O_WRONLY) {
+        access = GENERIC_WRITE;
+    } else {
+        access = GENERIC_READ;
+    }
+    if (flags & O_APPEND) access = (access & ~GENERIC_WRITE) | FILE_APPEND_DATA;
+
+    if (flags & O_CREAT) {
+        if (flags & O_EXCL)         disp = CREATE_NEW;
+        else if (flags & O_TRUNC)   disp = CREATE_ALWAYS;
+        else                        disp = OPEN_ALWAYS;
+    } else if (flags & O_TRUNC) {
+        disp = TRUNCATE_EXISTING;
+    } else {
+        disp = OPEN_EXISTING;
+    }
+
+    h = CreateFileA(path, access,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, disp, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        switch (GetLastError()) {
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND:
+            errno = ENOENT;
+            break;
+
+        case ERROR_FILE_EXISTS:
+        case ERROR_ALREADY_EXISTS:
+            errno = EEXIST;
+            break;
+
+        case ERROR_ACCESS_DENIED:
+            errno = EACCES;
+            break;
+
+        default:
+            errno = EACCES;
+            break;
+        }
+        return -1;
+    }
+    fd = _open_osfhandle((intptr_t) h, (flags & O_APPEND) ? _O_APPEND : 0);
+    if (fd < 0) { CloseHandle(h); return -1; }
+    return fd;
+}
+#define open(...) kq_open_shim(__VA_ARGS__)
+
+/*
+ * POSIX rename(2) atomically replaces an existing target.  Win32's
+ * CRT _rename fails with EACCES if target exists, which broke
+ * test_kevent_vnode_rename_overwrite_ordering.  MoveFileExA with
+ * MOVEFILE_REPLACE_EXISTING is the documented Win32 way to get
+ * POSIX-shape rename-over-existing.
+ */
+/*
+ * NT-level rename via SetFileInformationByHandle + FILE_RENAME_INFO
+ * with ReplaceIfExists.  MoveFileEx(REPLACE_EXISTING) sometimes
+ * returns ACCESS_DENIED even with FILE_SHARE_DELETE on every open
+ * handle (the user-mode wrapper does extra checks).  Going through
+ * the kernel API directly on a DELETE-access handle bypasses the
+ * wrapper checks and lines up with how POSIX rename(2) atomically
+ * replaces the target.
+ */
+static __inline int
+kq_rename_via_setinfo(const char *src, const char *dst)
+{
+    HANDLE h;
+    BOOL   ok;
+    size_t dst_len = strlen(dst);
+    size_t wbytes = (dst_len + 1) * sizeof(WCHAR);
+    size_t bufsz = sizeof(FILE_RENAME_INFO) + wbytes;
+    FILE_RENAME_INFO *fri = (FILE_RENAME_INFO *) malloc(bufsz);
+    if (fri == NULL) return -1;
+
+    h = CreateFileA(src, DELETE | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        free(fri);
+        return -1;
+    }
+
+    memset(fri, 0, sizeof(*fri));
+    fri->ReplaceIfExists = TRUE;
+    fri->RootDirectory   = NULL;
+    fri->FileNameLength  = (DWORD) (dst_len * sizeof(WCHAR));
+    MultiByteToWideChar(CP_ACP, 0, dst, (int) dst_len, fri->FileName,
+                        (int) (dst_len + 1));
+    fri->FileName[dst_len] = L'\0';
+
+    ok = SetFileInformationByHandle(h, FileRenameInfo, fri, (DWORD) bufsz);
+    CloseHandle(h);
+    free(fri);
+    return ok ? 0 : -1;
+}
+
+static __inline int
+kq_rename_shim(const char *src, const char *dst)
+{
+    DWORD gle;
+    if (MoveFileExA(src, dst, MOVEFILE_REPLACE_EXISTING))
+        return 0;
+    gle = GetLastError();
+    /*
+     * MoveFileEx wrapper rejects sometimes; try the NT-level
+     * rename which handles the open-with-share-delete case more
+     * cleanly.
+     */
+    if (gle == ERROR_ACCESS_DENIED && kq_rename_via_setinfo(src, dst) == 0)
+        return 0;
+    switch (gle) {
+    case ERROR_FILE_NOT_FOUND:
+    case ERROR_PATH_NOT_FOUND:
+        errno = ENOENT;
+        break;
+
+    default:
+        errno = EACCES;
+        break;
+    }
+    return -1;
+}
+#define rename(s, d) kq_rename_shim((s), (d))
 
 /*
  * mode_t / umask / mkstemp shims for the regular-file tests in
