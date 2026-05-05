@@ -579,6 +579,150 @@ test_harness(struct unit_test tests[MAX_TESTS], int iterations)
     watchdog_stop();
 }
 
+/* Forward declarations for test-case arrays from each filter file. */
+extern const struct lkq_test_case lkq_kqueue_tests[];
+#ifdef EVFILT_READ
+extern const struct lkq_test_case lkq_read_tests[];
+#endif
+#if defined(EVFILT_SIGNAL) && !defined(__ANDROID__)
+extern const struct lkq_test_case lkq_signal_tests[];
+#endif
+#if defined(EVFILT_PROC)
+extern const struct lkq_test_case lkq_proc_tests[];
+#endif
+#ifdef EVFILT_TIMER
+extern const struct lkq_test_case lkq_timer_tests[];
+#endif
+#ifdef EVFILT_VNODE
+extern const struct lkq_test_case lkq_vnode_tests[];
+#endif
+#ifdef EVFILT_WRITE
+extern const struct lkq_test_case lkq_write_tests[];
+#endif
+#ifdef EVFILT_USER
+extern const struct lkq_test_case lkq_user_tests[];
+#endif
+#if defined(EVFILT_LIBKQUEUE) && !defined(_WIN32)
+extern const struct lkq_test_case lkq_libkqueue_tests[];
+#endif
+extern const struct lkq_test_case lkq_threading_tests[];
+
+struct lkq_filter_entry {
+    const char              *name;
+    const struct lkq_test_case *cases;
+};
+
+static const struct lkq_filter_entry lkq_filter_table[] = {
+    { "kqueue",    lkq_kqueue_tests    },
+#ifdef EVFILT_READ
+    { "socket",    lkq_read_tests      },
+#endif
+#if defined(EVFILT_SIGNAL) && !defined(__ANDROID__)
+    { "signal",    lkq_signal_tests    },
+#endif
+#if defined(EVFILT_PROC)
+    { "proc",      lkq_proc_tests      },
+#endif
+#ifdef EVFILT_TIMER
+    { "timer",     lkq_timer_tests     },
+#endif
+#ifdef EVFILT_VNODE
+    { "vnode",     lkq_vnode_tests     },
+#endif
+#ifdef EVFILT_WRITE
+    { "write",     lkq_write_tests     },
+#endif
+#ifdef EVFILT_USER
+    { "user",      lkq_user_tests      },
+#endif
+#if defined(EVFILT_LIBKQUEUE) && !defined(_WIN32)
+    { "libkqueue", lkq_libkqueue_tests },
+#endif
+    { "threading", lkq_threading_tests },
+    { NULL, NULL }
+};
+
+/* Known platform names for --list-gated=<name>. */
+struct lkq_platform_name {
+    const char     *name;
+    lkq_platform_t  bits;
+};
+
+static const struct lkq_platform_name lkq_known_platforms[] = {
+    { "windows",     LKQ_PLATFORM_OS_WINDOWS | LKQ_PLATFORM_BACKEND_WINDOWS  },
+    { "linux",       LKQ_PLATFORM_OS_LINUX   | LKQ_PLATFORM_BACKEND_LINUX    },
+    { "linux-posix", LKQ_PLATFORM_OS_LINUX   | LKQ_PLATFORM_BACKEND_POSIX    },
+    { "freebsd",     LKQ_PLATFORM_OS_FREEBSD | LKQ_PLATFORM_BACKEND_NATIVE   },
+    { "netbsd",      LKQ_PLATFORM_OS_NETBSD  | LKQ_PLATFORM_BACKEND_NATIVE   },
+    { "openbsd",     LKQ_PLATFORM_OS_OPENBSD | LKQ_PLATFORM_BACKEND_NATIVE   },
+    { "macos",       LKQ_PLATFORM_OS_MACOS   | LKQ_PLATFORM_BACKEND_NATIVE   },
+    { "solaris",     LKQ_PLATFORM_OS_SOLARIS | LKQ_PLATFORM_BACKEND_SOLARIS  },
+    { "posix",       LKQ_PLATFORM_BACKEND_POSIX                               },
+    { NULL, 0 }
+};
+
+static void
+init_platform(void)
+{
+    lkq_current_platform = 0;
+
+    /* Backend */
+#if defined(NATIVE_KQUEUE)
+    lkq_current_platform |= LKQ_PLATFORM_BACKEND_NATIVE;
+#elif defined(LIBKQUEUE_BACKEND_POSIX)
+    lkq_current_platform |= LKQ_PLATFORM_BACKEND_POSIX;
+#elif defined(LIBKQUEUE_BACKEND_LINUX)
+    lkq_current_platform |= LKQ_PLATFORM_BACKEND_LINUX;
+#elif defined(_WIN32)
+    lkq_current_platform |= LKQ_PLATFORM_BACKEND_WINDOWS;
+#elif defined(__sun)
+    lkq_current_platform |= LKQ_PLATFORM_BACKEND_SOLARIS;
+#endif
+
+    /* OS */
+#if defined(__linux__) && defined(__ANDROID__)
+    lkq_current_platform |= LKQ_PLATFORM_OS_ANDROID;
+#elif defined(__linux__)
+    lkq_current_platform |= LKQ_PLATFORM_OS_LINUX;
+#elif defined(__FreeBSD__)
+    lkq_current_platform |= LKQ_PLATFORM_OS_FREEBSD;
+#elif defined(__NetBSD__)
+    lkq_current_platform |= LKQ_PLATFORM_OS_NETBSD;
+#elif defined(__OpenBSD__)
+    lkq_current_platform |= LKQ_PLATFORM_OS_OPENBSD;
+#elif defined(__APPLE__)
+    lkq_current_platform |= LKQ_PLATFORM_OS_MACOS;
+#elif defined(__sun)
+    lkq_current_platform |= LKQ_PLATFORM_OS_SOLARIS;
+#elif defined(_WIN32)
+    lkq_current_platform |= LKQ_PLATFORM_OS_WINDOWS;
+#endif
+}
+
+static void
+print_list_gated(lkq_platform_t target)
+{
+    const struct lkq_filter_entry *fe;
+    const struct lkq_test_case *tc;
+    const struct lkq_test_gate *g;
+    int any = 0;
+
+    for (fe = lkq_filter_table; fe->name != NULL; fe++) {
+        for (tc = fe->cases; tc->name != NULL; tc++) {
+            if (!tc->name[0] || !tc->gates) continue;
+            for (g = tc->gates; g->reason != NULL; g++) {
+                if (target & g->platform) {
+                    printf("%s\t%s\t%s\n", fe->name, tc->name, g->reason);
+                    any = 1;
+                    break;
+                }
+            }
+        }
+    }
+    if (!any)
+        printf("# no gated tests for the given platform\n");
+}
+
 void
 usage(void)
 {
@@ -592,6 +736,11 @@ usage(void)
            "                            '/usr/bin/eu-stack -p'\n"
            " --tmpdir=DIR               Directory for on-disk test files\n"
            "                            (override $TMPDIR, default /tmp).\n"
+           " --list-gated[=PLATFORM]    Print tab-separated list of gated tests\n"
+           "                            for PLATFORM (or current build if omitted).\n"
+           "                            Output: suite TAB test TAB reason\n"
+           "                            Known names: windows linux linux-posix\n"
+           "                            freebsd netbsd openbsd macos solaris posix\n"
            " testclass[:<num>|:<start>-<end>] Tests suites to run:\n"
            "           ["
            "kqueue "
@@ -763,6 +912,7 @@ main(int argc, char **argv)
         err(1, "WSAStartup failed");
 #endif
 
+    init_platform();
     iterations = 1;
 
     /*
@@ -787,11 +937,13 @@ main(int argc, char **argv)
             OPT_WATCHDOG_TIMEOUT = 256,
             OPT_WATCHDOG_CMD,
             OPT_TMPDIR,
+            OPT_LIST_GATED,
         };
         static const struct option long_opts[] = {
             { "watchdog-timeout", required_argument, NULL, OPT_WATCHDOG_TIMEOUT },
             { "watchdog-cmd",     required_argument, NULL, OPT_WATCHDOG_CMD     },
             { "tmpdir",           required_argument, NULL, OPT_TMPDIR           },
+            { "list-gated",       optional_argument, NULL, OPT_LIST_GATED       },
             { NULL,               0,                 NULL, 0                    },
         };
         while ((c = getopt_long(argc, argv, "hn:", long_opts, NULL)) != -1) {
@@ -815,6 +967,26 @@ main(int argc, char **argv)
                 case OPT_TMPDIR:
                     test_tmpdir_set(optarg);
                     break;
+                case OPT_LIST_GATED: {
+                    lkq_platform_t target = lkq_current_platform;
+                    if (optarg && optarg[0]) {
+                        const struct lkq_platform_name *pn;
+                        int found = 0;
+                        for (pn = lkq_known_platforms; pn->name != NULL; pn++) {
+                            if (strcmp(optarg, pn->name) == 0) {
+                                target = pn->bits;
+                                found = 1;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            fprintf(stderr, "unknown platform '%s'\n", optarg);
+                            exit(1);
+                        }
+                    }
+                    print_list_gated(target);
+                    exit(0);
+                }
                 default:
                     usage();
             }
@@ -836,6 +1008,26 @@ main(int argc, char **argv)
             }
         } else if (strncmp(a, "--watchdog-cmd=", 15) == 0) {
             watchdog_parse_cmd(a + 15);
+        } else if (strncmp(a, "--list-gated", 12) == 0) {
+            lkq_platform_t target = lkq_current_platform;
+            const char *eq = strchr(a, '=');
+            if (eq && eq[1]) {
+                const struct lkq_platform_name *pn;
+                int found = 0;
+                for (pn = lkq_known_platforms; pn->name != NULL; pn++) {
+                    if (strcmp(eq + 1, pn->name) == 0) {
+                        target = pn->bits;
+                        found = 1;
+                        break;
+                    }
+                }
+                if (!found) {
+                    fprintf(stderr, "unknown platform '%s'\n", eq + 1);
+                    exit(1);
+                }
+            }
+            print_list_gated(target);
+            exit(0);
         } else if (a[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", a);
             usage();

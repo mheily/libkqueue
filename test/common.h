@@ -207,6 +207,104 @@ struct unit_test {
     unsigned int ut_num;
 };
 
+/*
+ * Per-test-case metadata and runtime gate evaluation.
+ *
+ * Each EVFILT_* suite exposes a null-terminated lkq_test_case array.
+ * run_test_suite() iterates it, evaluates gates against lkq_current_platform,
+ * and either runs or reports SKIP.  --list-gated iterates the same arrays
+ * without executing anything.
+ *
+ * lkq_current_platform is a bitmask of OS + backend bits computed in main()
+ * from compile-time macros.  Gate entries match when any of their platform
+ * bits overlap with the current platform bitmask.
+ */
+typedef unsigned int lkq_platform_t;
+
+/* OS bits */
+#define LKQ_PLATFORM_OS_LINUX     (1u <<  0)
+#define LKQ_PLATFORM_OS_FREEBSD   (1u <<  1)
+#define LKQ_PLATFORM_OS_NETBSD    (1u <<  2)
+#define LKQ_PLATFORM_OS_OPENBSD   (1u <<  3)
+#define LKQ_PLATFORM_OS_MACOS     (1u <<  4)
+#define LKQ_PLATFORM_OS_SOLARIS   (1u <<  5)
+#define LKQ_PLATFORM_OS_ANDROID   (1u <<  6)
+#define LKQ_PLATFORM_OS_WINDOWS   (1u <<  7)
+
+/* Backend bits - orthogonal to OS */
+#define LKQ_PLATFORM_BACKEND_NATIVE   (1u <<  8)  /* host's own kqueue(2) */
+#define LKQ_PLATFORM_BACKEND_POSIX    (1u <<  9)  /* libkqueue POSIX backend */
+#define LKQ_PLATFORM_BACKEND_LINUX    (1u << 10)  /* libkqueue Linux backend */
+#define LKQ_PLATFORM_BACKEND_WINDOWS  (1u << 11)  /* libkqueue Windows backend */
+#define LKQ_PLATFORM_BACKEND_SOLARIS  (1u << 12)  /* libkqueue Solaris backend */
+
+/* All backend bits combined */
+#define LKQ_PLATFORM_BACKEND_ANY \
+    (LKQ_PLATFORM_BACKEND_NATIVE | LKQ_PLATFORM_BACKEND_POSIX  | \
+     LKQ_PLATFORM_BACKEND_LINUX  | LKQ_PLATFORM_BACKEND_WINDOWS | \
+     LKQ_PLATFORM_BACKEND_SOLARIS)
+
+/*
+ * NOT-backend helpers: gate fires on every backend EXCEPT the named one.
+ * Use when a test only passes on one specific backend.
+ */
+#define LKQ_PLATFORM_NOT_BACKEND_NATIVE \
+    (LKQ_PLATFORM_BACKEND_ANY & ~LKQ_PLATFORM_BACKEND_NATIVE)
+#define LKQ_PLATFORM_NOT_BACKEND_POSIX \
+    (LKQ_PLATFORM_BACKEND_ANY & ~LKQ_PLATFORM_BACKEND_POSIX)
+#define LKQ_PLATFORM_NOT_BACKEND_LINUX \
+    (LKQ_PLATFORM_BACKEND_ANY & ~LKQ_PLATFORM_BACKEND_LINUX)
+
+/*
+ * Native kqueue on non-FreeBSD platforms (macOS, OpenBSD, NetBSD).
+ * Used when a gap affects those but not FreeBSD's native kqueue.
+ */
+#define LKQ_PLATFORM_NATIVE_NOT_FREEBSD \
+    (LKQ_PLATFORM_OS_MACOS | LKQ_PLATFORM_OS_NETBSD | LKQ_PLATFORM_OS_OPENBSD)
+
+/*
+ * Gate entry: skip the test when (lkq_current_platform & platform) != 0.
+ * A NULL reason field terminates the gate array.
+ */
+struct lkq_test_gate {
+    lkq_platform_t  platform;
+    const char     *reason;    /* NULL terminates the array */
+};
+
+/*
+ * Per-test-case entry.
+ *
+ * tc_name == NULL  : end-of-array sentinel.
+ * tc_name == ""    : setup/teardown step.  tc_func() is called but the entry
+ *                    is not counted, gated, or printed.  Use LKQ_SETUP().
+ * tc_name[0] != NUL: normal test case.
+ */
+struct lkq_test_case {
+    const char              *name;
+    const char              *desc;
+    void                    (*func)(struct test_context *);
+    const struct lkq_test_gate *gates;  /* NULL = always run */
+};
+
+/* Convenience macros for test-case array entries. */
+#define LKQ_SETUP(_fn)   { "", NULL, (_fn), NULL }
+#define LKQ_SUITE_END    { NULL, NULL, NULL, NULL }
+
+/* Inline gate-entry helper for use in named gate arrays. */
+#define GATE(_platform, _reason)  { (_platform), (_reason) }
+
+/*
+ * Current platform bitmask, OR of one OS bit and one backend bit.
+ * Defined in main.c; computed from compile-time macros.
+ */
+extern lkq_platform_t lkq_current_platform;
+
+/*
+ * Iterate a null-terminated lkq_test_case array, evaluating gates and
+ * respecting the test-number range in ctx->test.
+ */
+void run_test_suite(struct test_context *ctx, const struct lkq_test_case *cases);
+
 #define MAX_TESTS 50
 struct test_context {
     struct unit_test tests[MAX_TESTS];

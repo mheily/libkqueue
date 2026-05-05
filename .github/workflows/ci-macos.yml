@@ -37,6 +37,20 @@ jobs:
         cmake .
         make
 
+    - name: Gated tests
+      if: always()
+      run: |
+        GATED=$(./test/libkqueue-test --list-gated=macos 2>/dev/null) || true
+        {
+          printf '## Gated on macos\n'
+          printf '| Suite | Test | Reason |\n| --- | --- | --- |\n'
+          if [ -n "$GATED" ]; then
+            printf '%s\n' "$GATED" | awk -F'\t' '{gsub(/\|/,"&#124;",$3); print "| "$1" | "$2" | "$3" |"}'
+          else
+            printf '_none_\n'
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
     - name: libkqueue test suite
       env:
         KQUEUE_DEBUG: yes

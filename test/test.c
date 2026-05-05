@@ -112,6 +112,64 @@ testing_end(void)
     error_flag = 0;
 }
 
+lkq_platform_t lkq_current_platform;
+
+static int
+test_case_is_gated(const struct lkq_test_case *tc, lkq_platform_t plat,
+                   const char **reason_out)
+{
+    const struct lkq_test_gate *g;
+
+    if (!tc->gates) return 0;
+    for (g = tc->gates; g->reason != NULL; g++) {
+        if (plat & g->platform) {
+            *reason_out = g->reason;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void
+run_test_suite(struct test_context *ctx, const struct lkq_test_case *cases)
+{
+    const struct lkq_test_case *tc;
+    char display[512];
+
+    for (tc = cases; tc->name != NULL; tc++) {
+        /* Setup/teardown step: not a test, just call it. */
+        if (tc->name[0] == '\0') {
+            if (tc->func) tc->func(ctx);
+            continue;
+        }
+
+        if (ctx->test->ut_num < ctx->test->ut_start ||
+            ctx->test->ut_num > ctx->test->ut_end) {
+            ctx->test->ut_num++;
+            continue;
+        }
+
+        {
+            const char *reason = NULL;
+            if (test_case_is_gated(tc, lkq_current_platform, &reason)) {
+                printf("%d: SKIP %s -- %s\n",
+                       ctx->test->ut_num, tc->name, reason);
+                ctx->test->ut_num++;
+                continue;
+            }
+        }
+
+        snprintf(display, sizeof(display), "%s()\t%s",
+                 tc->name, tc->desc ? tc->desc : "");
+        watchdog_heartbeat(tc->name);
+        test_begin(ctx, display);
+        errno = 0;
+        tc->func(ctx);
+        test_end(ctx);
+        ctx->test->ut_num++;
+    }
+}
+
 /* Generate a unique ID */
 int
 testing_make_uid(void)

@@ -994,6 +994,15 @@ test_kevent_socket_af_unix(struct test_context *ctx)
 }
 #endif /* _WIN32 && Win10 */
 
+static void
+read_socket_reconnect(struct test_context *ctx)
+{
+    closesock(ctx->client_fd);
+    closesock(ctx->server_fd);
+    closesock(ctx->listen_fd);
+    create_socket_connection(&ctx->client_fd, &ctx->server_fd, &ctx->listen_fd);
+}
+
 /* Test transitioning a socket from EVFILT_WRITE to EVFILT_READ */
 #ifndef _WIN32
 void
@@ -1314,135 +1323,229 @@ test_kevent_read_socket_eof_with_buffered(struct test_context *ctx)
     close(s);
 }
 
+static const struct lkq_test_gate read_lowat_read_gates[] = {
+    GATE(LKQ_PLATFORM_OS_SOLARIS | LKQ_PLATFORM_OS_WINDOWS,
+         "SO_RCVLOWAT not honoured on this platform"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate read_lowat_write_gates[] = {
+    GATE(LKQ_PLATFORM_OS_SOLARIS | LKQ_PLATFORM_OS_LINUX |
+         LKQ_PLATFORM_OS_MACOS | LKQ_PLATFORM_OS_WINDOWS,
+         "SO_SNDLOWAT not usable as a threshold on this platform"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate read_multi_kqueue_gates[] = {
+    GATE(LKQ_PLATFORM_OS_WINDOWS,
+         "Win32 WSAEventSelect allows only one event slot per socket"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate read_listen_backlog_gates[] = {
+    GATE(LKQ_PLATFORM_BACKEND_POSIX | LKQ_PLATFORM_BACKEND_LINUX |
+         LKQ_PLATFORM_BACKEND_SOLARIS | LKQ_PLATFORM_OS_WINDOWS,
+         "backend cannot report listen-queue depth; hardcodes data=1"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate read_socket_eof_with_buffered_gates[] = {
+    GATE(LKQ_PLATFORM_BACKEND_POSIX,
+         "POSIX backend defers EV_EOF until buffered bytes are drained"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate read_regular_file_reactivate_gates[] = {
+    GATE(LKQ_PLATFORM_BACKEND_LINUX | LKQ_PLATFORM_BACKEND_POSIX |
+         LKQ_PLATFORM_OS_WINDOWS,
+         "backend cannot detect file-size growth for re-arm"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate read_transition_write_to_read_gates[] = {
+    GATE(LKQ_PLATFORM_OS_WINDOWS,
+         "Win32 does not support socketpair(AF_LOCAL)"),
+    { 0, NULL }
+};
+
+const struct lkq_test_case lkq_read_tests[] = {
+    {
+        .name  = "test_kevent_socket_add",
+        .desc  = "EV_ADD registers a read knote on a socket",
+        .func  = test_kevent_socket_add,
+    },
+    {
+        .name  = "test_kevent_socket_del",
+        .desc  = "EV_DELETE removes a read knote from a socket",
+        .func  = test_kevent_socket_del,
+    },
+    {
+        .name  = "test_kevent_socket_add_without_ev_add",
+        .desc  = "kevent without EV_ADD fails and produces no events",
+        .func  = test_kevent_socket_add_without_ev_add,
+    },
+    {
+        .name  = "test_kevent_socket_get",
+        .desc  = "EVFILT_READ fires when data arrives on a socket",
+        .func  = test_kevent_socket_get,
+    },
+    {
+        .name  = "test_kevent_socket_disable_and_enable",
+        .desc  = "EV_DISABLE suppresses events; EV_ENABLE re-arms",
+        .func  = test_kevent_socket_disable_and_enable,
+    },
+    {
+        .name  = "test_kevent_socket_oneshot",
+        .desc  = "EV_ONESHOT auto-deletes the knote after one event",
+        .func  = test_kevent_socket_oneshot,
+    },
+    {
+        .name  = "test_kevent_socket_clear",
+        .desc  = "EV_CLEAR makes EVFILT_READ edge-triggered on sockets",
+        .func  = test_kevent_socket_clear,
+    },
+#ifdef EV_DISPATCH
+    {
+        .name  = "test_kevent_socket_dispatch",
+        .desc  = "EV_DISPATCH auto-disables after delivery",
+        .func  = test_kevent_socket_dispatch,
+    },
+#endif
+    {
+        .name  = "test_kevent_socket_listen_backlog",
+        .desc  = "EVFILT_READ on a listen socket fires when connection pending",
+        .func  = test_kevent_socket_listen_backlog,
+    },
+    {
+        .name  = "test_kevent_socket_eof_clear",
+        .desc  = "EV_EOF is edge-triggered when EV_CLEAR is set",
+        .func  = test_kevent_socket_eof_clear,
+    },
+    {
+        .name  = "test_kevent_socket_eof",
+        .desc  = "EV_EOF fires when peer shuts down the connection",
+        .func  = test_kevent_socket_eof,
+    },
+    {
+        .name  = "test_kevent_socket_so_error",
+        .desc  = "fflags carries SO_ERROR value on RST",
+        .func  = test_kevent_socket_so_error,
+    },
+    {
+        .name  = "test_kevent_socket_lowat_read",
+        .desc  = "NOTE_LOWAT gates EVFILT_READ until threshold bytes arrive",
+        .func  = test_kevent_socket_lowat_read,
+        .gates = read_lowat_read_gates,
+    },
+    {
+        .name  = "test_kevent_socket_lowat_write",
+        .desc  = "NOTE_LOWAT gates EVFILT_WRITE; threshold above SO_SNDBUF never fires",
+        .func  = test_kevent_socket_lowat_write,
+        .gates = read_lowat_write_gates,
+    },
+    {
+        .name  = "test_kevent_socket_disable_drains",
+        .desc  = "EV_DISABLE suppresses a pending read event",
+        .func  = test_kevent_socket_disable_drains,
+    },
+    {
+        .name  = "test_kevent_socket_delete_drains",
+        .desc  = "EV_DELETE suppresses a pending read event",
+        .func  = test_kevent_socket_delete_drains,
+    },
+    {
+        .name  = "test_kevent_socket_modify_clobbers_udata",
+        .desc  = "modify overwrites udata in the stored knote",
+        .func  = test_kevent_socket_modify_clobbers_udata,
+    },
+    {
+        .name  = "test_kevent_read_del_nonexistent",
+        .desc  = "EV_DELETE on an unregistered fd returns ENOENT",
+        .func  = test_kevent_read_del_nonexistent,
+    },
+    {
+        .name  = "test_kevent_read_udata_preserved",
+        .desc  = "udata round-trips through EVFILT_READ delivery",
+        .func  = test_kevent_read_udata_preserved,
+    },
+    {
+        .name  = "test_kevent_read_multi_kqueue",
+        .desc  = "two kqueues on the same fd both receive the event",
+        .func  = test_kevent_read_multi_kqueue,
+        .gates = read_multi_kqueue_gates,
+    },
+    {
+        .name  = "test_kevent_read_listen_backlog_count",
+        .desc  = "kev.data equals the number of pending connections on a listen socket",
+        .func  = test_kevent_read_listen_backlog_count,
+        .gates = read_listen_backlog_gates,
+    },
+    {
+        .name  = "test_kevent_read_pipe_data_exact_count",
+        .desc  = "kev.data equals the total bytes pending in a pipe",
+        .func  = test_kevent_read_pipe_data_exact_count,
+    },
+    {
+        .name  = "test_kevent_read_socket_eof_with_buffered",
+        .desc  = "EV_EOF and kev.data are delivered together when peer shuts write side with data buffered",
+        .func  = test_kevent_read_socket_eof_with_buffered,
+        .gates = read_socket_eof_with_buffered_gates,
+    },
+    {
+        .name  = "test_kevent_pipe_eof",
+        .desc  = "EV_EOF fires when the write end of a pipe is closed",
+        .func  = test_kevent_pipe_eof,
+    },
+    {
+        .name  = "test_kevent_pipe_eof_multi",
+        .desc  = "EV_EOF fires on both read ends when both pipe writers close",
+        .func  = test_kevent_pipe_eof_multi,
+    },
+    {
+        .name  = "test_kevent_regular_file",
+        .desc  = "EVFILT_READ fires when a regular file has data ahead of the read position",
+        .func  = test_kevent_regular_file,
+    },
+    {
+        .name  = "test_kevent_regular_file_reactivate",
+        .desc  = "knote re-fires after draining to EOF and a writer appends more",
+        .func  = test_kevent_regular_file_reactivate,
+        .gates = read_regular_file_reactivate_gates,
+    },
+    {
+        .name  = "test_kevent_regular_file_unlinked_continues",
+        .desc  = "knote stays active on an unlinked-but-open file",
+        .func  = test_kevent_regular_file_unlinked_continues,
+        .gates = read_regular_file_reactivate_gates,
+    },
+    {
+        .name  = "test_kevent_regular_file_renamed_continues",
+        .desc  = "knote stays active after the watched file is renamed",
+        .func  = test_kevent_regular_file_renamed_continues,
+        .gates = read_regular_file_reactivate_gates,
+    },
+#if defined(_WIN32) && _WIN32_WINNT >= 0x0A00
+    {
+        .name  = "test_kevent_socket_af_unix",
+        .desc  = "EVFILT_READ works on AF_UNIX stream sockets",
+        .func  = test_kevent_socket_af_unix,
+    },
+#endif
+    LKQ_SETUP(read_socket_reconnect),
+    {
+        .name  = "test_transition_from_write_to_read",
+        .desc  = "replacing EVFILT_WRITE with EVFILT_READ on a socket does not error",
+        .func  = test_transition_from_write_to_read,
+        .gates = read_transition_write_to_read_gates,
+    },
+    LKQ_SUITE_END
+};
+
 void
 test_evfilt_read(struct test_context *ctx)
 {
     create_socket_connection(&ctx->client_fd, &ctx->server_fd, &ctx->listen_fd);
-
-    test(kevent_socket_add, ctx);
-    test(kevent_socket_del, ctx);
-    test(kevent_socket_add_without_ev_add, ctx);
-    test(kevent_socket_get, ctx);
-    test(kevent_socket_disable_and_enable, ctx);
-    test(kevent_socket_oneshot, ctx);
-    test(kevent_socket_clear, ctx);
-#ifdef EV_DISPATCH
-    test(kevent_socket_dispatch, ctx);
-#endif
-    test(kevent_socket_listen_backlog, ctx);
-    test(kevent_socket_eof_clear, ctx);
-    test(kevent_socket_eof, ctx);
-    test(kevent_socket_so_error, ctx);
-#if !defined(__sun) && !defined(_WIN32)
-    /*
-     * SO_RCVLOWAT setsockopt works on Linux glibc; not on Solaris
-     * (illumos returns ENOPROTOOPT for both lowat options).
-     */
-    test(kevent_socket_lowat_read, ctx);
-#endif
-#if !defined(__sun) && !defined(__linux__) && !defined(__APPLE__) && !defined(_WIN32)
-    /*
-     * SO_SNDLOWAT setsockopt is unsupported on Linux (socket(7): present
-     * for BSD compat only).
-     *
-     * On macOS, XNU clamps SO_SNDLOWAT to sb_hiwat (SO_SNDBUF) in
-     * setsockopt and again in EVFILT_WRITE.  A threshold above SO_SNDBUF
-     * is silently treated as SO_SNDBUF, and sbspace() on an idle socket
-     * equals SO_SNDBUF, so the "threshold > buffer = never fire" invariant
-     * this test relies on is impossible to express on macOS.
-     */
-    test(kevent_socket_lowat_write, ctx);
-#endif
-    /* Flag-behaviour group */
-    test(kevent_socket_disable_drains, ctx);
-    test(kevent_socket_delete_drains, ctx);
-    test(kevent_socket_modify_clobbers_udata, ctx);
-
-    test(kevent_read_del_nonexistent, ctx);
-    test(kevent_read_udata_preserved, ctx);
-#ifndef _WIN32
-    /*
-     * Win32 IOCP associates the kernel FILE_OBJECT with a single
-     * IOCP for its lifetime; DuplicateHandle aliases the same
-     * FILE_OBJECT and inherits the binding, so a second kqueue's
-     * CreateIoCompletionPort fails with ERROR_INVALID_PARAMETER and
-     * completions never reach it.  Same shape on sockets via
-     * WSAEventSelect (one event slot per socket).  Tracked in
-     * https://github.com/mheily/libkqueue/issues/171
-     */
-    test(kevent_read_multi_kqueue, ctx);
-#endif
-    /*
-     * Listen-socket backlog count reporting requires a kernel
-     * ioctl that exposes sol_qlen.  FreeBSD/macOS native kqueue
-     * read it directly from the socket struct; Linux has no
-     * portable equivalent for listen sockets, and the POSIX
-     * backend hardcodes 1.  Gate on backends that can deliver.
-     */
-    /*
-     * Solaris: illumos has no userspace API for the listen-queue
-     * length (no SO_QLEN, no listen-queue ioctl exposed); the
-     * solaris socket filter hardcodes data=1.  Gate alongside the
-     * existing POSIX/Linux exclusions.
-     */
-    /*
-     * Win32: no public API exposes the listen-queue depth (no
-     * SO_QLEN, no equivalent ioctl); the windows socket filter
-     * reports data=1 like the POSIX/Linux/Solaris backends.  Gate
-     * alongside the existing exclusions.
-     */
-#if !defined(LIBKQUEUE_BACKEND_POSIX) && !defined(LIBKQUEUE_BACKEND_LINUX) && \
-    !defined(LIBKQUEUE_BACKEND_SOLARIS) && !defined(_WIN32)
-    test(kevent_read_listen_backlog_count, ctx);
-#endif
-    test(kevent_read_pipe_data_exact_count, ctx);
-    /*
-     * POSIX backend defers EV_EOF until the peer-buffered bytes
-     * are drained (FIONREAD-zero is the only EOF signal pselect
-     * exposes).  BSD/macOS/Linux deliver EOF + buffered-bytes
-     * together because they observe the kernel's CANTRCVMORE flag
-     * directly.
-     */
-#if !defined(LIBKQUEUE_BACKEND_POSIX)
-    test(kevent_read_socket_eof_with_buffered, ctx);
-#endif
-    test(kevent_pipe_eof, ctx);
-    test(kevent_pipe_eof_multi, ctx);
-    test(kevent_regular_file, ctx);
-    /*
-     * BSD's "EVFILT_READ on a regular file is active when size >
-     * position" rule re-fires the knote after a consumer drains to
-     * EOF and a producer appends more.  The Linux backend uses an
-     * eventfd-as-polling-trigger that DELs itself once size==
-     * position is observed and never re-arms - implementing the
-     * re-arm needs either inotify on /proc/self/fd/N (depends on
-     * /proc being mounted and accessible, fragile under hardened
-     * containers) or fanotify with CAP_SYS_ADMIN.  Gate until
-     * either becomes acceptable; same outcome as upstream master.
-     * The POSIX backend has its own size-grow gap.
-     */
-    /*
-     * Win32: same architectural limit - no portable file-size-grow
-     * watcher.  ReadDirectoryChangesW is per-directory and noisy;
-     * not worth the bookkeeping for the synthetic-file path.
-     */
-#if !defined(LIBKQUEUE_BACKEND_LINUX) && !defined(LIBKQUEUE_BACKEND_POSIX) && \
-    !defined(_WIN32)
-    test(kevent_regular_file_reactivate, ctx);
-    test(kevent_regular_file_unlinked_continues, ctx);
-    test(kevent_regular_file_renamed_continues, ctx);
-#endif
-#if defined(_WIN32) && _WIN32_WINNT >= 0x0A00
-    test(kevent_socket_af_unix, ctx);
-#endif
-    closesock(ctx->client_fd);
-    closesock(ctx->server_fd);
-    closesock(ctx->listen_fd);
-
-    create_socket_connection(&ctx->client_fd, &ctx->server_fd, &ctx->listen_fd);
-#ifndef _WIN32
-    test(transition_from_write_to_read, ctx);
-#endif
+    run_test_suite(ctx, lkq_read_tests);
     closesock(ctx->client_fd);
     closesock(ctx->server_fd);
     closesock(ctx->listen_fd);

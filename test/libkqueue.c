@@ -281,18 +281,46 @@ test_libkqueue_file_poll_interval_unsupported(struct test_context *ctx)
 }
 #endif /* LIBKQUEUE_BACKEND_POSIX */
 
+const struct lkq_test_case lkq_libkqueue_tests[] = {
+    {
+        .name  = "test_libkqueue_version",
+        .desc  = "EVFILT_LIBKQUEUE NOTE_VERSION returns current version",
+        .func  = test_libkqueue_version,
+    },
+    {
+        .name  = "test_libkqueue_version_str",
+        .desc  = "EVFILT_LIBKQUEUE NOTE_VERSION_STR returns version string",
+        .func  = test_libkqueue_version_str,
+    },
+#if defined(LIBKQUEUE_BACKEND_POSIX)
+    {
+        .name  = "test_libkqueue_file_poll_interval_set",
+        .desc  = "NOTE_FILE_POLL_INTERVAL accepted by POSIX backend",
+        .func  = test_libkqueue_file_poll_interval_set,
+    },
+    {
+        .name  = "test_libkqueue_file_poll_interval_rejects_negative",
+        .desc  = "NOTE_FILE_POLL_INTERVAL rejects negative value",
+        .func  = test_libkqueue_file_poll_interval_rejects_negative,
+    },
+    {
+        .name  = "test_libkqueue_file_poll_interval_sleeps",
+        .desc  = "POSIX backend polls at NOTE_FILE_POLL_INTERVAL cadence",
+        .func  = test_libkqueue_file_poll_interval_sleeps,
+    },
+#else
+    {
+        .name  = "test_libkqueue_file_poll_interval_unsupported",
+        .desc  = "NOTE_FILE_POLL_INTERVAL rejected on non-POSIX backends",
+        .func  = test_libkqueue_file_poll_interval_unsupported,
+    },
+#endif
+    LKQ_SUITE_END
+};
+
 void
 test_evfilt_libkqueue(struct test_context *ctx)
 {
-    test(libkqueue_version, ctx);
-    test(libkqueue_version_str, ctx);
-//    test(libkqueue_fork_no_hang, ctx);
-#if defined(LIBKQUEUE_BACKEND_POSIX)
-    test(libkqueue_file_poll_interval_set, ctx);
-    test(libkqueue_file_poll_interval_rejects_negative, ctx);
-    test(libkqueue_file_poll_interval_sleeps, ctx);
-#else
-    test(libkqueue_file_poll_interval_unsupported, ctx);
-#endif
+    run_test_suite(ctx, lkq_libkqueue_tests);
 }
 #endif

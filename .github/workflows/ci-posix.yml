@@ -84,6 +84,20 @@ jobs:
         sudo apt-get update -qq
         sudo apt-get install -y elfutils gdb >/dev/null
 
+    - name: Gated tests
+      if: always()
+      run: |
+        GATED=$(test/libkqueue-test --list-gated=linux-posix 2>/dev/null) || true
+        {
+          printf '## Gated on linux-posix\n'
+          printf '| Suite | Test | Reason |\n| --- | --- | --- |\n'
+          if [ -n "$GATED" ]; then
+            printf '%s\n' "$GATED" | awk -F'\t' '{gsub(/\|/,"&#124;",$3); print "| "$1" | "$2" | "$3" |"}'
+          else
+            printf '_none_\n'
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+
     - name: Test
       env:
         KQUEUE_DEBUG: ${{ matrix.env.BUILD_TYPE == 'Release' && '' || '1' }}

@@ -526,76 +526,142 @@ test_kevent_write_regular_file(struct test_context *ctx)
     unlink(ctx->testfile);
 }
 
+static const struct lkq_test_gate write_multi_kqueue_gates[] = {
+    GATE(LKQ_PLATFORM_OS_WINDOWS,
+         "Win32 WSAEventSelect allows only one event slot per socket"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate write_pipe_eof_gates[] = {
+    GATE(LKQ_PLATFORM_BACKEND_POSIX,
+         "POSIX backend cannot detect pipe reader-close via pselect"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate write_pipe_buffer_slack_gates[] = {
+    GATE(LKQ_PLATFORM_BACKEND_POSIX,
+         "POSIX backend has no portable pipe-space ioctl; reports hardcoded 1"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate write_socket_eof_on_peer_close_gates[] = {
+    GATE(LKQ_PLATFORM_NOT_BACKEND_LINUX,
+         "only the Linux backend maps EPOLLHUP to EV_EOF deterministically"),
+    { 0, NULL }
+};
+
+const struct lkq_test_case lkq_write_tests[] = {
+    {
+        .name  = "test_kevent_write_socket_add",
+        .desc  = "EV_ADD registers a write knote on a socket",
+        .func  = test_kevent_write_socket_add,
+    },
+    {
+        .name  = "test_kevent_write_socket_del",
+        .desc  = "EV_DELETE removes a write knote; no further events",
+        .func  = test_kevent_write_socket_del,
+    },
+    {
+        .name  = "test_kevent_write_socket_del_nonexistent",
+        .desc  = "EV_DELETE on an unregistered fd returns ENOENT",
+        .func  = test_kevent_write_socket_del_nonexistent,
+    },
+    {
+        .name  = "test_kevent_write_socket_disable_and_enable",
+        .desc  = "EV_DISABLE suppresses events; EV_ENABLE re-arms",
+        .func  = test_kevent_write_socket_disable_and_enable,
+    },
+    {
+        .name  = "test_kevent_write_socket_oneshot",
+        .desc  = "EV_ONESHOT auto-deletes after first write event",
+        .func  = test_kevent_write_socket_oneshot,
+    },
+#ifdef EV_DISPATCH
+    {
+        .name  = "test_kevent_write_socket_dispatch",
+        .desc  = "EV_DISPATCH auto-disables after delivery",
+        .func  = test_kevent_write_socket_dispatch,
+    },
+#endif
+#ifdef EV_RECEIPT
+    {
+        .name  = "test_kevent_write_socket_receipt_preserved",
+        .desc  = "EV_RECEIPT returns the echo entry with EV_ERROR=0",
+        .func  = test_kevent_write_socket_receipt_preserved,
+    },
+#endif
+    {
+        .name  = "test_kevent_write_socket_udata_preserved",
+        .desc  = "udata round-trips through EVFILT_WRITE delivery",
+        .func  = test_kevent_write_socket_udata_preserved,
+    },
+    {
+        .name  = "test_kevent_write_socket_modify_clobbers_udata",
+        .desc  = "modify overwrites udata in the stored write knote",
+        .func  = test_kevent_write_socket_modify_clobbers_udata,
+    },
+    {
+        .name  = "test_kevent_write_socket_disable_drains",
+        .desc  = "EV_DISABLE suppresses a pending write event",
+        .func  = test_kevent_write_socket_disable_drains,
+    },
+    {
+        .name  = "test_kevent_write_socket_delete_drains",
+        .desc  = "EV_DELETE suppresses a pending write event",
+        .func  = test_kevent_write_socket_delete_drains,
+    },
+    {
+        .name  = "test_kevent_write_socket_multi_kqueue",
+        .desc  = "two kqueues on the same fd both receive the write event",
+        .func  = test_kevent_write_socket_multi_kqueue,
+        .gates = write_multi_kqueue_gates,
+    },
+    {
+        .name  = "test_kevent_write_socket_ev_clear",
+        .desc  = "EV_CLEAR makes EVFILT_WRITE edge-triggered",
+        .func  = test_kevent_write_socket_ev_clear,
+    },
+    {
+        .name  = "test_kevent_write_pipe_eof_on_reader_close",
+        .desc  = "EV_EOF fires on pipe write end when reader closes",
+        .func  = test_kevent_write_pipe_eof_on_reader_close,
+        .gates = write_pipe_eof_gates,
+    },
+    {
+        .name  = "test_kevent_write_pipe_data_buffer_slack",
+        .desc  = "kev.data reports real pipe buffer slack, not a hardcoded 1",
+        .func  = test_kevent_write_pipe_data_buffer_slack,
+        .gates = write_pipe_buffer_slack_gates,
+    },
+    {
+        .name  = "test_kevent_write_socket_eof_on_peer_close",
+        .desc  = "EV_EOF fires on write end when the stream peer closes",
+        .func  = test_kevent_write_socket_eof_on_peer_close,
+        .gates = write_socket_eof_on_peer_close_gates,
+    },
+    {
+        .name  = "test_kevent_write_listen_socket_silent",
+        .desc  = "EVFILT_WRITE never fires on a listen socket",
+        .func  = test_kevent_write_listen_socket_silent,
+    },
+    {
+        .name  = "test_kevent_write_dgram_socket",
+        .desc  = "EVFILT_WRITE fires immediately on an unconnected UDP socket",
+        .func  = test_kevent_write_dgram_socket,
+    },
+    {
+        .name  = "test_kevent_write_regular_file",
+        .desc  = "EVFILT_WRITE fires on a regular file",
+        .func  = test_kevent_write_regular_file,
+    },
+    LKQ_SUITE_END
+};
+
 void
 test_evfilt_write(struct test_context *ctx)
 {
     snprintf(ctx->testfile, sizeof(ctx->testfile), "%s/kqueue-test%d.tmp",
             test_tmpdir(), testing_make_uid());
 
-    /* Common-set on connected socket. */
-    test(kevent_write_socket_add, ctx);
-    test(kevent_write_socket_del, ctx);
-    test(kevent_write_socket_del_nonexistent, ctx);
-    test(kevent_write_socket_disable_and_enable, ctx);
-    test(kevent_write_socket_oneshot, ctx);
-#ifdef EV_DISPATCH
-    test(kevent_write_socket_dispatch, ctx);
-#endif
-#ifdef EV_RECEIPT
-    test(kevent_write_socket_receipt_preserved, ctx);
-#endif
-    test(kevent_write_socket_udata_preserved, ctx);
-    test(kevent_write_socket_modify_clobbers_udata, ctx);
-    test(kevent_write_socket_disable_drains, ctx);
-    test(kevent_write_socket_delete_drains, ctx);
-#ifndef _WIN32
-    /*
-     * Win32 WSAEventSelect is exclusive on a SOCKET: the second kq's
-     * call replaces the first, and only the latest kq sees write
-     * readiness.  Same architectural limit as the read filter on
-     * pipes - one IOCP / event-select slot per kernel object.
-     * Tracked in https://github.com/mheily/libkqueue/issues/171
-     */
-    test(kevent_write_socket_multi_kqueue, ctx);
-#endif
-    test(kevent_write_socket_ev_clear, ctx);
-
-    /* Audit-gap tests. */
-    /*
-     * Pipe peer-close detection: POSIX backend can't deliver
-     * EV_EOF on pipe-reader-close.  pselect's writefds/exceptfds
-     * model has no equivalent of poll(2)'s POLLHUP, and the only
-     * way to detect the close is to attempt a write and observe
-     * EPIPE - intrusive and racy.  Native BSD and Linux (epoll
-     * EPOLLHUP) both deliver it.
-     */
-#if !defined(LIBKQUEUE_BACKEND_POSIX)
-    test(kevent_write_pipe_eof_on_reader_close, ctx);
-#endif
-    /*
-     * Pipe buffer-slack reporting: POSIX backend has no portable
-     * pipe-space ioctl equivalent (FIONSPACE / F_GETPIPE_SZ are
-     * platform-specific) and reports a hardcoded 1.  Native BSD
-     * (filt_pipewrite uses pipe_buffer.size - cnt) and Linux
-     * (F_GETPIPE_SZ minus FIONREAD) both deliver real slack.
-     */
-#if !defined(LIBKQUEUE_BACKEND_POSIX)
-    test(kevent_write_pipe_data_buffer_slack, ctx);
-#endif
-    /*
-     * Stream socket peer-close EV_EOF: only the Linux backend
-     * delivers it deterministically (EPOLLHUP -> EV_EOF mapping).
-     * Native BSDs require the local stack to notice the peer's
-     * FIN/RST before SBS_CANTSENDMORE is set; the 10ms settle
-     * window in the test is not enough.  POSIX backend has no
-     * exception bit.
-     */
-#if defined(LIBKQUEUE_BACKEND_LINUX)
-    test(kevent_write_socket_eof_on_peer_close, ctx);
-#endif
-    test(kevent_write_listen_socket_silent, ctx);
-    test(kevent_write_dgram_socket, ctx);
-
-    /* Regular file. */
-    test(kevent_write_regular_file, ctx);
+    run_test_suite(ctx, lkq_write_tests);
 }

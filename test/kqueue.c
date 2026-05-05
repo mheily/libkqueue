@@ -51,7 +51,7 @@ void libkqueue_drain_pending_close(void);
  * has been closed. This technique is used in kqueue_validate()
  */
 static void
-test_peer_close_detection(void *unused)
+test_peer_close_detection(struct test_context *ctx)
 {
 #ifdef _WIN32
     return;
@@ -83,7 +83,7 @@ test_peer_close_detection(void *unused)
 }
 
 void
-test_kqueue_alloc(void *unused)
+test_kqueue_alloc(struct test_context *ctx)
 {
     int kqfd;
 
@@ -95,7 +95,7 @@ test_kqueue_alloc(void *unused)
 }
 
 void
-test_kevent(void *unused)
+test_kevent(struct test_context *ctx)
 {
     struct kevent kev;
 
@@ -113,7 +113,7 @@ test_kevent(void *unused)
  * Test the cleanup process for Linux
  */
 void
-test_cleanup(void *unused)
+test_cleanup(struct test_context *ctx)
 {
     int i;
     int max_fds = MAX_FDS;
@@ -182,7 +182,7 @@ test_cleanup(void *unused)
 }
 
 void
-test_fork(void *unused)
+test_fork(struct test_context *ctx)
 {
     int kqfd;
     pid_t pid;
@@ -251,7 +251,7 @@ test_ev_receipt(struct test_context *ctx)
  */
 #ifndef __APPLE__
 void
-test_kqueue_descriptor_is_pollable(void *unused)
+test_kqueue_descriptor_is_pollable(struct test_context *ctx)
 {
     int kq, rv;
     struct kevent kev;
@@ -308,13 +308,13 @@ test_kqueue_descriptor_is_pollable(void *unused)
  * (currently the Linux backend's monitoring thread).
  */
 static void
-test_close_cleans_up_active_knotes(void *unused)
+test_close_cleans_up_active_knotes(struct test_context *ctx)
 {
     struct kevent kev;
     int           kqfd;
     int           pipefd[2];
 
-    (void) unused;
+    (void) ctx;
 
     if (pipe(pipefd) < 0) die("pipe");
 
@@ -351,13 +351,13 @@ test_close_cleans_up_active_knotes(void *unused)
  * pins single-level recursion.
  */
 static void
-test_kqueue_recursive(void *unused)
+test_kqueue_recursive(struct test_context *ctx)
 {
     struct kevent kev, ret[1];
     int           kq1, kq2;
     struct timespec poll = { 1, 0 };
 
-    (void) unused;
+    (void) ctx;
     if ((kq1 = kqueue()) < 0) die("kqueue 1");
     if ((kq2 = kqueue()) < 0) die("kqueue 2");
 
@@ -396,7 +396,7 @@ test_kqueue_recursive(void *unused)
  */
 #ifndef _WIN32   /* uses mmap/mprotect for guard-page sandwiching */
 static void
-test_kqueue_nevents_validation(void *unused)
+test_kqueue_nevents_validation(struct test_context *ctx)
 {
     int           kq;
     long          page_l = sysconf(_SC_PAGESIZE);
@@ -404,7 +404,7 @@ test_kqueue_nevents_validation(void *unused)
     char         *region;
     struct kevent *evlist;
 
-    (void) unused;
+    (void) ctx;
     if (page_l <= 0 || page_l > 65536) die("sysconf(_SC_PAGESIZE)");
     page = (size_t) page_l;
 
@@ -483,7 +483,7 @@ test_kqueue_nevents_validation(void *unused)
  * not reference a freed knote when the same fd number is reused.
  */
 static void
-test_kqueue_fd_reuse_no_stale_events(void *unused)
+test_kqueue_fd_reuse_no_stale_events(struct test_context *ctx)
 {
     struct kevent kev, ret[1];
     int           kq;
@@ -491,7 +491,7 @@ test_kqueue_fd_reuse_no_stale_events(void *unused)
     int           reused;
     struct timespec poll = { 0, 100 * 1000 * 1000 };  /* 100ms */
 
-    (void) unused;
+    (void) ctx;
     if ((kq = kqueue()) < 0) die("kqueue");
     if (pipe(pfd) < 0) die("pipe");
 
@@ -541,14 +541,14 @@ test_kqueue_fd_reuse_no_stale_events(void *unused)
  */
 #ifdef NATIVE_KQUEUE
 static void
-test_kqueue_deep_recursive_chain(void *unused)
+test_kqueue_deep_recursive_chain(struct test_context *ctx)
 {
     enum { CHAIN_DEPTH = 100 };
     int           kqs[CHAIN_DEPTH];
     struct kevent kev;
     int           i, depth;
 
-    (void) unused;
+    (void) ctx;
 
     for (depth = 0; depth < CHAIN_DEPTH; depth++) {
         kqs[depth] = kqueue();
@@ -583,13 +583,13 @@ test_kqueue_deep_recursive_chain(void *unused)
  * the bulk-close path completes before fd-pressure tests run.
  */
 static void
-test_kqueue_knote_pool_exhaustion(void *unused)
+test_kqueue_knote_pool_exhaustion(struct test_context *ctx)
 {
     enum { N = 8192 };
     int  kq;
     int  i, registered = 0;
 
-    (void) unused;
+    (void) ctx;
     if ((kq = kqueue()) < 0) die("kqueue");
 
     for (i = 0; i < N; i++) {
@@ -640,7 +640,7 @@ _pipe_uaf_worker(void *arg)
 }
 
 static void
-test_kqueue_pipe_peer_close_uaf(void *unused)
+test_kqueue_pipe_peer_close_uaf(struct test_context *ctx)
 {
     enum { N_THREADS = 4, DURATION_MS = 500 };
     pthread_t              th[N_THREADS];
@@ -648,7 +648,7 @@ test_kqueue_pipe_peer_close_uaf(void *unused)
     int                    i;
     struct timespec        deadline, now;
 
-    (void) unused;
+    (void) ctx;
     atomic_init(&args.stop, 0);
 
     for (i = 0; i < N_THREADS; i++) {
@@ -711,7 +711,7 @@ _timer_race_worker(void *arg)
 }
 
 static void
-test_kqueue_timer_callout_detach_race(void *unused)
+test_kqueue_timer_callout_detach_race(struct test_context *ctx)
 {
     enum { N_THREADS = 4, DURATION_MS = 500 };
     pthread_t                th[N_THREADS];
@@ -720,7 +720,7 @@ test_kqueue_timer_callout_detach_race(void *unused)
     int                      i;
     struct timespec          deadline, now;
 
-    (void) unused;
+    (void) ctx;
     if ((kq = kqueue()) < 0) die("kqueue");
     args.kqfd = kq;
     atomic_init(&args.stop, 0);
@@ -752,82 +752,146 @@ test_kqueue_timer_callout_detach_race(void *unused)
 #endif
 }
 
+/*
+ * Gate arrays for tests with platform/backend restrictions.
+ *
+ * kqueue_recursive and kqueue_deep_recursive_chain: require the kqueue fd to
+ * be pollable via EVFILT_READ on another kqueue.  Native BSD/macOS support
+ * this; libkqueue POSIX/Linux backends don't expose kqfd as a generic
+ * readable fd.
+ *
+ * kqueue_nevents_validation: NetBSD's kqueue_scan loop hangs the calling
+ * thread for minutes on nevents=-1 (likely casts int to size_t, producing
+ * SIZE_MAX iterations).  Upstream DoS-class kernel bug; skip on NetBSD and
+ * Windows (no mmap/mprotect).
+ *
+ * ev_receipt: EV_RECEIPT is unavailable on Windows.
+ *
+ * kqueue_pipe_peer_close_uaf / kqueue_timer_callout_detach_race: target
+ * BSD-kernel-internal races in filt_pipedetach and filt_timerdetach.  The
+ * POSIX select-polling backend doesn't share those code paths, and the rapid
+ * kqueue create/close cycles exhaust FD_SETSIZE=1024 before deferred cleanup
+ * fires under concurrent pipe() calls.
+ */
+static const struct lkq_test_gate gates_not_backend_native[] = {
+    GATE(LKQ_PLATFORM_NOT_BACKEND_NATIVE,
+         "requires kqueue fd pollable by EVFILT_READ (native BSD/macOS only)"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate gates_not_netbsd_not_windows[] = {
+    GATE(LKQ_PLATFORM_OS_NETBSD,
+         "NetBSD kqueue_scan hangs on nevents=-1 (upstream kernel bug)"),
+    GATE(LKQ_PLATFORM_OS_WINDOWS,
+         "uses mmap/mprotect which are unavailable on Windows"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate gates_not_windows[] = {
+    GATE(LKQ_PLATFORM_OS_WINDOWS, "EV_RECEIPT unavailable on Windows"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate gates_not_backend_posix[] = {
+    GATE(LKQ_PLATFORM_BACKEND_POSIX,
+         "POSIX backend lacks BSD-internal pipe/timer detach paths and hits FD_SETSIZE under concurrent pipe()"),
+    { 0, NULL }
+};
+
+const struct lkq_test_case lkq_kqueue_tests[] = {
+    {
+        .name  = "peer_close_detection",
+        .desc  = "detect peer close via poll/recv on a socketpair",
+        .func  = test_peer_close_detection,
+    },
+    {
+        .name  = "kqueue_alloc",
+        .desc  = "allocate and close a kqueue fd",
+        .func  = test_kqueue_alloc,
+    },
+    {
+        .name  = "kevent",
+        .desc  = "kevent() rejects an invalid kqueue fd",
+        .func  = test_kevent,
+    },
+    {
+        .name  = "kqueue_recursive",
+        .desc  = "kq1 watches kq2 via EVFILT_READ; single-level recursion",
+        .func  = test_kqueue_recursive,
+        .gates = gates_not_backend_native
+    },
+#ifndef _WIN32
+    {
+        .name  = "kqueue_nevents_validation",
+        .desc  = "negative/huge nevents must not overrun mmap guard pages",
+        .func  = test_kqueue_nevents_validation,
+        .gates = gates_not_netbsd_not_windows
+    },
+#endif
+    {
+        .name  = "kqueue_fd_reuse_no_stale_events",
+        .desc  = "no stale knote fires when a watched fd number is reused",
+        .func  = test_kqueue_fd_reuse_no_stale_events,
+    },
+#ifdef HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE
+    {
+        .name  = "cleanup",
+        .desc  = "kqueue create/close cycle under lowered RLIMIT_NOFILE",
+        .func  = test_cleanup,
+    },
+    {
+        .name  = "close_cleans_up_active_knotes",
+        .desc  = "close(kqfd) without EV_DELETE reclaims all knote memory",
+        .func  = test_close_cleans_up_active_knotes,
+    },
+#  ifdef HAVE_TSAN_IGNORE
+    {
+        .name  = "fork",
+        .desc  = "fork closes all kqueue fds in the child",
+        .func  = test_fork,
+    },
+#  endif
+#endif
+#ifndef _WIN32
+    {
+        .name  = "ev_receipt",
+        .desc  = "EV_RECEIPT returns the kevent back in the output list",
+        .func  = test_ev_receipt,
+        .gates = gates_not_windows
+    },
+#endif
+#ifdef NATIVE_KQUEUE
+    {
+        .name  = "kqueue_deep_recursive_chain",
+        .desc  = "depth-100 kqueue chain; survives or returns ELOOP cleanly",
+        .func  = test_kqueue_deep_recursive_chain,
+        .gates = gates_not_backend_native
+    },
+#endif
+    {
+        .name  = "kqueue_knote_pool_exhaustion",
+        .desc  = "8192 EVFILT_USER knotes; kernel returns ENOMEM/EMFILE not panic",
+        .func  = test_kqueue_knote_pool_exhaustion,
+    },
+    {
+        .name  = "kqueue_pipe_peer_close_uaf",
+        .desc  = "race EVFILT_WRITE registration against pipe close in a sibling thread",
+        .func  = test_kqueue_pipe_peer_close_uaf,
+        .gates = gates_not_backend_posix
+    },
+    {
+        .name  = "kqueue_timer_callout_detach_race",
+        .desc  = "concurrent EVFILT_TIMER add/delete stress callout-vs-detach barrier",
+        .func  = test_kqueue_timer_callout_detach_race,
+        .gates = gates_not_backend_posix
+    },
+    LKQ_SUITE_END
+};
+
 void
 test_kqueue(struct test_context *ctx)
 {
-    test(peer_close_detection, ctx);
-
-    test(kqueue_alloc, ctx);
-    test(kevent, ctx);
-    /*
-     * Recursive kqueue: requires the kqueue's own fd to be pollable
-     * by EVFILT_READ on another kqueue.  Native BSD/macOS support
-     * this; libkqueue's POSIX/Linux backends don't yet expose the
-     * kqfd as a generic readable fd.  Gate to native until the
-     * backends grow kq->kq_id pollability.
-     */
-#ifdef NATIVE_KQUEUE
-    test(kqueue_recursive, ctx);
-#endif
-    /*
-     * NetBSD's kqueue_scan loop hangs the calling thread for
-     * minutes on nevents=-1 (likely casts int to size_t for the
-     * eventlist iteration; -1 -> SIZE_MAX iterations).  Real
-     * upstream DoS-class kernel bug.  Skip on NetBSD until
-     * filed/fixed; guard pages still validate the safety
-     * contract everywhere else.
-     */
-#if !defined(__NetBSD__) && !defined(_WIN32)
-    test(kqueue_nevents_validation, ctx);   /* mmap/mprotect guard pages */
-#endif
-    test(kqueue_fd_reuse_no_stale_events, ctx);
-
-#ifdef HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE
-    test(cleanup, ctx);
-    test(close_cleans_up_active_knotes, ctx);
-
-    /*
-     * Only run the fork test if we can do TSAN
-     * suppressions, as there's false positives
-     * generated by libkqueue_pre_fork.
-     */
-#  ifdef HAVE_TSAN_IGNORE
-    test(fork, ctx);
-#  endif
-#endif
-
-#if !defined(_WIN32)
-    test(ev_receipt, ctx);
-#endif
-
-    /*
-     * Kernel-DoS / panic probes.  Surface real upstream bugs.
-     * Run last so any leaked fds don't poison test_cleanup
-     * (which lowers RLIMIT_NOFILE and is fragile to residue).
-     */
-#ifdef NATIVE_KQUEUE
-    test(kqueue_deep_recursive_chain, ctx);
-#endif
-    test(kqueue_knote_pool_exhaustion, ctx);
-    /*
-     * These two stress tests target BSD-kernel-internal races:
-     * pipe_peer_close_uaf probes filt_pipedetach walking pipe->pipe_peer
-     * while pipeclose nulls it (FreeBSD/NetBSD code path), and
-     * timer_callout_detach_race probes filt_timerdetach vs in-flight
-     * callout barriers (OpenBSD/NetBSD/FreeBSD).  Neither code path
-     * exists in the POSIX select-polling backend, and the tests' rapid
-     * kqueue create/close cycles exhaust select()'s FD_SETSIZE=1024 fd
-     * ceiling because the deferred-cleanup mechanism (triggered on fd
-     * reuse inside kqueue()) doesn't fire reliably under concurrent
-     * pipe() calls.  Gate until the POSIX backend is ported to poll().
-     */
-#ifndef LIBKQUEUE_BACKEND_POSIX
-    test(kqueue_pipe_peer_close_uaf, ctx);
-    test(kqueue_timer_callout_detach_race, ctx);
-#endif
-    /* TODO: this fails now, but would be good later
-    test(kqueue_descriptor_is_pollable, ctx);
-    */
+    run_test_suite(ctx, lkq_kqueue_tests);
 }
 
 

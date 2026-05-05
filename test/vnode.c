@@ -1154,6 +1154,257 @@ test_kevent_vnode_receipt_preserved(struct test_context *ctx)
 }
 #endif
 
+/*
+ * note_extend_ftruncate: VOP_SETATTR doesn't fire NOTE_EXTEND on size grow
+ * on native BSDs (only the write path does).  libkqueue's stat-poll backends
+ * handle this correctly, so skip on native kqueue and Windows.
+ */
+static const struct lkq_test_gate vnode_gate_extend_ftruncate[] =
+{
+    GATE(LKQ_PLATFORM_BACKEND_NATIVE, "VOP_SETATTR doesn't fire NOTE_EXTEND on ftruncate-up on native BSD kqueue"),
+    GATE(LKQ_PLATFORM_OS_WINDOWS,     "ftruncate not available on Windows"),
+    { 0, NULL }
+};
+
+/*
+ * note_link (file): FindFirstChangeNotification doesn't reliably fire on
+ * CreateHardLink; skip on Windows until tracked issue is resolved.
+ */
+static const struct lkq_test_gate vnode_gate_note_link[] =
+{
+    GATE(LKQ_PLATFORM_OS_WINDOWS, "CreateHardLink doesn't reliably fire NOTE_LINK via FindFirstChangeNotification"),
+    { 0, NULL }
+};
+
+/*
+ * fflag_accumulation: stat-snapshot polling only sees the end state after
+ * both touch and ftruncate-up; only the Linux inotify backend drain-and-unions
+ * both NOTE_ATTRIB and NOTE_EXTEND.  Also fails on native BSDs for the same
+ * VOP_SETATTR/NOTE_EXTEND reason as note_extend_ftruncate.
+ */
+static const struct lkq_test_gate vnode_gate_fflag_accumulation[] =
+{
+    GATE(LKQ_PLATFORM_NOT_BACKEND_LINUX, "stat-snapshot and native-BSD backends don't accumulate NOTE_ATTRIB + NOTE_EXTEND across touch + ftruncate-up"),
+    { 0, NULL }
+};
+
+/*
+ * rename_overwrite_ordering: NtSetInformationFile(FileRenameInformation,
+ * Replace=TRUE) hits STATUS_ACCESS_DENIED on this open-watched-target shape.
+ * Tracked in https://github.com/mheily/libkqueue/issues/172
+ */
+static const struct lkq_test_gate vnode_gate_rename_overwrite[] =
+{
+    GATE(LKQ_PLATFORM_OS_WINDOWS, "NtSetInformationFile rename-over hits STATUS_ACCESS_DENIED on Windows (issue #172)"),
+    { 0, NULL }
+};
+
+/*
+ * Tests that require POSIX-only syscalls (fchmod, fchown, pwrite,
+ * O_DIRECTORY open of a directory, rename over open target).
+ */
+static const struct lkq_test_gate vnode_gate_posix_only[] =
+{
+    GATE(LKQ_PLATFORM_OS_WINDOWS, "POSIX-only syscall not available on Windows"),
+    { 0, NULL }
+};
+
+const struct lkq_test_case lkq_vnode_tests[] =
+{
+    {
+        .name  = "kevent_vnode_add",
+        .desc  = "Add EVFILT_VNODE watch",
+        .func  = test_kevent_vnode_add,
+    },
+    {
+        .name  = "kevent_vnode_del",
+        .desc  = "Remove EVFILT_VNODE watch",
+        .func  = test_kevent_vnode_del,
+    },
+    {
+        .name  = "kevent_vnode_del_nonexistent",
+        .desc  = "EV_DELETE on never-registered fd returns ENOENT",
+        .func  = test_kevent_vnode_del_nonexistent,
+    },
+    {
+        .name  = "kevent_vnode_udata_preserved",
+        .desc  = "udata round-trips through delivery",
+        .func  = test_kevent_vnode_udata_preserved,
+    },
+#ifdef EV_RECEIPT
+    {
+        .name  = "kevent_vnode_receipt_preserved",
+        .desc  = "EV_RECEIPT echoes kev with EV_ERROR=0",
+        .func  = test_kevent_vnode_receipt_preserved,
+    },
+#endif
+    {
+        .name  = "kevent_vnode_disable_and_enable",
+        .desc  = "EV_DISABLE suppresses events; EV_ENABLE restores delivery",
+        .func  = test_kevent_vnode_disable_and_enable,
+    },
+#ifdef EV_DISPATCH
+    {
+        .name  = "kevent_vnode_dispatch",
+        .desc  = "EV_DISPATCH auto-disables after first delivery",
+        .func  = test_kevent_vnode_dispatch,
+    },
+#endif
+#ifdef NOTE_WRITE
+    {
+        .name  = "kevent_vnode_note_write",
+        .desc  = "NOTE_WRITE fires on file data append",
+        .func  = test_kevent_vnode_note_write,
+    },
+#endif
+    {
+        .name  = "kevent_vnode_note_attrib",
+        .desc  = "NOTE_ATTRIB fires on utimes",
+        .func  = test_kevent_vnode_note_attrib,
+    },
+#ifdef NOTE_RENAME
+    {
+        .name  = "kevent_vnode_note_rename",
+        .desc  = "NOTE_RENAME fires on file rename",
+        .func  = test_kevent_vnode_note_rename,
+    },
+#endif
+    {
+        .name  = "kevent_vnode_note_attrib_chmod",
+        .desc  = "NOTE_ATTRIB fires on fchmod",
+        .func  = test_kevent_vnode_note_attrib_chmod,
+        .gates = vnode_gate_posix_only,
+    },
+    {
+        .name  = "kevent_vnode_note_attrib_chown",
+        .desc  = "NOTE_ATTRIB fires on fchown",
+        .func  = test_kevent_vnode_note_attrib_chown,
+        .gates = vnode_gate_posix_only,
+    },
+#ifdef NOTE_EXTEND
+    {
+        .name  = "kevent_vnode_note_extend",
+        .desc  = "NOTE_EXTEND fires on file size growth via write",
+        .func  = test_kevent_vnode_note_extend,
+    },
+    {
+        .name  = "kevent_vnode_note_extend_ftruncate",
+        .desc  = "NOTE_EXTEND fires on ftruncate-up (size grow without write)",
+        .func  = test_kevent_vnode_note_extend_ftruncate,
+        .gates = vnode_gate_extend_ftruncate,
+    },
+#endif
+#ifdef NOTE_LINK
+    {
+        .name  = "kevent_vnode_note_link",
+        .desc  = "NOTE_LINK fires on hardlink create and remove",
+        .func  = test_kevent_vnode_note_link,
+        .gates = vnode_gate_note_link,
+    },
+#endif
+    {
+        .name  = "kevent_vnode_fflag_accumulation",
+        .desc  = "Multiple NOTE_* bits coalesce into a single event",
+        .func  = test_kevent_vnode_fflag_accumulation,
+        .gates = vnode_gate_fflag_accumulation,
+    },
+#ifdef NOTE_RENAME
+    {
+        .name  = "kevent_vnode_rename_overwrite_ordering",
+        .desc  = "rename(A,B) fires NOTE_DELETE on B then NOTE_RENAME on A",
+        .func  = test_kevent_vnode_rename_overwrite_ordering,
+        .gates = vnode_gate_rename_overwrite,
+    },
+#endif
+#ifdef NOTE_LINK
+    {
+        .name  = "kevent_vnode_note_link_directory",
+        .desc  = "NOTE_LINK fires on parent dir when a subdirectory is created",
+        .func  = test_kevent_vnode_note_link_directory,
+        .gates = vnode_gate_posix_only,
+    },
+#endif
+#ifdef NOTE_TRUNCATE
+    {
+        .name  = "kevent_vnode_note_truncate",
+        .desc  = "NOTE_TRUNCATE fires on ftruncate shrink",
+        .func  = test_kevent_vnode_note_truncate,
+    },
+#endif
+    {
+        .name  = "kevent_vnode_note_delete_rename_over",
+        .desc  = "NOTE_DELETE fires on target vnode when renamed over",
+        .func  = test_kevent_vnode_note_delete_rename_over,
+        .gates = vnode_gate_posix_only,
+    },
+#if defined(NOTE_WRITE) && !defined(_WIN32)
+    {
+        .name  = "kevent_vnode_note_write_directory",
+        .desc  = "NOTE_WRITE fires on parent dir for child namespace mutations",
+        .func  = test_kevent_vnode_note_write_directory,
+        .gates = vnode_gate_posix_only,
+    },
+    {
+        .name  = "kevent_vnode_note_write_inplace",
+        .desc  = "NOTE_WRITE fires on same-size pwrite overwrite",
+        .func  = test_kevent_vnode_note_write_inplace,
+        .gates = vnode_gate_posix_only,
+    },
+#endif
+    {
+        .name  = "kevent_vnode_ev_clear",
+        .desc  = "EV_CLEAR resets the fflags accumulator after delivery",
+        .func  = test_kevent_vnode_ev_clear,
+    },
+    {
+        .name  = "kevent_vnode_fd_close",
+        .desc  = "Closing watched fd while knote is armed doesn't crash",
+        .func  = test_kevent_vnode_fd_close,
+    },
+    {
+        .name  = "kevent_vnode_multi_kqueue",
+        .desc  = "Two kqueues watching the same fd both receive the event",
+        .func  = test_kevent_vnode_multi_kqueue,
+    },
+    {
+        .name  = "kevent_vnode_non_file_rejected",
+        .desc  = "EVFILT_VNODE on a pipe fd is rejected with EINVAL",
+        .func  = test_kevent_vnode_non_file_rejected,
+    },
+    {
+        .name  = "kevent_vnode_modify_clobbers_udata",
+        .desc  = "Re-EV_ADD with new udata overwrites the previous udata",
+        .func  = test_kevent_vnode_modify_clobbers_udata,
+    },
+    {
+        .name  = "kevent_vnode_modify_disarms",
+        .desc  = "Re-EV_ADD with different fflags tears down the old watch",
+        .func  = test_kevent_vnode_modify_disarms,
+    },
+    {
+        .name  = "kevent_vnode_disable_drains",
+        .desc  = "EV_DISABLE drops a queued but undelivered event",
+        .func  = test_kevent_vnode_disable_drains,
+    },
+    {
+        .name  = "kevent_vnode_delete_drains",
+        .desc  = "EV_DELETE drops a queued but undelivered event",
+        .func  = test_kevent_vnode_delete_drains,
+    },
+    /*
+     * note_delete must run last: it unlinks ctx->testfile and the
+     * Linux backend resolves the watched path via /proc/self/fd/N,
+     * which after unlink reports "<path> (deleted)" causing
+     * inotify_add_watch to fail for any subsequent tests.
+     */
+    {
+        .name  = "kevent_vnode_note_delete",
+        .desc  = "NOTE_DELETE fires on unlink",
+        .func  = test_kevent_vnode_note_delete,
+    },
+    LKQ_SUITE_END
+};
+
 void
 test_evfilt_vnode(struct test_context *ctx)
 {
@@ -1165,128 +1416,8 @@ test_evfilt_vnode(struct test_context *ctx)
     snprintf(ctx->testfile, sizeof(ctx->testfile), "%s/kqueue-test%d.tmp",
             test_tmpdir(), testing_make_uid());
 
-    test(kevent_vnode_add, ctx);
-    test(kevent_vnode_del, ctx);
-    test(kevent_vnode_del_nonexistent, ctx);
-    test(kevent_vnode_udata_preserved, ctx);
-#ifdef EV_RECEIPT
-    test(kevent_vnode_receipt_preserved, ctx);
-#endif
-    test(kevent_vnode_disable_and_enable, ctx);
-#ifdef EV_DISPATCH
-    test(kevent_vnode_dispatch, ctx);
-#endif
-#ifdef NOTE_WRITE
-    test(kevent_vnode_note_write, ctx);
-#endif
-    test(kevent_vnode_note_attrib, ctx);
-#ifdef NOTE_RENAME
-    test(kevent_vnode_note_rename, ctx);
-#endif
-#ifndef _WIN32  /* fchmod / fchown are POSIX-only */
-    test(kevent_vnode_note_attrib_chmod, ctx);
-    test(kevent_vnode_note_attrib_chown, ctx);
-#endif
-#ifdef NOTE_EXTEND
-    test(kevent_vnode_note_extend, ctx);
-    /*
-     * Cross-BSD kernel bug: VOP_SETATTR doesn't fire NOTE_EXTEND
-     * on size grow.  Only the data-write path (ffs_write with
-     * extended=true) does.  By the kqueue contract NOTE_EXTEND
-     * means "size grew" regardless of how, so ftruncate-up
-     * should fire it.  FreeBSD/OpenBSD/NetBSD all miss this;
-     * macOS situation unclear (likely also missing).  libkqueue's
-     * stat-poll backends correctly fire it.
-     */
-#if !defined(NATIVE_KQUEUE) && !defined(_WIN32)
-    test(kevent_vnode_note_extend_ftruncate, ctx);
-#endif
-#endif
-#if defined(NOTE_LINK) && !defined(_WIN32)
-    /*
-     * Skipped on Windows: FindFirstChangeNotification doesn't reliably
-     * fire on CreateHardLink in the watched directory (TBD).
-     */
-    test(kevent_vnode_note_link, ctx);
-#endif
-    /*
-     * Accumulation: gated off on POSIX backend.  BSD's kqueue
-     * runs at the VFS layer - vop_setattr_post fires once for
-     * the touch (ATTRIB) and again for the ftruncate (EXTEND),
-     * the kqueue layer ORs both fflags into the pending event.
-     * Stat-snapshot polling only sees the end state: the
-     * ftruncate's size change masks the touch's ctime advance
-     * (NOTE_ATTRIB is gated on !size_changed to keep utimes
-     * from looking like a write), so only NOTE_EXTEND survives.
-     * Detecting both bits would require kernel-side hooks we
-     * don't have on POSIX.
-     */
-    /*
-     * Accumulation gated off:
-     *  - POSIX backend: stat-snapshot only sees end state; the
-     *    ftruncate's size change masks the touch's ctime advance,
-     *    so only NOTE_EXTEND survives the diff.
-     *  - All native BSDs (FreeBSD/OpenBSD/NetBSD/macOS): the
-     *    same VOP_SETATTR-doesn't-fire-NOTE_EXTEND-on-grow bug
-     *    that note_extend_ftruncate hits.  Accumulation here
-     *    relies on the touch + ftruncate-up combo.  libkqueue's
-     *    Linux backend (drain-and-union over inotify) is the
-     *    only place this currently passes.
-     */
-#if defined(LIBKQUEUE_BACKEND_LINUX)
-    test(kevent_vnode_fflag_accumulation, ctx);
-#endif
-    /*
-     * Win32: NtSetInformationFile(FileRenameInformation, Replace=TRUE)
-     * returns STATUS_ACCESS_DENIED on this overwrite-rename setup
-     * even with FILE_SHARE_DELETE on every relevant open and the
-     * NT-direct rename path bypassing MoveFileEx's wrapper checks.
-     * Pinpointing the exact handle that's blocking requires a
-     * minimal reproducer outside the test harness; tracked in
-     * https://github.com/mheily/libkqueue/issues/172
-     */
-#if defined(NOTE_RENAME) && !defined(_WIN32)
-    test(kevent_vnode_rename_overwrite_ordering, ctx);
-#endif
-#if defined(NOTE_LINK) && !defined(_WIN32)
-    test(kevent_vnode_note_link_directory, ctx);
-#endif
-#ifdef NOTE_TRUNCATE
-    test(kevent_vnode_note_truncate, ctx);
-#endif
-    /*
-     * Win32: same rename-over-an-open-watched-target shape as
-     * test_kevent_vnode_rename_overwrite_ordering above; both
-     * the user-mode MoveFileEx and the NT-direct rename path hit
-     * STATUS_ACCESS_DENIED.  Tracked in
-     * https://github.com/mheily/libkqueue/issues/172
-     */
-#ifndef _WIN32
-    test(kevent_vnode_note_delete_rename_over, ctx);
-#endif
-#ifdef NOTE_WRITE
-#  ifndef _WIN32
-    test(kevent_vnode_note_write_directory, ctx);
-    test(kevent_vnode_note_write_inplace, ctx);   /* uses pwrite */
-#  endif
-#endif
-    test(kevent_vnode_ev_clear, ctx);
-    test(kevent_vnode_fd_close, ctx);
-    test(kevent_vnode_multi_kqueue, ctx);
-    test(kevent_vnode_non_file_rejected, ctx);
-    /* Flag-behaviour group - run before note_delete so the file
-     * (and the path /proc/self/fd/N points at) still exists. */
-    test(kevent_vnode_modify_clobbers_udata, ctx);
-    test(kevent_vnode_modify_disarms, ctx);
-    test(kevent_vnode_disable_drains, ctx);
-    test(kevent_vnode_delete_drains, ctx);
-    /*
-     * note_delete must run last: it unlinks ctx->testfile and the
-     * Linux backend resolves the watched path each EV_ADD/EV_MODIFY
-     * via /proc/self/fd/N, which after unlink reports
-     * "<path> (deleted)" and inotify_add_watch fails.
-     */
-    test(kevent_vnode_note_delete, ctx);
+    run_test_suite(ctx, lkq_vnode_tests);
+
     /* TODO: test r590 corner case where a descriptor is closed and
              the associated knote is automatically freed. */
     unlink(ctx->testfile);

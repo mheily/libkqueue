@@ -1606,96 +1606,208 @@ test_kevent_threading_user_trigger_delete_race(struct test_context *ctx)
     }
 }
 
-void
-test_threading(struct test_context *ctx)
-{
-#if !defined(__FreeBSD__) && !defined(LIBKQUEUE_BACKEND_POSIX)
-	/*
-	 * Skipped on FreeBSD and on libkqueue's POSIX backend.  Native
-	 * FreeBSD kqueue doesn't unblock a kevent() parked on a kq when
-	 * another thread close()s the kq; the libkqueue POSIX
-	 * dispatcher's pselect has no equivalent close-wake either (the
-	 * user-facing kq_id is just a self-pipe and closing it from
-	 * another thread is undefined select(2) behaviour).  libkqueue's
-	 * Linux backend has explicit close-wake plumbing this test
-	 * exercises; macOS native kqueue happens to wake parked threads
-	 * on close.
-	 */
-	test(kevent_threading_close, ctx);
-	test(kevent_threading_close_multi, ctx);
-#endif
+/*
+ * Skipped on FreeBSD and on libkqueue's POSIX backend.  Native FreeBSD kqueue
+ * doesn't unblock a kevent() parked on a kq when another thread close()s the
+ * kq; the libkqueue POSIX dispatcher's pselect has no equivalent close-wake
+ * either (the user-facing kq_id is just a self-pipe and closing it from
+ * another thread is undefined select(2) behaviour).  libkqueue's Linux backend
+ * has explicit close-wake plumbing this test exercises; macOS native kqueue
+ * happens to wake parked threads on close.
+ */
+static const struct lkq_test_gate threading_close_gates[] = {
+	GATE(LKQ_PLATFORM_OS_FREEBSD,        "native kqueue doesn't wake parked threads on kq close"),
+	GATE(LKQ_PLATFORM_BACKEND_POSIX,     "POSIX pselect backend has no close-wake plumbing"),
+	{ 0, NULL }
+};
+
+/*
+ * Concurrent delete-race tests exercise EV_ADD/EV_DELETE against another
+ * thread parked in kevent_wait.  Solaris holds the kq lock across port_getn
+ * (no KEVENT_WAIT_DROP_LOCK) and lacks UAF-safe portev_user wrappers around
+ * port_event retrieval, so these races deadlock or trip EFAULT.  Gated until
+ * the backend grows knote refcounting + lock-drop.
+ */
+static const struct lkq_test_gate threading_solaris_gates[] = {
+	GATE(LKQ_PLATFORM_OS_SOLARIS,        "port_getn holds kq lock; knote refcounting not yet implemented"),
+	{ 0, NULL }
+};
+
+/*
+ * proc_delete_race uses fork(), which Win32 doesn't support.
+ */
+static const struct lkq_test_gate threading_solaris_win32_gates[] = {
+	GATE(LKQ_PLATFORM_OS_SOLARIS,        "port_getn holds kq lock; knote refcounting not yet implemented"),
+	GATE(LKQ_PLATFORM_OS_WINDOWS,        "proc_delete_race uses fork()"),
+	{ 0, NULL }
+};
+
+/*
+ * Win32's vnode backend uses FindFirstChangeNotificationW, which fires when
+ * the kernel flushes metadata for the parent dir.  For a 1-byte file write
+ * that flush can be tens of seconds out (the consumer's write goes to the
+ * cache; FILE_NOTIFY_CHANGE_SIZE / LAST_WRITE only re-arms the dir handle once
+ * the OS commits), which makes a "fire then sem_wait the delivery" test
+ * fundamentally racy against any reasonable watchdog.  Re-enable once the
+ * vnode backend is rewritten on top of ReadDirectoryChangesW.
+ */
+static const struct lkq_test_gate threading_win32_gates[] = {
+	GATE(LKQ_PLATFORM_OS_WINDOWS,        "vnode backend timing unreliable with FindFirstChangeNotificationW"),
+	{ 0, NULL }
+};
+
+/*
+ * NetBSD: native kqueue's main-thread kevent() blocks indefinitely while
+ * sibling threads churn EV_ADD / EV_DELETE on the same kq, so the
+ * 5000-iter * 100us-poll drain loop never returns and the watchdog kills the
+ * suite at 120s.  Reproduces against the upstream kernel; not a libkqueue bug.
+ * Gate until either the NetBSD kqueue serialisation is fixed upstream or the
+ * test is redesigned around a deterministic stop condition.
+ */
+static const struct lkq_test_gate threading_netbsd_gates[] = {
+	GATE(LKQ_PLATFORM_OS_NETBSD,         "native kqueue serialises on kq lock across concurrent add/delete"),
+	{ 0, NULL }
+};
+
+/*
+ * sigaction-driven; Win32 has no SIGUSR1 / kqueue signal filter.
+ */
+static const struct lkq_test_gate threading_signal_gates[] = {
+	GATE(LKQ_PLATFORM_OS_WINDOWS,        "no SIGUSR1 or kqueue signal filter on Win32"),
+	{ 0, NULL }
+};
+
+const struct lkq_test_case lkq_threading_tests[] = {
+	{
+		.name  = "kevent_threading_close",
+		.desc  = "kq close unblocks a parked kevent() in another thread",
+		.func  = test_kevent_threading_close,
+		.gates = threading_close_gates,
+	},
+	{
+		.name  = "kevent_threading_close_multi",
+		.desc  = "kq close unblocks multiple threads parked in kevent()",
+		.func  = test_kevent_threading_close_multi,
+		.gates = threading_close_gates,
+	},
 #ifdef TEST_DROP_LOCK_WAKE
 	/*
 	 * Requires the backend to drop the kq lock across kevent_wait
-	 * (KEVENT_WAIT_DROP_LOCK).  Backends that hold the lock through
-	 * the wait can't deliver a cross-thread EVFILT_USER trigger
-	 * until the waiter returns for some other reason.
+	 * (KEVENT_WAIT_DROP_LOCK).  Backends that hold the lock through the wait
+	 * can't deliver a cross-thread EVFILT_USER trigger until the waiter
+	 * returns for some other reason.
 	 */
-	test(kevent_threading_user_trigger_cross_thread, ctx);
+	{
+		.name  = "kevent_threading_user_trigger_cross_thread",
+		.desc  = "EVFILT_USER trigger from another thread wakes kevent()",
+		.func  = test_kevent_threading_user_trigger_cross_thread,
+	},
 #endif
-	test(kevent_threading_multi_waiter_delete_race, ctx);
-	test(kevent_threading_multi_waiter_oneshot, ctx);
-	test(kevent_threading_timer_delete_race, ctx);
-#ifndef _WIN32
-	/* sigaction-driven; Win32 has no SIGUSR1 / kqueue signal filter. */
-	test(kevent_threading_signal_delete_race, ctx);
+	{
+		.name  = "kevent_threading_multi_waiter_delete_race",
+		.desc  = "EV_DELETE while multiple threads are parked in kevent()",
+		.func  = test_kevent_threading_multi_waiter_delete_race,
+	},
+	{
+		.name  = "kevent_threading_multi_waiter_oneshot",
+		.desc  = "EV_ONESHOT delivered to exactly one of several waiters",
+		.func  = test_kevent_threading_multi_waiter_oneshot,
+	},
+	{
+		.name  = "kevent_threading_timer_delete_race",
+		.desc  = "EV_DELETE of a timer knote races with delivery",
+		.func  = test_kevent_threading_timer_delete_race,
+	},
+	{
+		.name  = "kevent_threading_signal_delete_race",
+		.desc  = "EV_DELETE of a signal knote races with delivery",
+		.func  = test_kevent_threading_signal_delete_race,
+		.gates = threading_signal_gates,
+	},
+#ifdef EVFILT_VNODE
+	{
+		.name  = "kevent_threading_vnode_delete_race",
+		.desc  = "EV_DELETE of a vnode knote races with delivery",
+		.func  = test_kevent_threading_vnode_delete_race,
+		.gates = threading_solaris_gates,
+	},
 #endif
-#if !defined(__sun)
-	/*
-	 * Concurrent delete-race tests exercise EV_ADD/EV_DELETE
-	 * against another thread parked in kevent_wait.  Solaris
-	 * holds the kq lock across port_getn (no KEVENT_WAIT_DROP_LOCK)
-	 * AND lacks UAF-safe portev_user wrappers around port_event
-	 * retrieval, so these races deadlock or trip EFAULT.  Gated
-	 * until the backend grows knote refcounting + lock-drop.
-	 *
-	 * Win32 vnode_delete_race needs the test's unlink() path which
-	 * is fine, but proc_delete_race uses fork() - skip both for
-	 * now (vnode could be re-enabled separately).
-	 */
-# ifdef EVFILT_VNODE
-	test(kevent_threading_vnode_delete_race, ctx);
-# endif
-# if defined(EVFILT_PROC) && !defined(_WIN32)
-	test(kevent_threading_proc_delete_race, ctx);
-# endif
+#if defined(EVFILT_PROC)
+	{
+		.name  = "kevent_threading_proc_delete_race",
+		.desc  = "EV_DELETE of a proc knote races with delivery",
+		.func  = test_kevent_threading_proc_delete_race,
+		.gates = threading_solaris_win32_gates,
+	},
 #endif
-	test(kevent_threading_read_delete_race, ctx);
-	test(kevent_threading_write_delete_race, ctx);
-	test(kevent_threading_user_single_delivery, ctx);
-	test(kevent_threading_timer_single_delivery, ctx);
-#ifndef _WIN32
-	test(kevent_threading_signal_single_delivery, ctx);
+	{
+		.name  = "kevent_threading_read_delete_race",
+		.desc  = "EV_DELETE of a read knote races with delivery",
+		.func  = test_kevent_threading_read_delete_race,
+	},
+	{
+		.name  = "kevent_threading_write_delete_race",
+		.desc  = "EV_DELETE of a write knote races with delivery",
+		.func  = test_kevent_threading_write_delete_race,
+	},
+	{
+		.name  = "kevent_threading_user_single_delivery",
+		.desc  = "EVFILT_USER event delivered exactly once across threads",
+		.func  = test_kevent_threading_user_single_delivery,
+	},
+	{
+		.name  = "kevent_threading_timer_single_delivery",
+		.desc  = "timer event delivered exactly once across threads",
+		.func  = test_kevent_threading_timer_single_delivery,
+	},
+	{
+		.name  = "kevent_threading_signal_single_delivery",
+		.desc  = "signal event delivered exactly once across threads",
+		.func  = test_kevent_threading_signal_single_delivery,
+		.gates = threading_signal_gates,
+	},
+#ifdef EVFILT_VNODE
+	{
+		.name  = "kevent_threading_vnode_single_delivery",
+		.desc  = "vnode event delivered exactly once across threads",
+		.func  = test_kevent_threading_vnode_single_delivery,
+		.gates = threading_win32_gates,
+	},
 #endif
-#if defined(EVFILT_VNODE) && !defined(_WIN32)
-	/*
-	 * Win32's vnode backend uses FindFirstChangeNotificationW, which
-	 * fires when the kernel flushes metadata for the parent dir.
-	 * For a 1-byte file write that flush can be tens of seconds out
-	 * (the consumer's write goes to the cache; FILE_NOTIFY_CHANGE_SIZE
-	 * / LAST_WRITE only re-arms the dir handle once the OS commits),
-	 * which makes a "fire then sem_wait the delivery" test fundamen-
-	 * tally racy against any reasonable watchdog.  Re-enable once the
-	 * vnode backend is rewritten on top of ReadDirectoryChangesW.
-	 */
-	test(kevent_threading_vnode_single_delivery, ctx);
+#if defined(EVFILT_PROC)
+	{
+		.name  = "kevent_threading_proc_single_delivery",
+		.desc  = "proc event delivered exactly once across threads",
+		.func  = test_kevent_threading_proc_single_delivery,
+		.gates = threading_signal_gates,
+	},
 #endif
-#if defined(EVFILT_PROC) && !defined(_WIN32)
-	test(kevent_threading_proc_single_delivery, ctx);
-#endif
-	test(kevent_threading_read_single_delivery, ctx);
-	test(kevent_threading_write_single_delivery, ctx);
-	/*
-	 * NetBSD: native kqueue's main-thread kevent() blocks indefinitely
-	 * while sibling threads churn EV_ADD / EV_DELETE on the same kq,
-	 * so the 5000-iter * 100us-poll drain loop never returns and the
-	 * watchdog kills the suite at 120s.  Reproduces against the
-	 * upstream kernel; not a libkqueue bug.  Gate until either the
-	 * NetBSD kqueue serialisation is fixed upstream or the test is
-	 * redesigned around a deterministic stop condition.
-	 */
-#ifndef __NetBSD__
-	test(kevent_threading_fd_reuse_stress, ctx);
-#endif
-	test(kevent_threading_user_trigger_delete_race, ctx);
+	{
+		.name  = "kevent_threading_read_single_delivery",
+		.desc  = "read event delivered exactly once across threads",
+		.func  = test_kevent_threading_read_single_delivery,
+	},
+	{
+		.name  = "kevent_threading_write_single_delivery",
+		.desc  = "write event delivered exactly once across threads",
+		.func  = test_kevent_threading_write_single_delivery,
+	},
+	{
+		.name  = "kevent_threading_fd_reuse_stress",
+		.desc  = "fd reuse stress test: rapid open/close while kevent() runs",
+		.func  = test_kevent_threading_fd_reuse_stress,
+		.gates = threading_netbsd_gates,
+	},
+	{
+		.name  = "kevent_threading_user_trigger_delete_race",
+		.desc  = "EVFILT_USER trigger races with EV_DELETE from another thread",
+		.func  = test_kevent_threading_user_trigger_delete_race,
+	},
+	LKQ_SUITE_END
+};
+
+void
+test_threading(struct test_context *ctx)
+{
+	run_test_suite(ctx, lkq_threading_tests);
 }

@@ -728,84 +728,212 @@ test_kevent_timer_ev_clear_resets_data(struct test_context *ctx)
     kevent_add(ctx->kqfd, &kev, 79, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
 }
 
+static const struct lkq_test_gate timer_negative_interval_gates[] = {
+    GATE(LKQ_PLATFORM_NATIVE_NOT_FREEBSD,
+         "native kqueue on macOS/OpenBSD/NetBSD accepts negative intervals silently"),
+    { 0, NULL }
+};
+
+#ifdef NOTE_NSECONDS
+static const struct lkq_test_gate timer_huge_interval_gates[] = {
+    GATE(LKQ_PLATFORM_BACKEND_NATIVE,
+         "native kqueue sbintime conversion overflows on very large NOTE_NSECONDS values"),
+    { 0, NULL }
+};
+#endif
+
+#ifdef EV_DISPATCH
+static const struct lkq_test_gate timer_dispatch_gates[] = {
+    GATE(LKQ_PLATFORM_OS_NETBSD,
+         "NetBSD native kqueue does not auto-disable the timer knote on EV_DISPATCH"),
+    GATE(LKQ_PLATFORM_OS_OPENBSD,
+         "OpenBSD delivers accumulated ticks immediately on re-enable after EV_DISPATCH"),
+    { 0, NULL }
+};
+#endif
+
+#ifdef NOTE_ABSOLUTE
+static const struct lkq_test_gate timer_note_absolute_gates[] = {
+    GATE(LKQ_PLATFORM_OS_MACOS,
+         "macOS XNU NOTE_ABSOLUTE timer semantics differ from POSIX-clock-based BSDs"),
+    { 0, NULL }
+};
+#endif
+
+static const struct lkq_test_gate timer_modify_preserves_ev_receipt_gates[] = {
+    /* NetBSD filt_timermodify does kn->kn_flags = kev->flags, losing EV_RECEIPT
+     * from the original EV_ADD (github.com/NetBSD/src sys/kern/kern_event.c:1536). */
+    GATE(LKQ_PLATFORM_OS_NETBSD,
+         "NetBSD filt_timermodify replaces kn_flags entirely, losing EV_RECEIPT"),
+    { 0, NULL }
+};
+
+const struct lkq_test_case lkq_timer_tests[] =
+{
+    {
+        .name  = "test_kevent_timer_add",
+        .desc  = "EV_ADD registers a timer knote",
+        .func  = test_kevent_timer_add,
+    },
+    {
+        .name  = "test_kevent_timer_del",
+        .desc  = "EV_DELETE removes the timer knote",
+        .func  = test_kevent_timer_del,
+    },
+    {
+        .name  = "test_kevent_timer_del_nonexistent",
+        .desc  = "EV_DELETE on unregistered ident returns ENOENT",
+        .func  = test_kevent_timer_del_nonexistent,
+    },
+    {
+        .name  = "test_kevent_timer_get",
+        .desc  = "periodic timer fires and delivers an event",
+        .func  = test_kevent_timer_get,
+    },
+    {
+        .name  = "test_kevent_timer_udata_preserved",
+        .desc  = "udata round-trips unchanged through timer delivery",
+        .func  = test_kevent_timer_udata_preserved,
+    },
+    {
+        .name  = "test_kevent_timer_disable_drains",
+        .desc  = "EV_DISABLE drops a pending timer event",
+        .func  = test_kevent_timer_disable_drains,
+    },
+    {
+        .name  = "test_kevent_timer_delete_drains",
+        .desc  = "EV_DELETE drops a pending timer event",
+        .func  = test_kevent_timer_delete_drains,
+    },
+    {
+        .name  = "test_kevent_timer_multi_kqueue",
+        .desc  = "same timer ident in two kqueues delivers independently",
+        .func  = test_kevent_timer_multi_kqueue,
+    },
+    {
+        .name  = "test_kevent_timer_negative_interval_rejected",
+        .desc  = "negative timer interval is rejected with EINVAL",
+        .func  = test_kevent_timer_negative_interval_rejected,
+        .gates = timer_negative_interval_gates,
+    },
+#ifdef NOTE_NSECONDS
+    {
+        .name  = "test_kevent_timer_huge_interval",
+        .desc  = "very large NOTE_NSECONDS interval does not overflow",
+        .func  = test_kevent_timer_huge_interval,
+        .gates = timer_huge_interval_gates,
+    },
+#endif
+    {
+        .name  = "test_kevent_timer_overrun_count",
+        .desc  = "data field accumulates tick overruns",
+        .func  = test_kevent_timer_overrun_count,
+    },
+    {
+        .name  = "test_kevent_timer_ev_clear_resets_data",
+        .desc  = "EV_CLEAR zeroes the overrun counter on delivery",
+        .func  = test_kevent_timer_ev_clear_resets_data,
+    },
+#if defined(NOTE_NSECONDS) && defined(NOTE_SECONDS)
+    {
+        .name  = "test_kevent_timer_modify_replaces_fflags",
+        .desc  = "re-EV_ADD with new fflags replaces rather than ORs the unit",
+        .func  = test_kevent_timer_modify_replaces_fflags,
+    },
+#endif
+#ifdef NOTE_ABSOLUTE
+    {
+        .name  = "test_kevent_timer_note_absolute_past",
+        .desc  = "NOTE_ABSOLUTE timestamp in the past fires immediately",
+        .func  = test_kevent_timer_note_absolute_past,
+    },
+#endif
+    {
+        .name  = "test_kevent_timer_oneshot",
+        .desc  = "EV_ONESHOT timer fires once then auto-deletes",
+        .func  = test_kevent_timer_oneshot,
+    },
+    {
+        .name  = "test_kevent_timer_periodic",
+        .desc  = "periodic timer fires repeatedly at the given interval",
+        .func  = test_kevent_timer_periodic,
+    },
+    {
+        .name  = "test_kevent_timer_periodic_modify",
+        .desc  = "re-EV_ADD on a running timer changes its interval",
+        .func  = test_kevent_timer_periodic_modify,
+    },
+#if WITH_NATIVE_KQUEUE_BUGS
+    {
+        .name  = "test_kevent_timer_periodic_to_oneshot",
+        .desc  = "modifying a periodic timer to EV_ONESHOT fires once then auto-deletes",
+        .func  = test_kevent_timer_periodic_to_oneshot,
+    },
+#endif
+    {
+        .name  = "test_kevent_timer_disable_and_enable",
+        .desc  = "EV_DISABLE suppresses delivery; EV_ENABLE restores",
+        .func  = test_kevent_timer_disable_and_enable,
+    },
+#ifdef EV_DISPATCH
+    {
+        .name  = "test_kevent_timer_dispatch",
+        .desc  = "EV_DISPATCH fires once then auto-disables",
+        .func  = test_kevent_timer_dispatch,
+        .gates = timer_dispatch_gates,
+    },
+#endif
+#ifdef NOTE_USECONDS
+    {
+        .name  = "test_kevent_timer_note_useconds",
+        .desc  = "NOTE_USECONDS sets the timer interval in microseconds",
+        .func  = test_kevent_timer_note_useconds,
+    },
+#endif
+#ifdef NOTE_NSECONDS
+    {
+        .name  = "test_kevent_timer_note_nseconds",
+        .desc  = "NOTE_NSECONDS sets the timer interval in nanoseconds",
+        .func  = test_kevent_timer_note_nseconds,
+    },
+#endif
+#ifdef NOTE_SECONDS
+    {
+        .name  = "test_kevent_timer_note_seconds",
+        .desc  = "NOTE_SECONDS sets the timer interval in seconds",
+        .func  = test_kevent_timer_note_seconds,
+    },
+#endif
+#ifdef NOTE_ABSOLUTE
+    {
+        .name  = "test_kevent_timer_note_absolute",
+        .desc  = "NOTE_ABSOLUTE fires at an absolute wall-clock time",
+        .func  = test_kevent_timer_note_absolute,
+        .gates = timer_note_absolute_gates,
+    },
+    {
+        .name  = "test_kevent_timer_note_absolute_after_modify",
+        .desc  = "NOTE_ABSOLUTE deadline updates correctly via re-EV_ADD",
+        .func  = test_kevent_timer_note_absolute_after_modify,
+        .gates = timer_note_absolute_gates,
+    },
+#endif
+    {
+        .name  = "test_kevent_timer_modify_preserves_ev_receipt",
+        .desc  = "EV_RECEIPT flag survives a timer knote modify",
+        .func  = test_kevent_timer_modify_preserves_ev_receipt,
+        .gates = timer_modify_preserves_ev_receipt_gates,
+    },
+    {
+        .name  = "test_kevent_timer_modify_clobbers_udata",
+        .desc  = "re-EV_ADD replaces udata on a timer knote",
+        .func  = test_kevent_timer_modify_clobbers_udata,
+    },
+    LKQ_SUITE_END
+};
+
 void
 test_evfilt_timer(struct test_context *ctx)
 {
-    test(kevent_timer_add, ctx);
-    test(kevent_timer_del, ctx);
-    test(kevent_timer_del_nonexistent, ctx);
-    test(kevent_timer_get, ctx);
-    test(kevent_timer_udata_preserved, ctx);
-    test(kevent_timer_disable_drains, ctx);
-    test(kevent_timer_delete_drains, ctx);
-    test(kevent_timer_multi_kqueue, ctx);
-    /*
-     * Negative interval contract: FreeBSD and libkqueue reject;
-     * OpenBSD/NetBSD/macOS don't validate.  Run only where the
-     * EINVAL contract holds.
-     */
-#if !defined(NATIVE_KQUEUE) || defined(__FreeBSD__)
-    test(kevent_timer_negative_interval_rejected, ctx);
-#endif
-    /*
-     * Huge NOTE_NSECONDS interval: FreeBSD's filt_timervalidate
-     * conversion path fires immediately for INTPTR_MAX/2 ns
-     * (suspected sbintime conversion overflow); audit flagged
-     * "Only LP64 has the SBT_MAX clamp; on 32-bit the data << 32
-     * overflows silently".  libkqueue handles it sanely.  Gate
-     * to libkqueue until the kernel-side overflow is verified
-     * fixed across BSDs.
-     */
-#if defined(NOTE_NSECONDS) && !defined(NATIVE_KQUEUE)
-    test(kevent_timer_huge_interval, ctx);
-#endif
-    test(kevent_timer_overrun_count, ctx);
-    test(kevent_timer_ev_clear_resets_data, ctx);
-#if defined(NOTE_NSECONDS) && defined(NOTE_SECONDS)
-    test(kevent_timer_modify_replaces_fflags, ctx);
-#endif
-#ifdef NOTE_ABSOLUTE
-    test(kevent_timer_note_absolute_past, ctx);
-#endif
-    test(kevent_timer_oneshot, ctx);
-    test(kevent_timer_periodic, ctx);
-    test(kevent_timer_periodic_modify, ctx);
-#if WITH_NATIVE_KQUEUE_BUGS
-    test(kevent_timer_periodic_to_oneshot, ctx);
-#endif
-    test(kevent_timer_disable_and_enable, ctx);
-/*
- * NetBSD doesn't disable the timer knote when EV_DISPATCH fires;
- * OpenBSD delivers accumulated ticks immediately on re-enable.
- * Both deviate enough that the test can't pass on either platform.
- */
-#if defined(EV_DISPATCH) && !defined(__NetBSD__) && !defined(__OpenBSD__)
-    test(kevent_timer_dispatch, ctx);
-#endif
-#ifdef NOTE_USECONDS
-    test(kevent_timer_note_useconds, ctx);
-#endif
-#ifdef NOTE_NSECONDS
-    test(kevent_timer_note_nseconds, ctx);
-#endif
-#ifdef NOTE_SECONDS
-    test(kevent_timer_note_seconds, ctx);
-#endif
-#if defined(NOTE_ABSOLUTE) && !defined(__APPLE__)
-    test(kevent_timer_note_absolute, ctx);
-    test(kevent_timer_note_absolute_after_modify, ctx);
-#endif
-/*
- * NetBSD kern_event.c filt_timermodify does kn->kn_flags = kev->flags,
- * replacing the flags word completely (github.com/NetBSD/src
- * sys/kern/kern_event.c:1536).  EV_RECEIPT set on the original EV_ADD
- * is lost when a subsequent modify omits it.  OpenBSD's filt_timermodify
- * calls knote_assign(), which only updates sfflags/sdata/udata and
- * leaves kn_flags intact (github.com/openbsd/src
- * sys/kern/kern_event.c:746,2340), so EV_RECEIPT survives there.
- */
-#if !defined(__NetBSD__)
-    test(kevent_timer_modify_preserves_ev_receipt, ctx);
-#endif
-    test(kevent_timer_modify_clobbers_udata, ctx);
+    run_test_suite(ctx, lkq_timer_tests);
 }

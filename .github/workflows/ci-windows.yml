@@ -90,6 +90,28 @@ jobs:
         run: |
           cmake --build build_x64 --target libkqueue-test --config ${{ matrix.build_type }} --parallel 1
 
+      - name: Gated tests
+        if: always()
+        shell: pwsh
+        run: |
+          $bin = ".\build_x64\test\${{ matrix.build_type }}\libkqueue-test.exe"
+          $gated = & $bin --list-gated=windows 2>$null
+          $lines = [System.Collections.Generic.List[string]]@(
+            "## Gated on windows",
+            "| Suite | Test | Reason |",
+            "| --- | --- | --- |"
+          )
+          if ($gated) {
+            $gated | ForEach-Object {
+              $cols = $_ -split "`t", 3
+              $cols[2] = $cols[2] -replace '\|', '&#124;'
+              $lines.Add("| $($cols[0]) | $($cols[1]) | $($cols[2]) |")
+            }
+          } else {
+            $lines.Add("_none_")
+          }
+          $lines | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
       - name: "Locate cdb.exe"
         id: cdb
         shell: pwsh

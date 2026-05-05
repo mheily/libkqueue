@@ -685,66 +685,174 @@ test_kevent_signal_delete_drains(struct test_context *ctx)
     test_no_kevents(ctx->kqfd);
 }
 
+/* skip on native kqueue: bogus signum registers cleanly and never fires */
+static const struct lkq_test_gate signal_invalid_signum_rejected_gates[] =
+{
+    GATE(LKQ_PLATFORM_BACKEND_NATIVE, "native kqueue does not validate signum at registration"),
+    { 0, NULL }
+};
+
+/*
+ * pthread_kill(self) hangs on the Linux backend (signalfd may not see
+ * per-thread-targeted signals) and on macOS native kqueue (psignal_internal
+ * doesn't fire EVFILT_SIGNAL for pthread_kill-routed signals).  Only FreeBSD's
+ * tdksignal -> tdsendsignal path posts to the proc-level klist regardless of
+ * source thread.
+ */
+static const struct lkq_test_gate signal_pthread_kill_self_gates[] =
+{
+    GATE(LKQ_PLATFORM_BACKEND_LINUX, "signalfd may not see per-thread-targeted signals"),
+    GATE(LKQ_PLATFORM_OS_MACOS,      "psignal_internal doesn't fire EVFILT_SIGNAL for pthread_kill"),
+    { 0, NULL }
+};
+
+/*
+ * NetBSD native kqueue doesn't hold signals while a knote is
+ * EV_DISPATCH-disabled; the second kill() fires through immediately rather
+ * than being buffered for re-enable.
+ */
+#ifdef EV_DISPATCH
+static const struct lkq_test_gate signal_dispatch_gates[] =
+{
+    GATE(LKQ_PLATFORM_OS_NETBSD, "NetBSD doesn't buffer signals across EV_DISPATCH disable"),
+    { 0, NULL }
+};
+#endif
+
+const struct lkq_test_case lkq_signal_tests[] =
+{
+    {
+        .name  = "test_kevent_signal_add",
+        .desc  = "EV_ADD registers a signal knote",
+        .func  = test_kevent_signal_add,
+    },
+    {
+        .name  = "test_kevent_signal_del",
+        .desc  = "EV_DELETE removes a signal knote",
+        .func  = test_kevent_signal_del,
+    },
+    {
+        .name  = "test_kevent_signal_del_nonexistent",
+        .desc  = "EV_DELETE on unregistered signum returns ENOENT",
+        .func  = test_kevent_signal_del_nonexistent,
+    },
+    {
+        .name  = "test_kevent_signal_udata_preserved",
+        .desc  = "udata round-trips through signal delivery",
+        .func  = test_kevent_signal_udata_preserved,
+    },
+#if !defined(NATIVE_KQUEUE)
+    {
+        .name  = "test_kevent_signal_invalid_signum_rejected",
+        .desc  = "EV_ADD with invalid signal number returns EINVAL",
+        .func  = test_kevent_signal_invalid_signum_rejected,
+        .gates = signal_invalid_signum_rejected_gates,
+    },
+#endif
+    {
+        .name  = "test_kevent_signal_ev_clear_resets_data",
+        .desc  = "EV_CLEAR resets kev.data to 0 after delivery",
+        .func  = test_kevent_signal_ev_clear_resets_data,
+    },
+    {
+        .name  = "test_kevent_signal_pthread_kill_self",
+        .desc  = "pthread_kill(self) fires the signal knote",
+        .func  = test_kevent_signal_pthread_kill_self,
+        .gates = signal_pthread_kill_self_gates,
+    },
+    {
+        .name  = "test_kevent_signal_fires_while_blocked",
+        .desc  = "signal blocked via sigprocmask still fires the knote",
+        .func  = test_kevent_signal_fires_while_blocked,
+    },
+    {
+        .name  = "test_kevent_signal_disable_drains",
+        .desc  = "EV_DISABLE drops a pending signal-fire",
+        .func  = test_kevent_signal_disable_drains,
+    },
+    {
+        .name  = "test_kevent_signal_delete_drains",
+        .desc  = "EV_DELETE drops a pending fire",
+        .func  = test_kevent_signal_delete_drains,
+    },
+    {
+        .name  = "test_kevent_signal_sigcont",
+        .desc  = "EVFILT_SIGNAL fires on SIGCONT",
+        .func  = test_kevent_signal_sigcont,
+    },
+    {
+        .name  = "test_kevent_signal_get",
+        .desc  = "kill() delivers an event to a registered signal knote",
+        .func  = test_kevent_signal_get,
+    },
+    {
+        .name  = "test_kevent_signal_get_pending",
+        .desc  = "pending signal reported when knote is registered",
+        .func  = test_kevent_signal_get_pending,
+    },
+    {
+        .name  = "test_kevent_signal_disable",
+        .desc  = "EV_DISABLE suppresses signal delivery",
+        .func  = test_kevent_signal_disable,
+    },
+    {
+        .name  = "test_kevent_signal_enable",
+        .desc  = "EV_ENABLE resumes signal delivery after disable",
+        .func  = test_kevent_signal_enable,
+    },
+    {
+        .name  = "test_kevent_signal_oneshot",
+        .desc  = "EV_ONESHOT fires once then auto-removes the knote",
+        .func  = test_kevent_signal_oneshot,
+    },
+    {
+        .name  = "test_kevent_signal_modify",
+        .desc  = "re-EV_ADD modifies an existing signal knote",
+        .func  = test_kevent_signal_modify,
+    },
+#ifdef EV_DISPATCH
+    {
+        .name  = "test_kevent_signal_dispatch",
+        .desc  = "EV_DISPATCH disables the knote after each delivery",
+        .func  = test_kevent_signal_dispatch,
+        .gates = signal_dispatch_gates,
+    },
+#endif
+    {
+        .name  = "test_kevent_signal_multi_kqueue",
+        .desc  = "single kill observed by two kqueues watching the same signum",
+        .func  = test_kevent_signal_multi_kqueue,
+    },
+    {
+        .name  = "test_kevent_signal_multi_signum",
+        .desc  = "distinct signums on one kqueue each fire only the matching knote",
+        .func  = test_kevent_signal_multi_signum,
+    },
+    {
+        .name  = "test_kevent_signal_receipt_preserved",
+        .desc  = "EV_RECEIPT flag survives a modify",
+        .func  = test_kevent_signal_receipt_preserved,
+    },
+    {
+        .name  = "test_kevent_signal_modify_clobbers_udata",
+        .desc  = "re-EV_ADD overwrites udata",
+        .func  = test_kevent_signal_modify_clobbers_udata,
+    },
+#ifdef SIGRTMIN
+    {
+        .name  = "test_kevent_signal_rt_late_register",
+        .desc  = "RT signal queueing: late-registered kqueue sees only post-registration fires",
+        .func  = test_kevent_signal_rt_late_register,
+    },
+#endif
+    LKQ_SUITE_END
+};
+
 void
 test_evfilt_signal(struct test_context *ctx)
 {
     signal(SIGUSR1, SIG_IGN);
     signal(SIGUSR2, SIG_IGN);
 
-    test(kevent_signal_add, ctx);
-    test(kevent_signal_del, ctx);
-    test(kevent_signal_del_nonexistent, ctx);
-    test(kevent_signal_udata_preserved, ctx);
-#if !defined(NATIVE_KQUEUE)
-    test(kevent_signal_invalid_signum_rejected, ctx);
-#endif
-    test(kevent_signal_ev_clear_resets_data, ctx);
-    /*
-     * pthread_kill(self) hangs on:
-     *  - Linux backend (signalfd-based dispatch may not see
-     *    per-thread-targeted signals if the calling thread doesn't
-     *    have the signal masked)
-     *  - macOS native kqueue (psignal_internal apparently doesn't
-     *    fire EVFILT_SIGNAL on pthread_kill-routed signals; test
-     *    deadlocks waiting for an event that never arrives)
-     * Only FreeBSD's tdksignal -> tdsendsignal path posts to the
-     * proc-level klist regardless of source thread.
-     */
-#if !defined(LIBKQUEUE_BACKEND_LINUX) && !defined(__APPLE__)
-    test(kevent_signal_pthread_kill_self, ctx);
-#endif
-    test(kevent_signal_fires_while_blocked, ctx);
-    test(kevent_signal_disable_drains, ctx);
-    test(kevent_signal_delete_drains, ctx);
-    test(kevent_signal_sigcont, ctx);
-    test(kevent_signal_get, ctx);
-    test(kevent_signal_get_pending, ctx);
-    test(kevent_signal_disable, ctx);
-    test(kevent_signal_enable, ctx);
-    test(kevent_signal_oneshot, ctx);
-    test(kevent_signal_modify, ctx);
-/*
- * NetBSD native kqueue doesn't hold signals while a knote is
- * EV_DISPATCH-disabled; the second kill() fires through immediately
- * rather than being buffered for re-enable.
- */
-#if defined(EV_DISPATCH) && !defined(__NetBSD__)
-    test(kevent_signal_dispatch, ctx);
-#endif
-    test(kevent_signal_multi_kqueue, ctx);
-    test(kevent_signal_multi_signum, ctx);
-    test(kevent_signal_receipt_preserved, ctx);
-    test(kevent_signal_modify_clobbers_udata, ctx);
-    /*
-     * RT-signal queueing: the kernel queues N copies of the same
-     * RT signum and the test expects the knote to fire N times.
-     * The POSIX backend's sigaction + self-pipe layer collapses
-     * pending signals to a single fire (one byte per signum gets
-     * written to the self-pipe regardless of arrival count), so
-     * queueing semantics aren't there yet.  Skip until the
-     * dispatcher learns to count.
-     */
-#ifdef SIGRTMIN
-    test(kevent_signal_rt_late_register, ctx);
-#endif
+    run_test_suite(ctx, lkq_signal_tests);
 }

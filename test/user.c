@@ -830,37 +830,136 @@ test_kevent_user_stress(struct test_context *ctx)
 }
 #endif /* _WIN32 && EVFILT_USER */
 
+const struct lkq_test_case lkq_user_tests[] = {
+    {
+        .name  = "test_kevent_user_add_and_delete",
+        .desc  = "EV_ADD and EV_DELETE register and remove an EVFILT_USER knote",
+        .func  = test_kevent_user_add_and_delete,
+    },
+    {
+        .name  = "test_kevent_user_get",
+        .desc  = "NOTE_TRIGGER fires a registered EVFILT_USER knote",
+        .func  = test_kevent_user_get,
+    },
+    {
+        .name  = "test_kevent_user_get_hires",
+        .desc  = "NOTE_TRIGGER fires an EVFILT_USER knote with a sub-second timeout",
+        .func  = test_kevent_user_get_hires,
+    },
+    {
+        .name  = "test_kevent_user_disable_and_enable",
+        .desc  = "EV_DISABLE suppresses triggers; EV_ENABLE re-arms",
+        .func  = test_kevent_user_disable_and_enable,
+    },
+    {
+        .name  = "test_kevent_user_disable_drains",
+        .desc  = "EV_DISABLE drops a pending NOTE_TRIGGER",
+        .func  = test_kevent_user_disable_drains,
+    },
+    {
+        .name  = "test_kevent_user_delete_drains",
+        .desc  = "EV_DELETE drops a pending NOTE_TRIGGER",
+        .func  = test_kevent_user_delete_drains,
+    },
+    {
+        .name  = "test_kevent_user_receipt_preserved",
+        .desc  = "EV_RECEIPT survives a bare NOTE_TRIGGER modify",
+        .func  = test_kevent_user_receipt_preserved,
+    },
+    {
+        .name  = "test_kevent_user_modify_clobbers_udata",
+        .desc  = "bare NOTE_TRIGGER overwrites udata in the stored knote",
+        .func  = test_kevent_user_modify_clobbers_udata,
+    },
+    {
+        .name  = "test_kevent_user_oneshot",
+        .desc  = "EV_ONESHOT auto-deletes after one EVFILT_USER event",
+        .func  = test_kevent_user_oneshot,
+    },
+    {
+        .name  = "test_kevent_user_multi_trigger_merged",
+        .desc  = "multiple NOTE_TRIGGERs between drains coalesce into one event",
+        .func  = test_kevent_user_multi_trigger_merged,
+    },
+    {
+        .name  = "test_kevent_user_del_nonexistent",
+        .desc  = "EV_DELETE on a never-registered ident returns ENOENT",
+        .func  = test_kevent_user_del_nonexistent,
+    },
+    {
+        .name  = "test_kevent_user_udata_preserved",
+        .desc  = "udata round-trips through EVFILT_USER delivery",
+        .func  = test_kevent_user_udata_preserved,
+    },
+    {
+        .name  = "test_kevent_user_multi_kqueue",
+        .desc  = "two kqueues with the same EVFILT_USER ident have independent state",
+        .func  = test_kevent_user_multi_kqueue,
+    },
+    {
+        .name  = "test_kevent_user_note_ffcopy",
+        .desc  = "NOTE_FFCOPY replaces stored fflags with the writer's low bits",
+        .func  = test_kevent_user_note_ffcopy,
+    },
+    {
+        .name  = "test_kevent_user_note_ffand",
+        .desc  = "NOTE_FFAND ANDs the writer's low bits into stored fflags",
+        .func  = test_kevent_user_note_ffand,
+    },
+    {
+        .name  = "test_kevent_user_note_ffor",
+        .desc  = "NOTE_FFOR ORs the writer's low bits into stored fflags",
+        .func  = test_kevent_user_note_ffor,
+    },
+    {
+        .name  = "test_kevent_user_note_ffnop",
+        .desc  = "NOTE_FFNOP leaves stored fflags unchanged",
+        .func  = test_kevent_user_note_ffnop,
+    },
+    {
+        .name  = "test_kevent_user_note_fflagsmask",
+        .desc  = "high fflags bits do not leak into delivered fflags via FFCOPY",
+        .func  = test_kevent_user_note_fflagsmask,
+    },
+    {
+        .name  = "test_kevent_user_multi_trigger_fflags_or",
+        .desc  = "multiple FFOR triggers between drains accumulate bits in one event",
+        .func  = test_kevent_user_multi_trigger_fflags_or,
+    },
+#ifdef EV_DISPATCH
+    {
+        .name  = "test_kevent_user_dispatch",
+        .desc  = "EV_DISPATCH auto-disables after EVFILT_USER delivery",
+        .func  = test_kevent_user_dispatch,
+    },
+    {
+        .name  = "test_kevent_user_dispatch_durable",
+        .desc  = "EV_DISPATCH survives NOTE_TRIGGER and EV_DISABLE/EV_ENABLE cycles",
+        .func  = test_kevent_user_dispatch_durable,
+    },
+    {
+        .name  = "test_kevent_user_dispatch_enable_and_trigger_atomic",
+        .desc  = "EV_ENABLE | NOTE_TRIGGER in one call re-arms and fires atomically",
+        .func  = test_kevent_user_dispatch_enable_and_trigger_atomic,
+    },
+#endif
+    {
+        .name  = "test_kevent_user_trigger_from_thread",
+        .desc  = "NOTE_TRIGGER from a separate thread wakes the kevent waiter",
+        .func  = test_kevent_user_trigger_from_thread,
+    },
+#if defined(_WIN32) && defined(EVFILT_USER)
+    {
+        .name  = "test_kevent_user_stress",
+        .desc  = "concurrent EV_ADD / NOTE_TRIGGER / EV_DELETE churn does not crash",
+        .func  = test_kevent_user_stress,
+    },
+#endif
+    LKQ_SUITE_END
+};
+
 void
 test_evfilt_user(struct test_context *ctx)
 {
-    test(kevent_user_add_and_delete, ctx);
-    test(kevent_user_get, ctx);
-    test(kevent_user_get_hires, ctx);
-    test(kevent_user_disable_and_enable, ctx);
-    /* Flag-behaviour group */
-    test(kevent_user_disable_drains, ctx);
-    test(kevent_user_delete_drains, ctx);
-    test(kevent_user_receipt_preserved, ctx);
-    test(kevent_user_modify_clobbers_udata, ctx);
-    test(kevent_user_oneshot, ctx);
-    test(kevent_user_multi_trigger_merged, ctx);
-    test(kevent_user_del_nonexistent, ctx);
-    test(kevent_user_udata_preserved, ctx);
-    test(kevent_user_multi_kqueue, ctx);
-    test(kevent_user_note_ffcopy, ctx);
-    test(kevent_user_note_ffand, ctx);
-    test(kevent_user_note_ffor, ctx);
-    test(kevent_user_note_ffnop, ctx);
-    test(kevent_user_note_fflagsmask, ctx);
-    test(kevent_user_multi_trigger_fflags_or, ctx);
-#ifdef EV_DISPATCH
-    test(kevent_user_dispatch, ctx);
-    test(kevent_user_dispatch_durable, ctx);
-    test(kevent_user_dispatch_enable_and_trigger_atomic, ctx);
-#endif
-    test(kevent_user_trigger_from_thread, ctx);
-#if defined(_WIN32) && defined(EVFILT_USER)
-    test(kevent_user_stress, ctx);
-#endif
-    /* TODO: try different fflags operations */
+    run_test_suite(ctx, lkq_user_tests);
 }

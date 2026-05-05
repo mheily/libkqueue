@@ -38,12 +38,22 @@ jobs:
         sync: sshfs
         prepare: |
           /usr/sbin/pkg_add cmake gdb
-        envs: 'KQUEUE_DEBUG'
+        envs: 'KQUEUE_DEBUG GITHUB_STEP_SUMMARY'
         run: |
           uname -sr
           cd libkqueue/test
           cmake .
           make
+          GATED=$(./libkqueue-test --list-gated=netbsd 2>/dev/null) || true
+          {
+            printf '## Gated on netbsd\n'
+            printf '| Suite | Test | Reason |\n| --- | --- | --- |\n'
+            if [ -n "$GATED" ]; then
+              printf '%s\n' "$GATED" | awk -F'\t' '{gsub(/\|/,"&#124;",$3); print "| "$1" | "$2" | "$3" |"}'
+            else
+              printf '_none_\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
           ./libkqueue-test \
             --watchdog-timeout=120 \
             --watchdog-cmd=../tools/test-stack-dump.sh \

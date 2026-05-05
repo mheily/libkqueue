@@ -1146,12 +1146,139 @@ test_kevent_proc_fork_storm(struct test_context *ctx)
         waitpid(pids[i], NULL, 0);
 }
 
+static const struct lkq_test_gate proc_modify_disarms_gates[] =
+{
+    /* OpenBSD/NetBSD filt_proc() unconditionally activates the knote on NOTE_EXIT
+     * regardless of kn_sfflags, so clearing fflags via re-EV_ADD can't prevent it.
+     * OpenBSD: github.com/openbsd/src sys/kern/kern_event.c:463-470.
+     * NetBSD: github.com/NetBSD/src sys/kern/kern_event.c:1296. */
+    GATE(LKQ_PLATFORM_OS_OPENBSD,
+         "OpenBSD filt_proc unconditionally fires NOTE_EXIT regardless of kn_sfflags"),
+    GATE(LKQ_PLATFORM_OS_NETBSD,
+         "NetBSD filt_proc unconditionally fires NOTE_EXIT regardless of kn_sfflags"),
+    { 0, NULL }
+};
+
+static const struct lkq_test_gate proc_disable_preserves_events_gates[] =
+{
+    /* Native BSD/macOS forces EV_ONESHOT on EVFILT_PROC and auto-deletes the knote
+     * at exit time, leaving nothing to EV_ENABLE later. */
+    GATE(LKQ_PLATFORM_BACKEND_NATIVE,
+         "native kqueue forces EV_ONESHOT on EVFILT_PROC; knote is gone before EV_ENABLE"),
+    { 0, NULL }
+};
+
+const struct lkq_test_case lkq_proc_tests[] =
+{
+    {
+        .name  = "test_kevent_proc_add",
+        .desc  = "EV_ADD registers a proc knote",
+        .func  = test_kevent_proc_add,
+    },
+    {
+        .name  = "test_kevent_proc_delete",
+        .desc  = "EV_DELETE removes the proc knote",
+        .func  = test_kevent_proc_delete,
+    },
+    {
+        .name  = "test_kevent_proc_get",
+        .desc  = "NOTE_EXIT fires when the watched process exits",
+        .func  = test_kevent_proc_get,
+    },
+    {
+        .name  = "test_kevent_proc_exit_status_ok",
+        .desc  = "exit(0) delivers status 0 in the data field",
+        .func  = test_kevent_proc_exit_status_ok,
+    },
+    {
+        .name  = "test_kevent_proc_exit_status_error",
+        .desc  = "exit(N) delivers N<<8 in the data field",
+        .func  = test_kevent_proc_exit_status_error,
+    },
+    {
+        .name  = "test_kevent_proc_modify_arms_late",
+        .desc  = "re-EV_ADD after fork arms a knote that fires on exit",
+        .func  = test_kevent_proc_modify_arms_late,
+    },
+    {
+        .name  = "test_kevent_proc_modify_disarms",
+        .desc  = "clearing fflags via re-EV_ADD prevents NOTE_EXIT delivery",
+        .func  = test_kevent_proc_modify_disarms,
+        .gates = proc_modify_disarms_gates,
+    },
+    {
+        .name  = "test_kevent_proc_disable_drains",
+        .desc  = "EV_DISABLE drops a pending NOTE_EXIT event",
+        .func  = test_kevent_proc_disable_drains,
+    },
+    {
+        .name  = "test_kevent_proc_delete_drains",
+        .desc  = "EV_DELETE drops a pending NOTE_EXIT event",
+        .func  = test_kevent_proc_delete_drains,
+    },
+    {
+        .name  = "test_kevent_proc_modify_clobbers_udata",
+        .desc  = "re-EV_ADD replaces udata on a proc knote",
+        .func  = test_kevent_proc_modify_clobbers_udata,
+    },
+    {
+        .name  = "test_kevent_proc_already_exited",
+        .desc  = "NOTE_EXIT fires even if the process exited before EV_ADD",
+        .func  = test_kevent_proc_already_exited,
+    },
+    {
+        .name  = "test_kevent_proc_multiple_kqueue",
+        .desc  = "same pid in two kqueues delivers NOTE_EXIT independently",
+        .func  = test_kevent_proc_multiple_kqueue,
+    },
+    {
+        .name  = "test_kevent_proc_del_nonexistent",
+        .desc  = "EV_DELETE on unregistered pid returns ENOENT",
+        .func  = test_kevent_proc_del_nonexistent,
+    },
+    {
+        .name  = "test_kevent_proc_nonexistent_pid_esrch",
+        .desc  = "EV_ADD with a nonexistent pid returns ESRCH",
+        .func  = test_kevent_proc_nonexistent_pid_esrch,
+    },
+    {
+        .name  = "test_kevent_proc_udata_preserved",
+        .desc  = "udata round-trips unchanged through NOTE_EXIT delivery",
+        .func  = test_kevent_proc_udata_preserved,
+    },
+#ifdef EV_RECEIPT
+    {
+        .name  = "test_kevent_proc_receipt_preserved",
+        .desc  = "EV_RECEIPT echoes the kev with EV_ERROR=0",
+        .func  = test_kevent_proc_receipt_preserved,
+    },
+#endif
+    {
+        .name  = "test_kevent_proc_disable_preserves_events",
+        .desc  = "NOTE_EXIT fired while disabled surfaces on EV_ENABLE",
+        .func  = test_kevent_proc_disable_preserves_events,
+        .gates = proc_disable_preserves_events_gates,
+    },
+    {
+        .name  = "test_kevent_proc_exit_signal_decode",
+        .desc  = "process killed by signal delivers NOTE_SIGNAL in fflags",
+        .func  = test_kevent_proc_exit_signal_decode,
+    },
+    {
+        .name  = "test_kevent_proc_fork_storm",
+        .desc  = "many concurrent child exits all deliver NOTE_EXIT",
+        .func  = test_kevent_proc_fork_storm,
+    },
+    LKQ_SUITE_END
+};
+
 void
 test_evfilt_proc(struct test_context *ctx)
 {
+    pid_t pid;
+
     signal(SIGUSR1, sig_handler);
 
-    /* Create a child that waits to be killed and then exits */
     pid = fork();
     if (pid == 0) {
         pause();
@@ -1160,58 +1287,7 @@ test_evfilt_proc(struct test_context *ctx)
     }
     printf(" -- child created (pid %d)\n", (int) pid);
 
-    test(kevent_proc_add, ctx);
-    test(kevent_proc_delete, ctx);
-    test(kevent_proc_get, ctx);
-    test(kevent_proc_exit_status_ok, ctx);
-    test(kevent_proc_exit_status_error, ctx);
-    test(kevent_proc_modify_arms_late, ctx);
-    /*
-     * OpenBSD and NetBSD filt_proc() unconditionally activates the knote
-     * on process exit (EV_EOF | EV_ONESHOT) regardless of kn_sfflags.
-     * Clearing fflags via re-EV_ADD therefore cannot prevent the exit
-     * event.  OpenBSD: github.com/openbsd/src sys/kern/kern_event.c:463-470.
-     * NetBSD: github.com/NetBSD/src sys/kern/kern_event.c:1296 ("Always
-     * activate the knote for NOTE_EXIT regardless of whether or not the
-     * listener cares about it").
-     */
-
-#if !defined(__OpenBSD__) && !defined(__NetBSD__)
-    test(kevent_proc_modify_disarms, ctx);
-#endif
-    test(kevent_proc_disable_drains, ctx);
-    test(kevent_proc_delete_drains, ctx);
-    test(kevent_proc_modify_clobbers_udata, ctx);
-    test(kevent_proc_already_exited, ctx);
-    test(kevent_proc_multiple_kqueue, ctx);
-    test(kevent_proc_del_nonexistent, ctx);
-    test(kevent_proc_nonexistent_pid_esrch, ctx);
-    test(kevent_proc_udata_preserved, ctx);
-#ifdef EV_RECEIPT
-    test(kevent_proc_receipt_preserved, ctx);
-#endif
-    /*
-     * disable_preserves_events: requires the kqueue to surface a
-     * NOTE_EXIT that fired while the knote was disabled, on
-     * subsequent EV_ENABLE.  Native BSD/macOS forces EV_ONESHOT
-     * on EVFILT_PROC and may auto-delete the knote at exit time
-     * (no kn to enable).  Skip on native; libkqueue's POSIX
-     * backend keeps the knote around until userspace consumes.
-     */
-#if !defined(NATIVE_KQUEUE)
-    test(kevent_proc_disable_preserves_events, ctx);
-#endif
-    test(kevent_proc_exit_signal_decode, ctx);
-    test(kevent_proc_fork_storm, ctx);
+    run_test_suite(ctx, lkq_proc_tests);
 
     signal(SIGUSR1, SIG_DFL);
-
-#if TODO
-    test_kevent_signal_add();
-    test_kevent_signal_del();
-    test_kevent_signal_get();
-    test_kevent_signal_disable();
-    test_kevent_signal_enable();
-    test_kevent_signal_oneshot();
-#endif
 }

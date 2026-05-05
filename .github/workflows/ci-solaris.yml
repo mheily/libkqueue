@@ -168,7 +168,7 @@ jobs:
         # Bump VM memory above the default; memcheck's shadow memory
         # accumulates across the test run and OOMs on a 4GB image.
         mem: 8192
-        envs: 'KQUEUE_DEBUG NAME BUILD_TYPE VALGRIND_TOOL GITHUB_EVENT_NAME ITERATIONS'
+        envs: 'KQUEUE_DEBUG NAME BUILD_TYPE VALGRIND_TOOL GITHUB_EVENT_NAME ITERATIONS GITHUB_STEP_SUMMARY'
         prepare: |
           echo "=== prepare: installing build deps ==="
           pkg install -q cmake gcc14 git developer/build/gnu-make || true
@@ -264,6 +264,16 @@ jobs:
           else
               ./test/libkqueue-test -n "${ITERATIONS:-1}"
           fi
+          GATED=$(./test/libkqueue-test --list-gated=solaris 2>/dev/null) || true
+          {
+            printf '## Gated on solaris\n'
+            printf '| Suite | Test | Reason |\n| --- | --- | --- |\n'
+            if [ -n "$GATED" ]; then
+              printf '%s\n' "$GATED" | awk -F'\t' '{gsub(/\|/,"&#124;",$3); print "| "$1" | "$2" | "$3" |"}'
+            else
+              printf '_none_\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
           echo "=== run: done ==="
       env:
         KQUEUE_DEBUG: ${{ matrix.env.BUILD_TYPE == 'Release' && '' || 'yes' }}
