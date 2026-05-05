@@ -27,15 +27,19 @@
 
 /*
  * Per-flavour copyout fill helpers return a value matching the
- * outer evfilt_read_copyout contract:
- *   1  - dst is populated, continue to flag-actions / re-arm
- *   0  - drop this completion (release ref, set dst->filter=0)
- *  -1  - hard error
+ * outer evfilt_read_copyout contract.  Numeric values are pinned
+ * because READ_COPYOUT_OK / READ_COPYOUT_ERR also pass through to
+ * the kf_copyout return contract (1 = event delivered, -1 = hard
+ * error); READ_COPYOUT_DROP / READ_COPYOUT_FILE_EOF are
+ * filter-internal sentinels translated to a 0 return at the
+ * dispatch site.
  */
-#define READ_COPYOUT_OK         1
-#define READ_COPYOUT_DROP       0   /* release ref, dst->filter=0, return 0 */
-#define READ_COPYOUT_ERR       (-1)
-#define READ_COPYOUT_FILE_EOF   2   /* dst->filter=0, return 0 (no release) */
+enum read_copyout_rv {
+    READ_COPYOUT_DROP     = 0,   /* release ref, dst->filter=0, return 0 */
+    READ_COPYOUT_OK       = 1,   /* dst populated, continue to flag-actions / re-arm */
+    READ_COPYOUT_FILE_EOF = 2,   /* dst->filter=0, return 0 (no release) */
+    READ_COPYOUT_ERR      = -1,  /* hard error */
+};
 
 static VOID CALLBACK
 evfilt_read_callback(void *param, BOOLEAN fired)
@@ -81,11 +85,13 @@ evfilt_read_callback(void *param, BOOLEAN fired)
         atomic_store(&kn->kn_read.eof, 1);
         /*
          * iErrorCode[FD_CLOSE_BIT] carries the close reason: 0 for
-         * a graceful FIN, non-zero (typically WSAECONNRESET) for an
-         * RST.  Stash for copyout to surface as fflags.
+         * a graceful FIN, non-zero WSA code (typically
+         * WSAECONNRESET) for an RST.  Translate to POSIX errno so
+         * the fflags consumer sees ECONNRESET / ECONNABORTED rather
+         * than the 10000-range Winsock encoding.
          */
         atomic_store(&kn->kn_read.so_error,
-                     events.iErrorCode[FD_CLOSE_BIT]);
+                     kq_wsa_to_errno(events.iErrorCode[FD_CLOSE_BIT]));
     }
 
     if (kn->kev.flags & (EV_CLEAR | EV_DISPATCH)) {
@@ -130,7 +136,7 @@ evfilt_read_callback(void *param, BOOLEAN fired)
  * re-enables the knote will pick the new range up via the next
  * knote_create.
  */
-static __inline int
+static __inline enum read_copyout_rv
 evfilt_read_copyout_file(struct kevent *dst, struct knote *src)
 {
     struct _stat64 sb;
@@ -160,7 +166,7 @@ evfilt_read_copyout_file(struct kevent *dst, struct knote *src)
  * came from the overlapped ReadFile via KQ_PIPE_READ_KEY and
  * GetOverlappedResult tells us the outcome.
  */
-static __inline int
+static __inline enum read_copyout_rv
 evfilt_read_copyout_pipe(struct kevent *dst, struct knote *src)
 {
     unsigned long avail = 0;
@@ -201,19 +207,32 @@ evfilt_read_copyout_pipe(struct kevent *dst, struct knote *src)
 }
 
 /* TODO: should contain the length of the socket backlog */
-static __inline int
+static __inline enum read_copyout_rv
 evfilt_read_copyout_socket_passive(struct kevent *dst, UNUSED struct knote *src)
 {
     dst->data = 1;
     return READ_COPYOUT_OK;
 }
 
-static __inline int
+static __inline enum read_copyout_rv
 evfilt_read_copyout_socket(struct kevent *dst, struct knote *src)
 {
     unsigned long bufsize;
 
+    /*
+     * Native BSD kqueue auto-cleans a knote when its watched fd is
+     * closed (the knote is hung off the file struct).  Win32 has no
+     * equivalent kernel hook, and tests routinely closesocket()
+     * without an explicit EV_DELETE first - so a level-triggered
+     * EV_EOF re-post that was queued before close() lives on in the
+     * IOCP and pollutes the next test that drains the kq.  If
+     * FIONREAD fails with WSAENOTSOCK the socket is gone; drop the
+     * completion so the post's ref releases and the stale knote
+     * stops re-firing.
+     */
     if (ioctlsocket(src->kev.ident, FIONREAD, &bufsize) != 0) {
+        if (WSAGetLastError() == WSAENOTSOCK)
+            return READ_COPYOUT_DROP;
         dbg_wsalasterror("ioctlsocket");
         return READ_COPYOUT_ERR;
     }
@@ -248,7 +267,11 @@ int
 evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
     struct knote *src, UNUSED void *ptr)
 {
-    int rv;
+    enum read_copyout_rv  rv;
+    bool                  is_synthetic;
+    bool                  is_pipe;
+    int                   eof_relevel;
+    struct kqueue        *kq;
 
     /*
      * Stale completion: callback or synthetic re-post raced with
@@ -301,103 +324,105 @@ evfilt_read_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
 
     /*
      * Snapshot before flag_actions: EV_ONESHOT inside that helper
-     * does knote_delete + knote_release.  The post took one ref, so
-     * 2->1 = still alive when we return - but a third
-     * EV_ONESHOT-from-some-other-path could free.  Be defensive and
-     * don't read src->* fields after flag_actions; use locals.
+     * does knote_delete + knote_release.  The post took one ref,
+     * so 2->1 = still alive when we return, but a third
+     * EV_ONESHOT-from-some-other-path could free.  Don't read
+     * src->* after flag_actions if the snapshot already has what
+     * we need - use these locals.
+     *
+     * eof_relevel: once a socket peer has closed, FD_CLOSE only
+     * fires once on Win32 and the auto-reset event won't
+     * re-trigger.  Level-triggered (no EV_CLEAR/EV_DISPATCH)
+     * sockets need EV_EOF to keep firing, so re-arm synthetically
+     * while the knote remains armed.
      */
-    {
-        bool is_synthetic = src->kn_read.file_synthetic;
-        bool is_pipe = (src->kn_flags & KNFL_PIPE) != 0;
-        bool is_disabled = (src->kev.flags & EV_DISABLE) != 0;
-        bool is_deleted = (src->kn_flags & KNFL_KNOTE_DELETED) != 0;
+    is_synthetic = src->kn_read.file_synthetic;
+    is_pipe      = (src->kn_flags & KNFL_PIPE) != 0;
+    eof_relevel  = (dst->flags & EV_EOF) &&
+                   !(src->kev.flags & (EV_CLEAR | EV_DISPATCH));
+    kq           = src->kn_kq;
 
-        /*
-         * Once a socket peer has closed, FD_CLOSE only fires once
-         * on Win32; the auto-reset event won't re-trigger.  For
-         * level-triggered (no EV_CLEAR/EV_DISPATCH) sockets the
-         * consumer expects EV_EOF to keep firing, so re-arm
-         * synthetically while the knote remains armed.
-         */
-        int eof_relevel = (dst->flags & EV_EOF) &&
-                          !(src->kev.flags & (EV_CLEAR | EV_DISPATCH));
-        struct kqueue *kq = src->kn_kq;
-
-        if (knote_copyout_flag_actions(filt, src) < 0) {
-            knote_release(src);
-            return -1;
-        }
-
-        /*
-         * Synthetic file sources re-arm by re-posting; the post's
-         * ref hands off into the queued entry.
-         * Pipes re-arm by issuing a fresh overlapped ReadFile - the
-         * IOCP delivers the next completion when data arrives or
-         * the writer closes (level-triggered EOF replays).  Sockets
-         * just release - the next FD_READ the WSAEventSelect
-         * callback handles will retain again.
-         */
-        if (is_pipe && !is_disabled) {
-            if (is_deleted || src->kn_handle == NULL) {
-                knote_release(src);
-            } else if (atomic_load(&src->kn_read.eof)) {
-                /*
-                 * Pipe is broken: don't keep issuing overlapped
-                 * ReadFile against a dead handle (every retry
-                 * fails synchronously anyway), and don't leave an
-                 * OVERLAPPED association the CRT thinks is pending
-                 * - that hangs _close on the user fd.  Re-post via
-                 * knote-pointer + key=0 like the synthetic-file
-                 * path; the dispatcher routes it back into
-                 * evfilt_read_copyout which sees kn_read.eof and
-                 * delivers another EV_EOF.
-                 */
-                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
-                                                KQ_FILTER_KEY(src->kev.filter),
-                                                (LPOVERLAPPED) src)) {
-                    dbg_lasterror("PostQueuedCompletionStatus(pipe-eof relevel)");
-                    knote_release(src);
-                }
-            } else {
-                memset(&src->kn_read.pipe_ov, 0, sizeof(src->kn_read.pipe_ov));
-                if (!ReadFile(src->kn_handle, src->kn_read.pipe_buf, 0, NULL,
-                              &src->kn_read.pipe_ov)) {
-                    DWORD err = GetLastError();
-                    if (err != ERROR_IO_PENDING) {
-                        /*
-                         * ReadFile failed synchronously (peer just
-                         * closed) - latch EOF and re-post via the
-                         * knote-pointer path so the next wait
-                         * delivers cleanly without a phantom
-                         * overlapped on the handle.
-                         */
-                        atomic_store(&src->kn_read.eof, 1);
-                        if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
-                                                        KQ_FILTER_KEY(src->kev.filter),
-                                                        (LPOVERLAPPED) src))
-                            knote_release(src);
-                    }
-                    /* ERROR_IO_PENDING: completion will arrive via IOCP. */
-                } /* synchronous success: completion will arrive via IOCP. */
-            }
-        } else if ((is_synthetic || eof_relevel) && !is_disabled) {
-            bool is_deleted = (src->kn_flags & KNFL_KNOTE_DELETED) != 0;
-            if (!is_deleted) {
-                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
-                                                KQ_FILTER_KEY(src->kev.filter),
-                                                (LPOVERLAPPED) src)) {
-                    dbg_lasterror("PostQueuedCompletionStatus()");
-                    knote_release(src);
-                }
-                /* re-armed: ref handed off to the queued entry */
-            } else {
-                knote_release(src);
-            }
-        } else {
-            knote_release(src);
-        }
+    if (knote_copyout_flag_actions(filt, src) < 0) {
+        knote_release(src);
+        return (-1);
     }
 
+    /*
+     * flag_actions may have run EV_ONESHOT, which calls the
+     * filter's delete callback (zeroing kn_handle for pipes /
+     * tearing down the WSAEventSelect wait for sockets) and sets
+     * KNFL_KNOTE_DELETED on the common knote.  No re-arm in that
+     * case - just drop our completion's ref.
+     */
+    if (src->kn_flags & KNFL_KNOTE_DELETED) {
+        knote_release(src);
+        return (1);
+    }
+
+    /*
+     * Broken pipe: don't keep issuing overlapped ReadFile against
+     * a dead handle (every retry fails synchronously anyway), and
+     * don't leave an OVERLAPPED association the CRT thinks is
+     * pending - that hangs _close on the user fd.  Re-post via the
+     * knote-pointer path so the dispatcher routes back here, sees
+     * kn_read.eof, and delivers another EV_EOF.
+     */
+    if (is_pipe && atomic_load(&src->kn_read.eof)) {
+        if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
+                                        KQ_FILTER_KEY(src->kev.filter),
+                                        (LPOVERLAPPED) src)) {
+            dbg_lasterror("PostQueuedCompletionStatus(pipe-eof relevel)");
+            knote_release(src);
+        }
+        return (1);
+    }
+
+    /*
+     * Live pipe: re-arm by issuing a fresh overlapped ReadFile -
+     * the IOCP delivers the next completion when data arrives or
+     * the writer closes.
+     */
+    if (is_pipe) {
+        memset(&src->kn_read.pipe_ov, 0, sizeof(src->kn_read.pipe_ov));
+        if (ReadFile(src->kn_handle, src->kn_read.pipe_buf, 0, NULL,
+                     &src->kn_read.pipe_ov))
+            return (1);                /* synchronous success - completion via IOCP */
+        if (GetLastError() == ERROR_IO_PENDING)
+            return (1);                /* pending - completion via IOCP */
+        /*
+         * ReadFile failed synchronously (peer just closed).
+         * Latch EOF and re-post via the knote-pointer path so the
+         * next wait delivers cleanly without a phantom overlapped
+         * on the handle.
+         */
+        atomic_store(&src->kn_read.eof, 1);
+        if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
+                                        KQ_FILTER_KEY(src->kev.filter),
+                                        (LPOVERLAPPED) src))
+            knote_release(src);
+        return (1);
+    }
+
+    /*
+     * Synthetic file source or level-triggered EOF re-arm: re-post
+     * for the next drain.  The post's ref hands off into the
+     * queued entry.
+     */
+    if (is_synthetic || eof_relevel) {
+        if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
+                                        KQ_FILTER_KEY(src->kev.filter),
+                                        (LPOVERLAPPED) src)) {
+            dbg_lasterror("PostQueuedCompletionStatus()");
+            knote_release(src);
+        }
+        return (1);
+    }
+
+    /*
+     * Plain socket: just release.  The next FD_READ the
+     * WSAEventSelect callback handles will retain again.
+     */
+    knote_release(src);
     return (1);
 }
 
@@ -546,20 +571,49 @@ evfilt_read_knote_create_socket(struct knote *kn)
     }
 
     /*
-     * Level-triggered fire-on-enable: if the socket already has
-     * data buffered when we (re)arm the watch, post one completion
-     * explicitly.  WSAEventSelect's auto-reset event will only fire
-     * once a fresh FD_READ is recorded, which doesn't happen if no
-     * recv has occurred since the prior delivery, so the consumer
-     * would otherwise miss the EV_DISPATCH / EV_ENABLE re-arm
-     * wakeup.  Skipped for passive listeners: FD_ACCEPT carries no
-     * FIONREAD signal.
+     * Level-triggered fire-on-enable: events the consumer would
+     * have observed if the watch had been armed earlier (data
+     * already buffered, peer already FIN'd, accepts already
+     * queued) don't refire the auto-reset event without a fresh
+     * edge.  WSAEnumNetworkEvents reads + clears the latched
+     * network event record; treat the snapshot like a synthetic
+     * callback invocation: latch EOF state and synth-post if any
+     * relevant edge was already pending.  Clearing the record is
+     * fine - subsequent fresh edges set it again and re-fire the
+     * wait.
      */
     {
-        unsigned long pending = 0;
-        if (!(kn->kn_flags & KNFL_SOCKET_PASSIVE) &&
-            ioctlsocket((SOCKET)kn->kev.ident, FIONREAD, &pending) == 0 &&
-            pending > 0) {
+        WSANETWORKEVENTS evs;
+        long want = (kn->kn_flags & KNFL_SOCKET_PASSIVE)
+                    ? FD_ACCEPT
+                    : (FD_READ | FD_CLOSE);
+        bool synth = false;
+
+        if (WSAEnumNetworkEvents((SOCKET) kn->kev.ident, evt, &evs) == 0) {
+            if (evs.lNetworkEvents & want)
+                synth = true;
+            if (!(kn->kn_flags & KNFL_SOCKET_PASSIVE) &&
+                (evs.lNetworkEvents & FD_CLOSE)) {
+                atomic_store(&kn->kn_read.eof, 1);
+                atomic_store(&kn->kn_read.so_error,
+                             kq_wsa_to_errno(evs.iErrorCode[FD_CLOSE_BIT]));
+            }
+        }
+        /*
+         * Non-passive fallback: WSAEnumNetworkEvents reports
+         * FD_READ as a transition signal, not a "data is buffered"
+         * level signal, so a connection that bufferred bytes
+         * before WSAEventSelect ran but hasn't transitioned since
+         * may not have FD_READ latched.  Cover that with FIONREAD.
+         */
+        if (!synth && !(kn->kn_flags & KNFL_SOCKET_PASSIVE)) {
+            unsigned long pending = 0;
+            if (ioctlsocket((SOCKET)kn->kev.ident, FIONREAD, &pending) == 0 &&
+                pending > 0)
+                synth = true;
+        }
+
+        if (synth) {
             knote_retain(kn);
             if (!PostQueuedCompletionStatus(kn->kn_kq->kq_iocp, 1,
                                             KQ_FILTER_KEY(kn->kev.filter),

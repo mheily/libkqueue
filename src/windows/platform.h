@@ -395,4 +395,49 @@ pthread_once(pthread_once_t *once, void (*fn)(void))
                                (PVOID)(uintptr_t) fn, NULL) ? 0 : -1;
 }
 
+/*
+ * Translate a Winsock WSA* error code to its POSIX errno
+ * equivalent so consumers see ECONNRESET / ECONNABORTED / etc
+ * (which strerror knows about) rather than 10054 / 10053.  Only
+ * the codes a TCP/IP socket can land in SO_ERROR / FD_CLOSE
+ * iErrorCode are mapped; anything else passes through.  MSVC's
+ * <errno.h> defines ECONNRESET et al with their own (non-WSA)
+ * numeric values.
+ */
+static __inline int
+kq_wsa_to_errno(int wsa)
+{
+    switch (wsa) {
+    case 0:
+        return 0;
+
+    case WSAECONNRESET:
+        return ECONNRESET;
+
+    case WSAECONNABORTED:
+        return ECONNABORTED;
+
+    case WSAETIMEDOUT:
+        return ETIMEDOUT;
+
+    case WSAENETRESET:
+        return ENETRESET;
+
+    case WSAENETUNREACH:
+        return ENETUNREACH;
+
+    case WSAEHOSTUNREACH:
+        return EHOSTUNREACH;
+
+    case WSAECONNREFUSED:
+        return ECONNREFUSED;
+
+    case WSAENOTCONN:
+        return ENOTCONN;
+
+    default:
+        return wsa;
+    }
+}
+
 #endif  /* ! _KQUEUE_WINDOWS_PLATFORM_H */
