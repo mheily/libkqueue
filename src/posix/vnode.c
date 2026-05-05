@@ -51,7 +51,7 @@
  *   NOTE_TRUNCATE st_size shrank (where the spec defines NOTE_TRUNCATE).
  *   NOTE_ATTRIB   st_ctime advanced without size moving.  Catches
  *                 chmod/chown/utimes/touch.
- *   NOTE_LINK     st_nlink changed (link / unlink-not-final).
+ *   NOTE_LINK     st_nlink changed (any direction, including to 0).
  *   NOTE_WRITE    not deliverable.  Size-only detection misses
  *                 same-size overwrites and dir-content mutations;
  *                 mtime-based detection conflates touch/utimes with
@@ -141,7 +141,7 @@ ts_neq(const struct timespec *a, const struct timespec *b)
  *   NOTE_TRUNCATE = size shrank.
  *   NOTE_ATTRIB  = ctime moved without size moving.  Covers
  *                  chmod / chown / utimes / touch.
- *   NOTE_LINK    = st_nlink changed (non-zero new value).
+ *   NOTE_LINK    = st_nlink changed (any direction, including to 0).
  *   NOTE_DELETE  = st_nlink dropped to 0.
  */
 static unsigned int
@@ -155,7 +155,7 @@ vnode_diff_to_note(const struct stat *prev, const struct stat *now)
         fflags |= NOTE_DELETE;
 #endif
 #ifdef NOTE_LINK
-    if (now->st_nlink != prev->st_nlink && now->st_nlink != 0)
+    if (now->st_nlink != prev->st_nlink)
         fflags |= NOTE_LINK;
 #endif
 #ifdef NOTE_EXTEND
@@ -167,7 +167,11 @@ vnode_diff_to_note(const struct stat *prev, const struct stat *now)
         fflags |= NOTE_TRUNCATE;
 #endif
 #ifdef NOTE_ATTRIB
-    if (!size_changed && ts_neq(&ST_CTIM(now), &ST_CTIM(prev)))
+    /*
+     * unlink() always advances ctime without moving size; suppress NOTE_ATTRIB
+     * when NOTE_DELETE fires so callers don't see spurious attribute events.
+     */
+    if (!size_changed && ts_neq(&ST_CTIM(now), &ST_CTIM(prev)) && !(fflags & NOTE_DELETE))
         fflags |= NOTE_ATTRIB;
 #endif
     return fflags;
