@@ -288,6 +288,17 @@ evfilt_vnode_knote_create(struct filter *filt, struct knote *kn)
     fh = (HANDLE)_get_osfhandle(kn->kev.ident);
     if (fh == INVALID_HANDLE_VALUE) {
         dbg_puts("invalid file descriptor");
+        errno = EBADF;
+        return (-1);
+    }
+    /*
+     * BSD filt_vfsattach checks fp->f_type == DTYPE_VNODE and
+     * returns EINVAL otherwise.  Reject pipes / sockets / consoles
+     * the same way: only disk files have meaningful vnode events.
+     */
+    if (GetFileType(fh) != FILE_TYPE_DISK) {
+        dbg_puts("EVFILT_VNODE requires a regular file");
+        errno = EINVAL;
         return (-1);
     }
 
