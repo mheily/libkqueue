@@ -546,7 +546,16 @@ test_evfilt_write(struct test_context *ctx)
     test(kevent_write_socket_modify_clobbers_udata, ctx);
     test(kevent_write_socket_disable_drains, ctx);
     test(kevent_write_socket_delete_drains, ctx);
+#ifndef _WIN32
+    /*
+     * Win32 WSAEventSelect is exclusive on a SOCKET: the second kq's
+     * call replaces the first, and only the latest kq sees write
+     * readiness.  Same architectural limit as the read filter on
+     * pipes - one IOCP / event-select slot per kernel object.
+     * Tracked in https://github.com/mheily/libkqueue/issues/171
+     */
     test(kevent_write_socket_multi_kqueue, ctx);
+#endif
     test(kevent_write_socket_ev_clear, ctx);
 
     /* Audit-gap tests. */
