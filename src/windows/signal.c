@@ -97,20 +97,32 @@ evfilt_signal_copyout(struct kevent *dst, UNUSED int nevents,
                       struct filter *filt, struct knote *src,
                       UNUSED void *ptr)
 {
-    int count = atomic_exchange(&src->kn_fire_count, 0);
+    int count;
+
+    /*
+     * EV_DELETE arrived after the callback queued a completion:
+     * the knote is alive only because outstanding posts hold refs,
+     * but the consumer's view of it is gone.  Drop the completion
+     * and zero fire_count so a sibling post that races in behind
+     * us doesn't expose a stale count to the next test (caught
+     * test_kevent_signal_console_ctrl_bridge ghosting a SIGUSR2
+     * data=2 left over from signal_coalesce's late callbacks).
+     */
+    if (src->kn_flags & KNFL_KNOTE_DELETED) {
+        atomic_store(&src->kn_fire_count, 0);
+        dst->filter = 0;
+        knote_release(src);                /* balance callback retain */
+        return 0;
+    }
+
+    count = atomic_exchange(&src->kn_fire_count, 0);
 
     /*
      * The wait callback bumps kn_fire_count BEFORE
      * PostQueuedCompletionStatus, so a callback that fired N
      * times posts N completions but exposes a single coalesced
      * count to the first dispatch.  Subsequent dispatches see
-     * count==0 and are stale ghost completions: either redundant
-     * coalesce overflow or - worse - completions left in kq_iocp
-     * after EV_DELETE freed the original knote, that we're now
-     * re-dispatching against a fresh knote whose heap address
-     * the allocator happened to recycle (caught test 3 ghosting
-     * a SIGINT event with data=1 after test 1 left three
-     * extras pending).  Discard.
+     * count==0 and are stale ghost completions - discard.
      */
     if (count == 0) {
         dst->filter = 0;
