@@ -1360,7 +1360,18 @@ test_evfilt_read(struct test_context *ctx)
 
     test(kevent_read_del_nonexistent, ctx);
     test(kevent_read_udata_preserved, ctx);
+#ifndef _WIN32
+    /*
+     * Win32 IOCP associates the kernel FILE_OBJECT with a single
+     * IOCP for its lifetime; DuplicateHandle aliases the same
+     * FILE_OBJECT and inherits the binding, so a second kqueue's
+     * CreateIoCompletionPort fails with ERROR_INVALID_PARAMETER and
+     * completions never reach it.  Same shape on sockets via
+     * WSAEventSelect (one event slot per socket).  Tracked in
+     * https://github.com/mheily/libkqueue/issues/171
+     */
     test(kevent_read_multi_kqueue, ctx);
+#endif
     /*
      * Listen-socket backlog count reporting requires a kernel
      * ioctl that exposes sol_qlen.  FreeBSD/macOS native kqueue
@@ -1374,8 +1385,14 @@ test_evfilt_read(struct test_context *ctx)
      * solaris socket filter hardcodes data=1.  Gate alongside the
      * existing POSIX/Linux exclusions.
      */
+    /*
+     * Win32: no public API exposes the listen-queue depth (no
+     * SO_QLEN, no equivalent ioctl); the windows socket filter
+     * reports data=1 like the POSIX/Linux/Solaris backends.  Gate
+     * alongside the existing exclusions.
+     */
 #if !defined(LIBKQUEUE_BACKEND_POSIX) && !defined(LIBKQUEUE_BACKEND_LINUX) && \
-    !defined(LIBKQUEUE_BACKEND_SOLARIS)
+    !defined(LIBKQUEUE_BACKEND_SOLARIS) && !defined(_WIN32)
     test(kevent_read_listen_backlog_count, ctx);
 #endif
     test(kevent_read_pipe_data_exact_count, ctx);
@@ -1404,7 +1421,13 @@ test_evfilt_read(struct test_context *ctx)
      * either becomes acceptable; same outcome as upstream master.
      * The POSIX backend has its own size-grow gap.
      */
-#if !defined(LIBKQUEUE_BACKEND_LINUX) && !defined(LIBKQUEUE_BACKEND_POSIX)
+    /*
+     * Win32: same architectural limit - no portable file-size-grow
+     * watcher.  ReadDirectoryChangesW is per-directory and noisy;
+     * not worth the bookkeeping for the synthetic-file path.
+     */
+#if !defined(LIBKQUEUE_BACKEND_LINUX) && !defined(LIBKQUEUE_BACKEND_POSIX) && \
+    !defined(_WIN32)
     test(kevent_regular_file_reactivate, ctx);
     test(kevent_regular_file_unlinked_continues, ctx);
     test(kevent_regular_file_renamed_continues, ctx);
