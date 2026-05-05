@@ -408,11 +408,21 @@ windows_kevent_wait(struct kqueue *kq, int no, const struct timespec *timeout)
 
     if (timeout == NULL) {
         timeout_ms = INFINITE;
-    } else if ( timeout->tv_sec == 0 && timeout->tv_nsec < 1000000 ) {
-        /* do we need to try high precision timing? */
-        // TODO: This is currently not possible on windows!
+    } else if (timeout->tv_sec == 0 && timeout->tv_nsec == 0) {
+        /* Caller wants a non-blocking poll. */
         timeout_ms = 0;
-    } else {  /* Convert timeout to milliseconds */
+    } else if (timeout->tv_sec == 0 && timeout->tv_nsec < 1000000) {
+        /*
+         * Sub-millisecond positive timeout.  GetQueuedCompletionStatus
+         * is ms-granular; rounding down to 0 would silently turn a
+         * "wait briefly" into a busy-poll.  Round up to 1ms - true
+         * sub-ms precision is doable on Win10 1803+ via
+         * CreateWaitableTimerExW(CREATE_WAITABLE_TIMER_HIGH_RESOLUTION)
+         * + WaitForMultipleObjects on [iocp_event, timer], but we
+         * haven't taken the rewrite yet.
+         */
+        timeout_ms = 1;
+    } else {
         timeout_ms = 0;
         if (timeout->tv_sec > 0)
             timeout_ms += ((DWORD)timeout->tv_sec) * 1000;
