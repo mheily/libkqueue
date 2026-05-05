@@ -363,7 +363,8 @@ test_kevent_vnode_note_link(struct test_context *ctx)
  * NOTE_EXTEND when va_size > oldsize; libkqueue must do the same
  * for non-write growth.
  */
-#ifdef NOTE_EXTEND
+#if defined(NOTE_EXTEND) && !defined(_WIN32)
+/* Win32 has _chsize, not ftruncate; rely on the POSIX-only path. */
 static void
 test_kevent_vnode_note_extend_ftruncate(struct test_context *ctx)
 {
@@ -390,6 +391,7 @@ test_kevent_vnode_note_extend_ftruncate(struct test_context *ctx)
  * NOTE_ATTRIB via fchmod: mode-bit change advances ctime without
  * touching size or mtime.  Distinct kernel path from utimes.
  */
+#ifndef _WIN32  /* fchmod is POSIX-only */
 static void
 test_kevent_vnode_note_attrib_chmod(struct test_context *ctx)
 {
@@ -411,11 +413,14 @@ test_kevent_vnode_note_attrib_chmod(struct test_context *ctx)
             kevent_to_str(&ret[0]));
 }
 
+#endif /* !_WIN32 (fchmod) */
+
 /*
  * NOTE_ATTRIB via fchown: chown to the file's current owner still
  * bumps ctime (kernel doesn't no-op same-uid chown on most FSes).
  * Avoids needing root.
  */
+#ifndef _WIN32  /* fchown is POSIX-only */
 static void
 test_kevent_vnode_note_attrib_chown(struct test_context *ctx)
 {
@@ -439,6 +444,8 @@ test_kevent_vnode_note_attrib_chown(struct test_context *ctx)
         die("NOTE_ATTRIB not delivered on fchown: %s",
             kevent_to_str(&ret[0]));
 }
+
+#endif /* !_WIN32 (fchown) */
 
 /*
  * rename(A, B) when both exist: B's vnode loses its name to A and
@@ -666,7 +673,9 @@ test_kevent_vnode_note_link_directory(struct test_context *ctx)
  * so the public header redacts NOTE_WRITE on that backend and the
  * test compiles out.
  */
-#ifdef NOTE_WRITE
+#if defined(NOTE_WRITE) && !defined(_WIN32)
+/* pwrite is POSIX-only; Win32 has _write + _lseek but no atomic
+ * combined seek-and-write equivalent on a CRT fd. */
 static void
 test_kevent_vnode_note_write_inplace(struct test_context *ctx)
 {
@@ -1161,8 +1170,10 @@ test_evfilt_vnode(struct test_context *ctx)
 #ifdef NOTE_RENAME
     test(kevent_vnode_note_rename, ctx);
 #endif
+#ifndef _WIN32  /* fchmod / fchown are POSIX-only */
     test(kevent_vnode_note_attrib_chmod, ctx);
     test(kevent_vnode_note_attrib_chown, ctx);
+#endif
 #ifdef NOTE_EXTEND
     test(kevent_vnode_note_extend, ctx);
     /*
@@ -1174,7 +1185,7 @@ test_evfilt_vnode(struct test_context *ctx)
      * macOS situation unclear (likely also missing).  libkqueue's
      * stat-poll backends correctly fire it.
      */
-#if !defined(NATIVE_KQUEUE)
+#if !defined(NATIVE_KQUEUE) && !defined(_WIN32)
     test(kevent_vnode_note_extend_ftruncate, ctx);
 #endif
 #endif
@@ -1225,8 +1236,8 @@ test_evfilt_vnode(struct test_context *ctx)
 #ifdef NOTE_WRITE
 #  ifndef _WIN32
     test(kevent_vnode_note_write_directory, ctx);
+    test(kevent_vnode_note_write_inplace, ctx);   /* uses pwrite */
 #  endif
-    test(kevent_vnode_note_write_inplace, ctx);
 #endif
     test(kevent_vnode_ev_clear, ctx);
     test(kevent_vnode_fd_close, ctx);
