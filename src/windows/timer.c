@@ -208,6 +208,17 @@ evfilt_timer_knote_create(struct filter *filt, struct knote *kn)
     LARGE_INTEGER liDueTime;
     int64_t msec;
 
+    /*
+     * BSD filt_timervalidate / libkqueue POSIX & Linux reject a
+     * negative interval with EINVAL.  NOTE_ABSOLUTE is the only
+     * case where a "past" deadline is meaningful (and we clamp
+     * msec to 0 below); plain relative intervals must be >= 0.
+     */
+    if (kn->kev.data < 0 && !(kn->kev.fflags & NOTE_ABSOLUTE)) {
+        errno = EINVAL;
+        return (-1);
+    }
+
     kn->kev.flags |= EV_CLEAR;
 
     th = CreateWaitableTimer(NULL, FALSE, NULL);
