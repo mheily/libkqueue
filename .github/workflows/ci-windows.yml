@@ -95,7 +95,11 @@ jobs:
         shell: pwsh
         run: |
           $bin = ".\build_x64\test\${{ matrix.build_type }}\libkqueue-test.exe"
-          $gated = & $bin --list-gated=windows 2>$null
+          $gated = $null
+          if (Test-Path $bin) {
+            $gated = & $bin --list-gated=windows 2>$null
+            $null = $LASTEXITCODE
+          }
           $lines = [System.Collections.Generic.List[string]]@(
             "## Gated on windows",
             "| Suite | Test | Reason |",
