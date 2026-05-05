@@ -115,6 +115,15 @@ posix_kqueue_init(struct kqueue *kq)
     if (posix_self_pipe(sd) < 0)
         return (-1);
 
+    if (sd[0] >= FD_SETSIZE) {
+        dbg_printf("self-pipe read end fd=%d >= FD_SETSIZE=%d; too many open files",
+                   sd[0], FD_SETSIZE);
+        close(sd[0]);
+        close(sd[1]);
+        errno = EMFILE;
+        return (-1);
+    }
+
     TAILQ_INIT(&kq->kq_inflight);
     RB_INIT(&kq->kq_timers);
 
