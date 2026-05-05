@@ -1269,6 +1269,7 @@ const struct lkq_test_case lkq_vnode_tests[] =
         .func  = test_kevent_vnode_note_rename,
     },
 #endif
+#ifndef _WIN32
     {
         .name  = "kevent_vnode_note_attrib_chmod",
         .desc  = "NOTE_ATTRIB fires on fchmod",
@@ -1281,18 +1282,21 @@ const struct lkq_test_case lkq_vnode_tests[] =
         .func  = test_kevent_vnode_note_attrib_chown,
         .gates = vnode_gate_posix_only,
     },
+#endif
 #ifdef NOTE_EXTEND
     {
         .name  = "kevent_vnode_note_extend",
         .desc  = "NOTE_EXTEND fires on file size growth via write",
         .func  = test_kevent_vnode_note_extend,
     },
+#  ifndef _WIN32
     {
         .name  = "kevent_vnode_note_extend_ftruncate",
         .desc  = "NOTE_EXTEND fires on ftruncate-up (size grow without write)",
         .func  = test_kevent_vnode_note_extend_ftruncate,
         .gates = vnode_gate_extend_ftruncate,
     },
+#  endif
 #endif
 #ifdef NOTE_LINK
     {
@@ -1316,7 +1320,7 @@ const struct lkq_test_case lkq_vnode_tests[] =
         .gates = vnode_gate_rename_overwrite,
     },
 #endif
-#ifdef NOTE_LINK
+#if defined(NOTE_LINK) && !defined(_WIN32)
     {
         .name  = "kevent_vnode_note_link_directory",
         .desc  = "NOTE_LINK fires on parent dir when a subdirectory is created",
