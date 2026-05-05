@@ -157,6 +157,10 @@
  */
 #    define MSG_DONTWAIT 0
 #  endif
+#  ifndef MSG_NOSIGNAL
+/* Win32 sockets don't raise SIGPIPE; the flag is a no-op there. */
+#    define MSG_NOSIGNAL 0
+#  endif
 #  ifndef SHUT_RDWR
 #    define SHUT_RDWR SD_BOTH
 #  endif
