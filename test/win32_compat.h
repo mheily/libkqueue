@@ -323,6 +323,50 @@ kq_test_temp_path(char *out, size_t cap, const char *tag)
  */
 
 /*
+ * fcntl(F_GETFL) / fcntl(F_SETFL, O_NONBLOCK) shim for the
+ * test_kevent_write_*  send-buffer-fill helper in write.c.
+ * The test only uses fcntl to flip a connected socket between
+ * blocking and non-blocking; map onto ioctlsocket(FIONBIO).  Any
+ * other (cmd, fd) shape is rejected with EINVAL.
+ */
+#ifndef O_NONBLOCK
+#  define O_NONBLOCK 0x4000
+#endif
+#ifndef F_GETFL
+#  define F_GETFL 3
+#endif
+#ifndef F_SETFL
+#  define F_SETFL 4
+#endif
+
+static __inline int
+fcntl(int fd, int cmd, ...)
+{
+    va_list ap;
+    int     flags;
+    u_long  enable;
+
+    switch (cmd) {
+    case F_GETFL:
+        /* Win32 has no per-fd flag bag for sockets; pretend zero
+         * and let callers OR in O_NONBLOCK as a no-op no-prior-flags
+         * starting point. */
+        return 0;
+    case F_SETFL:
+        va_start(ap, cmd);
+        flags = va_arg(ap, int);
+        va_end(ap);
+        enable = (flags & O_NONBLOCK) ? 1 : 0;
+        if (ioctlsocket((SOCKET) fd, FIONBIO, &enable) != 0)
+            return -1;
+        return 0;
+    default:
+        errno = EINVAL;
+        return -1;
+    }
+}
+
+/*
  * mode_t / umask / mkstemp shims for the regular-file tests in
  * read.c.  MSVC doesn't ship mode_t (the CRT uses bare ints) and
  * doesn't ship mkstemp (Win32 has _mktemp_s + a separate _open).

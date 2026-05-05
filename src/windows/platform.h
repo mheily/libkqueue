@@ -56,52 +56,31 @@
 # pragma warning( disable : 4996 )
 #endif
 
-#ifndef _MSC_VER
-#include <stdatomic.h>
 /*
- * C11 atomic operations
+ * C11 atomic operations.  MSVC needs /experimental:c11atomics
+ * (VS17.5+) to enable <stdatomic.h>; the flag is set in the
+ * top-level CMakeLists.txt.
  */
+#include <stdatomic.h>
+
 #define atomic_inc(p)                 (atomic_fetch_add((p), 1) + 1)
 #define atomic_dec(p)                 (atomic_fetch_sub((p), 1) - 1)
 
-/* We use compound literals here to stop the 'expected' values from being overwritten */
+/* Compound literals stop the 'expected' values being overwritten. */
+#ifndef _MSC_VER
 #define atomic_cas(p, oval, nval)     atomic_compare_exchange_strong(p, &(__typeof__(oval)){ oval }, nval)
 #define atomic_ptr_cas(p, oval, nval) atomic_compare_exchange_strong(p, (&(uintptr_t){ (uintptr_t)oval }), (uintptr_t)nval)
+#else
+/* MSVC lacks __typeof__; the only atomic_cas / atomic_ptr_cas
+ * callers spell their expected value as a temporary, so a plain
+ * unary-& works here. */
+#define atomic_cas(p, oval, nval) \
+    atomic_compare_exchange_strong((p), &(int){ (int)(oval) }, (int)(nval))
+#define atomic_ptr_cas(p, oval, nval) \
+    atomic_compare_exchange_strong((p), &(uintptr_t){ (uintptr_t)(oval) }, (uintptr_t)(nval))
+#endif
 #define atomic_ptr_swap(p, nval)      atomic_exchange(p, (uintptr_t)nval)
 #define atomic_ptr_load(p)            atomic_load(p)
-#else
-/*
- * Atomic integer operations.  Windows / MSVC has no <stdatomic.h>,
- * so map the C11-shaped names that the rest of libkqueue and the
- * test suite use onto the Interlocked* family.  These intrinsics
- * are full barriers (acq+rel) on x86/x64 and ARM64, so they line
- * up with the seq_cst defaults of stdatomic.
- */
-#define atomic_uintptr_t              uintptr_t
-#define atomic_uint                   unsigned int
-#define atomic_int                    int
-#define atomic_long                   long
-#define atomic_bool                   long
-#define atomic_inc(value)             InterlockedIncrement((LONG volatile *)(value))
-#define atomic_dec(value)             InterlockedDecrement((LONG volatile *)(value))
-#define atomic_cas(p, oval, nval)     (InterlockedCompareExchange((LONG volatile *)(p), (nval), (oval)) == (oval))
-#define atomic_ptr_cas(p, oval, nval) (InterlockedCompareExchangePointer((p), (nval), (oval)) == (oval))
-#define atomic_ptr_swap(p, oval)      InterlockedExchangePointer((p), (oval))
-#define atomic_ptr_load(p)            (*(p))
-
-/* C11-shaped helpers used by the platform code and tests. */
-#define atomic_fetch_add(p, v)        InterlockedExchangeAdd((LONG volatile *)(p), (LONG)(v))
-#define atomic_fetch_sub(p, v)        InterlockedExchangeAdd((LONG volatile *)(p), -(LONG)(v))
-#define atomic_exchange(p, v)         InterlockedExchange((LONG volatile *)(p), (LONG)(v))
-#define atomic_load(p)                InterlockedCompareExchange((LONG volatile *)(p), 0, 0)
-#define atomic_store(p, v)            ((void)InterlockedExchange((LONG volatile *)(p), (LONG)(v)))
-#define atomic_compare_exchange_strong(p, expected, desired) \
-    (InterlockedCompareExchange((LONG volatile *)(p), (LONG)(desired), *(LONG *)(expected)) == *(LONG *)(expected))
-
-/* Plain initialiser; atomic_int is just int on this backend. */
-#define atomic_init(p, v)             (*(p) = (v))
-
-#endif
 
 /*
  * Drop the kq lock across kevent_wait.  GetQueuedCompletionStatus
