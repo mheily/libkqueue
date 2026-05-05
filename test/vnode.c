@@ -184,13 +184,12 @@ test_kevent_vnode_note_delete(struct test_context *ctx)
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
 
     /*
-     * BSD kqueue fires NOTE_LINK on any nlink change, including the
-     * final unlink that drops nlink to 0.  Our POSIX backend matches
-     * that behaviour.  FreeBSD/macOS both do this; OpenBSD does not
-     * (it only fires NOTE_DELETE without NOTE_LINK on final unlink),
-     * so gate the extra bit on platforms we know send it.
+     * macOS fires NOTE_LINK alongside NOTE_DELETE on the final unlink.
+     * Our POSIX backend matches that behaviour (any nlink change fires
+     * NOTE_LINK per BSD spec).  FreeBSD/OpenBSD only fire NOTE_DELETE
+     * on the final unlink, so gate accordingly.
      */
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(LIBKQUEUE_BACKEND_POSIX)
+#if defined(__APPLE__) || defined(LIBKQUEUE_BACKEND_POSIX)
     kev.fflags |= NOTE_LINK;
 #endif
 
