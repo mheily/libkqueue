@@ -57,6 +57,9 @@ int
 evfilt_write_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
     struct knote *src, void *ptr)
 {
+    bool           is_synthetic;
+    struct kqueue *kq;
+
     /*
      * Stale completion - re-post raced with EV_DELETE.  Must
      * check before any ident-based syscall (getsockopt below);
@@ -82,57 +85,93 @@ evfilt_write_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
     memcpy(dst, &src->kev, sizeof(*dst));
 
     /*
-     * Regular files are always considered writable.  We have no
-     * direct equivalent of SIOCOUTQ on a Windows file handle, so
-     * report the most useful approximation: writable with no known
-     * outstanding bytes.
+     * Fill dst->data and (for pipes) dst->flags |= EV_EOF based on
+     * the descriptor type.  Each branch is its own little story;
+     * keeping them flat here is clearer than nesting.
      */
-    if (src->kn_flags & KNFL_FILE) {
+    if (src->kn_flags & KNFL_PIPE) {
+        /*
+         * Pipe writer: probe for peer-gone with a 0-byte
+         * WriteFile.  Win32 has no FD_CLOSE-style edge for pipes,
+         * so detect it lazily on each drain.  Once latched,
+         * surface EV_EOF on every subsequent delivery (BSD
+         * level-trigger) and let the synthetic re-post path keep
+         * firing.
+         */
+        DWORD out_buf = 0;
+        if (!src->kn_write.pipe_eof && src->kn_handle != NULL) {
+            DWORD wrote = 0;
+            if (!WriteFile(src->kn_handle, "", 0, &wrote, NULL)) {
+                DWORD err = GetLastError();
+                if (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA ||
+                    err == ERROR_PIPE_NOT_CONNECTED)
+                    src->kn_write.pipe_eof = 1;
+            }
+        }
+        if (src->kn_write.pipe_eof)
+            dst->flags |= EV_EOF;
+        /*
+         * BSD filt_pipewrite reports kn_data = pipe_buffer.size -
+         * pipe_buffer.cnt (free outbound buffer slack).  Win32
+         * has no direct outstanding-bytes query; GetNamedPipeInfo
+         * returns the allocated buffer size, the right upper
+         * bound when nothing is in flight.
+         */
+        if (src->kn_handle != NULL &&
+            GetNamedPipeInfo(src->kn_handle, NULL, &out_buf, NULL, NULL))
+            dst->data = (intptr_t) out_buf;
+        else
+            dst->data = 0;
+    } else if (src->kn_flags & KNFL_FILE) {
+        /*
+         * Regular files are always considered writable.  No
+         * Windows analogue of SIOCOUTQ so report 0 (writable, no
+         * known outstanding bytes).
+         */
         dst->data = 0;
     } else {
         /*
-         * For sockets, report the available send buffer space.
-         * Windows has no exact analogue of Linux SIOCOUTQ, so use
-         * SO_SNDBUF as the bound.  This matches the documented
-         * semantics: "amount of space remaining in the write buffer".
+         * Sockets: report the available send buffer space.  Use
+         * SO_SNDBUF as the upper bound; Win32 has no exact
+         * analogue of Linux SIOCOUTQ.
          */
         int sndbuf = 0;
         int slen = sizeof(sndbuf);
         if (getsockopt((SOCKET)src->kev.ident, SOL_SOCKET, SO_SNDBUF,
-                       (char *)&sndbuf, &slen) == 0) {
+                       (char *)&sndbuf, &slen) == 0)
             dst->data = sndbuf;
-        } else {
+        else
             dst->data = 0;
-        }
     }
 
-    {
-        bool is_synthetic = src->kn_write.file_synthetic;
-        bool is_disabled  = (src->kev.flags & EV_DISABLE) != 0;
-        struct kqueue *kq = src->kn_kq;
+    is_synthetic = src->kn_write.file_synthetic;
+    kq           = src->kn_kq;
 
-        if (knote_copyout_flag_actions(filt, src) < 0) {
-            knote_release(src);
-            return -1;
-        }
-
-        if (is_synthetic && !is_disabled) {
-            bool is_deleted = (src->kn_flags & KNFL_KNOTE_DELETED) != 0;
-            if (!is_deleted) {
-                if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
-                                                KQ_FILTER_KEY(src->kev.filter),
-                                                (LPOVERLAPPED) src)) {
-                    dbg_lasterror("PostQueuedCompletionStatus()");
-                    knote_release(src);
-                }
-            } else {
-                knote_release(src);
-            }
-        } else {
-            knote_release(src);
-        }
+    if (knote_copyout_flag_actions(filt, src) < 0) {
+        knote_release(src);
+        return (-1);
     }
 
+    /*
+     * flag_actions may have run EV_ONESHOT and set
+     * KNFL_KNOTE_DELETED.  Sockets and post-delete knotes have
+     * nothing to re-arm; just release the completion's ref.
+     */
+    if (!is_synthetic || (src->kn_flags & KNFL_KNOTE_DELETED)) {
+        knote_release(src);
+        return (1);
+    }
+
+    /*
+     * Synthetic file / pipe writer: re-post for the next drain.
+     * The post's ref hands off into the queued entry.
+     */
+    if (!PostQueuedCompletionStatus(kq->kq_iocp, 1,
+                                    KQ_FILTER_KEY(src->kev.filter),
+                                    (LPOVERLAPPED) src)) {
+        dbg_lasterror("PostQueuedCompletionStatus()");
+        knote_release(src);
+    }
     return (1);
 }
 
@@ -157,9 +196,18 @@ evfilt_write_knote_create(struct filter *filt, struct knote *kn)
      * or EV_DELETEs.
      */
     if (kn->kn_flags & (KNFL_FILE | KNFL_PIPE)) {
-        kn->kn_handle = NULL;
+        /*
+         * Stash the pipe HANDLE so the EOF probe in copyout can
+         * issue a 0-byte WriteFile against it; files don't need
+         * one (always writable, no peer to disappear).
+         */
+        if (kn->kn_flags & KNFL_PIPE)
+            kn->kn_handle = (HANDLE) _get_osfhandle((int) kn->kev.ident);
+        else
+            kn->kn_handle = NULL;
         kn->kn_event_whandle = NULL;
         kn->kn_write.file_synthetic = 1;
+        kn->kn_write.pipe_eof = 0;
         /*
          * Hold a ref for the queued completion so an EV_DELETE
          * arriving before this is drained doesn't free the knote
@@ -191,6 +239,23 @@ evfilt_write_knote_create(struct filter *filt, struct knote *kn)
         return (-1);
     }
 
+    /*
+     * Same shape as the read filter: WSAEventSelect on a freshly
+     * connected socket signals the auto-reset event for the
+     * initial-writability state, so RegisterWaitForSingleObject
+     * would fire its callback immediately and the consumer would
+     * see double deliveries (the callback's post + our synth-post
+     * below).  Drain the latched network record via
+     * WSAEnumNetworkEvents (this also resets the event) and
+     * ResetEvent for belt-and-braces; the wait then only fires on
+     * genuinely fresh FD_WRITE / FD_CLOSE transitions.
+     */
+    {
+        WSANETWORKEVENTS evs;
+        (void) WSAEnumNetworkEvents((SOCKET) kn->kev.ident, evt, &evs);
+        ResetEvent(evt);
+    }
+
     kn->kn_handle = evt;
 
     if (RegisterWaitForSingleObject(&kn->kn_event_whandle, evt,
@@ -199,6 +264,30 @@ evfilt_write_knote_create(struct filter *filt, struct knote *kn)
         CloseHandle(evt);
         kn->kn_handle = NULL;
         return (-1);
+    }
+
+    /*
+     * Level-triggered fire-on-enable: every EV_ADD / EV_ENABLE
+     * delivers one event if the socket is currently writable,
+     * regardless of whether a transition just happened.  The
+     * select() probe gives the level signal; the prior Reset +
+     * WSAEnumNetworkEvents suppresses the auto-reset event so we
+     * don't double-fire alongside this synth.
+     */
+    {
+        fd_set         wfds;
+        struct timeval tv = { 0, 0 };
+        FD_ZERO(&wfds);
+        FD_SET((SOCKET) kn->kev.ident, &wfds);
+        if (select(0, NULL, &wfds, NULL, &tv) > 0) {
+            knote_retain(kn);
+            if (!PostQueuedCompletionStatus(kn->kn_kq->kq_iocp, 1,
+                                            KQ_FILTER_KEY(kn->kev.filter),
+                                            (LPOVERLAPPED) kn)) {
+                dbg_lasterror("PostQueuedCompletionStatus()");
+                knote_release(kn);
+            }
+        }
     }
 
     return (0);

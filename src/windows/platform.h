@@ -245,6 +245,13 @@ struct windows_knote_read {
 struct windows_knote_write {
     /* KNFL_FILE: see windows_knote_read.file_synthetic. */
     int             file_synthetic;
+    /*
+     * KNFL_PIPE: latched once a 0-byte WriteFile probe sees the
+     * reader gone (ERROR_BROKEN_PIPE / ERROR_NO_DATA).  Used to
+     * stop the synthetic re-post cycle and surface EV_EOF on every
+     * subsequent drain (BSD level-trigger semantic).
+     */
+    int             pipe_eof;
 };
 
 /*
