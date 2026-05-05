@@ -320,20 +320,27 @@ evfilt_socket_copyout(struct kevent *dst, UNUSED int nevents, struct filter *fil
         }
 
         /*
-         * POLLIN + data=0 on a connected stream is ambiguous: peer closed
-         * (EOF) or another thread drained the queue first (race).  recv
-         * with MSG_PEEK + MSG_DONTWAIT confirms - it returns 0 only on real
-         * EOF.  Set EV_EOF only when confirmed; otherwise the copyout's
-         * data==0 skip drops the event silently and the consumer never
-         * sees the close.
+         * POLLIN + data=0: peer closed (EOF) or another thread drained the
+         * queue (race).  recv with MSG_PEEK + MSG_DONTWAIT confirms: returns
+         * 0 only on real EOF.  Set EV_EOF only when confirmed; otherwise the
+         * copyout's data==0 skip drops the event silently.
+         *
+         * POLLIN + POLLHUP + data>0: peer closed after writing data.  illumos
+         * does not fire a separate POLLHUP event in this case, so we can't
+         * rely on the POLLHUP block below.  Set EV_EOF directly; the consumer
+         * drains the data first, then sees the EOF flag.
          */
-        if (dst->data == 0 && (src->kn_flags & KNFL_SOCKET_STREAM) &&
+        if ((src->kn_flags & KNFL_SOCKET_STREAM) &&
             !(src->kn_flags & KNFL_SOCKET_PASSIVE)) {
-            char peek_buf;
-            ssize_t n = recv(pe->portev_object, &peek_buf, 1,
-                             MSG_PEEK | MSG_DONTWAIT);
-            if (n == 0)
+            if (dst->data == 0) {
+                char peek_buf;
+                ssize_t n = recv(pe->portev_object, &peek_buf, 1,
+                                 MSG_PEEK | MSG_DONTWAIT);
+                if (n == 0)
+                    dst->flags |= EV_EOF;
+            } else if (pe->portev_events & POLLHUP) {
                 dst->flags |= EV_EOF;
+            }
         }
     }
 

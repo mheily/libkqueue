@@ -1019,11 +1019,13 @@ test_transition_from_write_to_read(struct test_context *ctx)
     if (socketpair(AF_LOCAL, SOCK_STREAM, 0, sd))
         err(1, "socketpair");
 
+    struct timespec ts = {0, 0};
+
     EV_SET(&kev, sd[0], EVFILT_WRITE, EV_ADD, 0, 0, NULL);
-    kevent_rv_cmp(0, kevent(kqfd, &kev, 1, NULL, 0, NULL));
+    kevent_rv_cmp(0, kevent(kqfd, &kev, 1, NULL, 0, &ts));
 
     EV_SET(&kev, sd[0], EVFILT_READ, EV_ADD, 0, 0, NULL);
-    kevent_rv_cmp(0, kevent(kqfd, &kev, 1, NULL, 0, NULL));
+    kevent_rv_cmp(0, kevent(kqfd, &kev, 1, NULL, 0, &ts));
 
     close(sd[0]);
     close(sd[1]);

@@ -94,6 +94,7 @@ jobs:
         if: always()
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           $bin = ".\build_x64\test\${{ matrix.build_type }}\libkqueue-test.exe"
           $gated = $null
           if (Test-Path $bin) {
@@ -114,7 +115,9 @@ jobs:
           } else {
             $lines.Add("_none_")
           }
-          $lines | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          if ($env:GITHUB_STEP_SUMMARY) {
+            $lines | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          }
 
       - name: "Locate cdb.exe"
         id: cdb

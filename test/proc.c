@@ -1275,8 +1275,6 @@ const struct lkq_test_case lkq_proc_tests[] =
 void
 test_evfilt_proc(struct test_context *ctx)
 {
-    pid_t pid;
-
     signal(SIGUSR1, sig_handler);
 
     pid = fork();
