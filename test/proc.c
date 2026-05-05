@@ -1083,10 +1083,16 @@ test_kevent_proc_fork_storm(struct test_context *ctx)
     /* Spawn children that wait on the gate. */
     for (i = 0; i < N_CHILDREN; i++) {
         pid_t p = fork();
+        if (p < 0) {
+            close(sync_pipe[0]);
+            close(sync_pipe[1]);
+            while (--i >= 0 && pids[i] > 0)
+                waitpid(pids[i], NULL, 0);
+            die("fork");
+        }
         if (p == 0) {
             char buf;
             close(sync_pipe[1]);
-            /* Drain the gate; ignore short reads. */ 
             if (read(sync_pipe[0], &buf, 1) <= 0) _exit(1);
             _exit(0);
         }

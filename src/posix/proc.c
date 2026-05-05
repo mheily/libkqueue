@@ -709,12 +709,22 @@ evfilt_proc_knote_create(struct filter *filt, struct knote *kn)
     }
 
     /*
-     * BSD parity: filt_procattach calls pfind(); a never-existed pid
-     * fails the lookup with ESRCH.  kill(pid, 0) is the portable
-     * existence check.  Skip when re-arming an already-tracked knote
-     * (EV_ENABLE on a watch whose target has already exited must
-     * still surface the pending NOTE_EXIT instead of failing).
+     * BSD parity: filt_procattach calls pfind(); a never-existed or
+     * non-positive pid fails the lookup with ESRCH/EINVAL.
+     *
+     * Reject ident <= 0 before the kill(2) existence check.  kill(-1, 0)
+     * on Linux sends a null signal to all processes and returns 0 if any
+     * exist, so a negative ident would pass through the ESRCH gate and
+     * register a knote that never fires.
+     *
+     * Skip the existence check when re-arming an already-tracked knote
+     * (EV_ENABLE on a watch whose target has already exited must still
+     * surface the pending NOTE_EXIT instead of failing).
      */
+    if ((pid_t) kn->kev.ident <= 0) {
+        errno = EINVAL;
+        return (-1);
+    }
     if (!LIST_INSERTED(kn, kn_proc.waiter) &&
         kill((pid_t) kn->kev.ident, 0) < 0 && errno == ESRCH) {
         dbg_printf("EVFILT_PROC pid=%u: ESRCH",

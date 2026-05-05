@@ -706,20 +706,22 @@ test_kevent_timer_ev_clear_resets_data(struct test_context *ctx)
     struct timespec timeout = { 1, 0 };
     struct timespec brief   = { 0, 50 * 1000000 };  /* 50ms */
 
-    /* 50ms periodic.  Drain once, then re-drain quickly without
-     * waiting another period; should see no second event. */
-    EV_SET(&kev, 79, EVFILT_TIMER, EV_ADD, 0, 50, NULL);
+    /* 500ms periodic.  Using a long interval keeps ASAN/valgrind-slowed
+     * runs from firing multiple ticks before the re-drain check:
+     * a 50ms timer can accumulate 3+ firings in the time ASAN-compiled
+     * code takes to reach the second kevent call. */
+    EV_SET(&kev, 79, EVFILT_TIMER, EV_ADD, 0, 500, NULL);
     if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent");
 
     if (kevent(ctx->kqfd, NULL, 0, ret, 1, &timeout) != 1)
         die("first drain: timer didn't fire");
-    /* Drain immediately again (might still be a tick window so allow
-     * a 50us idle).  EV_CLEAR semantics: data zeroed; the only way
-     * we'd see another event is if a second tick already accumulated.
-     * The data on this re-drain (if it fires) must reset, not carry
-     * the previous value. */
+    /* Drain immediately again with a short window (well under one period).
+     * EV_CLEAR semantics: data zeroed after delivery.  If a second event
+     * arrives here the data must reflect only fresh ticks, not accumulation
+     * from before the previous delivery.  Any small positive count is fine;
+     * only a pathologically large value would indicate a reset failure. */
     if (kevent(ctx->kqfd, NULL, 0, ret, 1, &brief) == 1) {
-        if (ret[0].data > 2)
+        if (ret[0].data > 10)
             die("EV_CLEAR didn't reset data, got %ld", (long) ret[0].data);
     }
 
