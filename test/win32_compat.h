@@ -322,4 +322,40 @@ kq_test_temp_path(char *out, size_t cap, const char *tag)
  * here.
  */
 
+/*
+ * mode_t / umask / mkstemp shims for the regular-file tests in
+ * read.c.  MSVC doesn't ship mode_t (the CRT uses bare ints) and
+ * doesn't ship mkstemp (Win32 has _mktemp_s + a separate _open).
+ * The tests don't lean on the bit-pattern of mode_t for anything
+ * meaningful - they call umask(077) / restore - so int suffices.
+ */
+typedef int mode_t;
+
+static __inline mode_t
+umask(mode_t mask)
+{
+    int prev;
+    /*
+     * MSVC's _umask_s sets *prev to the prior mask and applies
+     * the new one.  POSIX umask(2) returns the prior value.
+     */
+    if (_umask_s((int) mask, &prev) != 0) return 0;
+    return (mode_t) prev;
+}
+
+/*
+ * mkstemp: replace the "XXXXXX" suffix in `template` in-place with
+ * a unique name and open a fresh O_RDWR file.  _mktemp_s does the
+ * substitution; _open does the create with the same fd-table-aware
+ * semantics CRT uses elsewhere.
+ */
+static __inline int
+mkstemp(char *template_)
+{
+    if (_mktemp_s(template_, strlen(template_) + 1) != 0)
+        return -1;
+    return _open(template_, _O_RDWR | _O_CREAT | _O_EXCL | _O_BINARY,
+                 _S_IREAD | _S_IWRITE);
+}
+
 #endif  /* ! _KQUEUE_TEST_WIN32_COMPAT_H */

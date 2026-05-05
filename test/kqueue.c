@@ -17,10 +17,16 @@
 #include "common.h"
 
 #include <limits.h>
-#include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
-#include <sys/mman.h>
+
+#ifndef _WIN32
+/* common.h pulls in pthread.h via win32_compat.h on Windows. */
+#  include <pthread.h>
+/* mmap/mprotect are POSIX-only; the test that needs them
+ * (test_kqueue_nevents_validation) is gated to non-Windows below. */
+#  include <sys/mman.h>
+#endif
 
 #if defined(__linux__) || defined(__FreeBSD__)
 #include <sys/resource.h>
@@ -388,6 +394,7 @@ test_kqueue_recursive(void *unused)
  * PROT_NONE guard pages.  Any write past the buffer (in either
  * direction) traps to SIGSEGV and the test process dies hard.
  */
+#ifndef _WIN32   /* uses mmap/mprotect for guard-page sandwiching */
 static void
 test_kqueue_nevents_validation(void *unused)
 {
@@ -465,6 +472,7 @@ test_kqueue_nevents_validation(void *unused)
     munmap(region, 3 * page);
     close(kq);
 }
+#endif /* !_WIN32 */
 
 /*
  * fd reuse: register on a pipe fd, close it, open a fresh socket
@@ -769,8 +777,8 @@ test_kqueue(struct test_context *ctx)
      * filed/fixed; guard pages still validate the safety
      * contract everywhere else.
      */
-#if !defined(__NetBSD__)
-    test(kqueue_nevents_validation, ctx);
+#if !defined(__NetBSD__) && !defined(_WIN32)
+    test(kqueue_nevents_validation, ctx);   /* mmap/mprotect guard pages */
 #endif
     test(kqueue_fd_reuse_no_stale_events, ctx);
 
