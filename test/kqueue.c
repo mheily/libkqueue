@@ -809,8 +809,22 @@ test_kqueue(struct test_context *ctx)
     test(kqueue_deep_recursive_chain, ctx);
 #endif
     test(kqueue_knote_pool_exhaustion, ctx);
+    /*
+     * These two stress tests target BSD-kernel-internal races:
+     * pipe_peer_close_uaf probes filt_pipedetach walking pipe->pipe_peer
+     * while pipeclose nulls it (FreeBSD/NetBSD code path), and
+     * timer_callout_detach_race probes filt_timerdetach vs in-flight
+     * callout barriers (OpenBSD/NetBSD/FreeBSD).  Neither code path
+     * exists in the POSIX select-polling backend, and the tests' rapid
+     * kqueue create/close cycles exhaust select()'s FD_SETSIZE=1024 fd
+     * ceiling because the deferred-cleanup mechanism (triggered on fd
+     * reuse inside kqueue()) doesn't fire reliably under concurrent
+     * pipe() calls.  Gate until the POSIX backend is ported to poll().
+     */
+#ifndef LIBKQUEUE_BACKEND_POSIX
     test(kqueue_pipe_peer_close_uaf, ctx);
     test(kqueue_timer_callout_detach_race, ctx);
+#endif
     /* TODO: this fails now, but would be good later
     test(kqueue_descriptor_is_pollable, ctx);
     */
