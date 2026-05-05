@@ -17,9 +17,12 @@
 #include "common.h"
 
 #include <fcntl.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+#ifndef _WIN32
+/* common.h pulls socket headers in via win32_compat.h on Windows. */
+#  include <sys/socket.h>
+#  include <netinet/in.h>
+#  include <arpa/inet.h>
+#endif
 
 /*
  * Build a connected TCP pair.  Caller closes the returned fds.

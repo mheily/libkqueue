@@ -76,6 +76,15 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_STANDARD 11)
 
+#
+# MSVC: enable <stdatomic.h>.  C11 atomics are an opt-in feature
+# (VS17.5+) gated behind /experimental:c11atomics; without the
+# flag <stdatomic.h> emits "C atomic support is not enabled".
+#
+if(MSVC)
+  add_compile_options(/experimental:c11atomics)
+endif()
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 if(NOT CMAKE_BUILD_TYPE)

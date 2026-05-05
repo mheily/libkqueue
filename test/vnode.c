@@ -566,7 +566,10 @@ test_kevent_vnode_rename_overwrite_ordering(struct test_context *ctx)
  * BSD fires NOTE_WRITE on the parent dir's vnode for any child
  * namespace mutation (vop_create_post / vop_remove_post).
  */
-#ifdef NOTE_WRITE
+#if defined(NOTE_WRITE) && !defined(_WIN32)
+/* Win32 CRT _open() can't return a fd for a directory (no
+ * FILE_FLAG_BACKUP_SEMANTICS); the test relies on POSIX-style
+ * open(O_DIRECTORY). */
 static void
 test_kevent_vnode_note_write_directory(struct test_context *ctx)
 {
@@ -615,7 +618,8 @@ test_kevent_vnode_note_write_directory(struct test_context *ctx)
  * ".." link bumps the parent's st_nlink, which BSD reports as
  * NOTE_LINK on the parent.
  */
-#ifdef NOTE_LINK
+#if defined(NOTE_LINK) && !defined(_WIN32)
+/* See test_kevent_vnode_note_write_directory for the O_DIRECTORY note. */
 static void
 test_kevent_vnode_note_link_directory(struct test_context *ctx)
 {
@@ -1211,7 +1215,7 @@ test_evfilt_vnode(struct test_context *ctx)
 #ifdef NOTE_RENAME
     test(kevent_vnode_rename_overwrite_ordering, ctx);
 #endif
-#ifdef NOTE_LINK
+#if defined(NOTE_LINK) && !defined(_WIN32)
     test(kevent_vnode_note_link_directory, ctx);
 #endif
 #ifdef NOTE_TRUNCATE
@@ -1219,7 +1223,9 @@ test_evfilt_vnode(struct test_context *ctx)
 #endif
     test(kevent_vnode_note_delete_rename_over, ctx);
 #ifdef NOTE_WRITE
+#  ifndef _WIN32
     test(kevent_vnode_note_write_directory, ctx);
+#  endif
     test(kevent_vnode_note_write_inplace, ctx);
 #endif
     test(kevent_vnode_ev_clear, ctx);
