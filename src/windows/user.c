@@ -55,12 +55,14 @@ evfilt_user_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt,
 
     memcpy(dst, &src->kev, sizeof(struct kevent));
 
-    dst->fflags &= ~NOTE_FFCTRLMASK;     //FIXME: Not sure if needed
+    dst->fflags &= ~NOTE_FFCTRLMASK;
     dst->fflags &= ~NOTE_TRIGGER;
     /*
-     * Linux/Solaris keep EV_ADD set in the returned event; FreeBSD
-     * strips it.  Match the Linux/Solaris flavour so the shared
-     * test suite passes here too.
+     * Edge-trigger / one-shot reset: BSD clears the source's
+     * NOTE_TRIGGER on EV_CLEAR or EV_DISPATCH so the next fire
+     * needs a fresh re-trigger (level-triggered consumers leave
+     * it set so the same trigger keeps firing until they
+     * EV_DELETE).
      */
     if ((src->kev.flags & EV_CLEAR) || (src->kev.flags & EV_DISPATCH))
         src->kev.fflags &= ~NOTE_TRIGGER;
@@ -108,8 +110,14 @@ evfilt_user_knote_modify(struct filter *filt, struct knote *kn,
             break;
 
         default:
-            /* XXX Return error? */
-            break;
+            /*
+             * NOTE_FFCTRLMASK is 2 bits so this is unreachable
+             * given the input mask, but be explicit: anything
+             * outside the four ffctrl values is a programmer
+             * error from the caller, surface EINVAL.
+             */
+            errno = EINVAL;
+            return (-1);
     }
 
     /*
@@ -128,7 +136,8 @@ evfilt_user_knote_modify(struct filter *filt, struct knote *kn,
              * dispatcher.  Released in evfilt_user_copyout. */
             knote_retain(kn);
             if (!PostQueuedCompletionStatus(kn->kn_kq->kq_iocp, 1,
-                    (ULONG_PTR) 0, (LPOVERLAPPED) kn)) {
+                    KQ_FILTER_KEY(kn->kev.filter),
+                    (LPOVERLAPPED) kn)) {
                 dbg_lasterror("PostQueuedCompletionStatus()");
                 knote_release(kn);
                 return (-1);

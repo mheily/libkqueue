@@ -192,8 +192,14 @@ linux_evfilt_user_knote_modify(struct filter *filt UNUSED, struct knote *kn, con
             break;
 
         default:
-            /* XXX Return error? */
-            break;
+            /*
+             * NOTE_FFCTRLMASK is 2 bits so this is unreachable
+             * given the input mask, but be explicit: anything
+             * outside the four ffctrl values is a programmer
+             * error from the caller, surface EINVAL.
+             */
+            errno = EINVAL;
+            return (-1);
     }
 
     if ((!(kn->kev.flags & EV_DISABLE)) && kev->fflags & NOTE_TRIGGER) {
