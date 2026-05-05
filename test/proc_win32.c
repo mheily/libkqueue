@@ -184,13 +184,34 @@ test_kevent_proc_multiple_children(struct test_context *ctx)
     }
 }
 
+const struct lkq_test_case lkq_proc_tests[] = {
+    {
+        .name  = "test_kevent_proc_add_delete",
+        .desc  = "EV_ADD then EV_DELETE before exit produces no event",
+        .func  = test_kevent_proc_add_delete,
+    },
+    {
+        .name  = "test_kevent_proc_exit_status",
+        .desc  = "NOTE_EXIT delivers exit code in high byte of data",
+        .func  = test_kevent_proc_exit_status,
+    },
+    {
+        .name  = "test_kevent_proc_already_exited",
+        .desc  = "EV_ADD on an already-exited process still fires NOTE_EXIT",
+        .func  = test_kevent_proc_already_exited,
+    },
+    {
+        .name  = "test_kevent_proc_multiple_children",
+        .desc  = "NOTE_EXIT fires for each of N concurrent child processes",
+        .func  = test_kevent_proc_multiple_children,
+    },
+    LKQ_SUITE_END
+};
+
 void
 test_evfilt_proc(struct test_context *ctx)
 {
-    test(kevent_proc_add_delete, ctx);
-    test(kevent_proc_exit_status, ctx);
-    test(kevent_proc_already_exited, ctx);
-    test(kevent_proc_multiple_children, ctx);
+    run_test_suite(ctx, lkq_proc_tests);
 }
 
 #endif /* _WIN32 */

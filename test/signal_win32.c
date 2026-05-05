@@ -143,13 +143,34 @@ test_kevent_signal_console_ctrl_bridge(struct test_context *ctx)
                EV_DELETE, 0, 0, NULL);
 }
 
+const struct lkq_test_case lkq_signal_tests[] = {
+    {
+        .name  = "test_kevent_signal_add_and_raise",
+        .desc  = "EV_ADD + kq_raise delivers EVFILT_SIGNAL event",
+        .func  = test_kevent_signal_add_and_raise,
+    },
+    {
+        .name  = "test_kevent_signal_coalesce",
+        .desc  = "multiple kq_raise calls coalesce to a single delivery",
+        .func  = test_kevent_signal_coalesce,
+    },
+    {
+        .name  = "test_kevent_signal_no_listener",
+        .desc  = "kq_raise to an unregistered signum returns ESRCH",
+        .func  = test_kevent_signal_no_listener,
+    },
+    {
+        .name  = "test_kevent_signal_console_ctrl_bridge",
+        .desc  = "SIGINT knote fires via GenerateConsoleCtrlEvent",
+        .func  = test_kevent_signal_console_ctrl_bridge,
+    },
+    LKQ_SUITE_END
+};
+
 void
 test_evfilt_signal(struct test_context *ctx)
 {
-    test(kevent_signal_add_and_raise, ctx);
-    test(kevent_signal_coalesce, ctx);
-    test(kevent_signal_no_listener, ctx);
-    test(kevent_signal_console_ctrl_bridge, ctx);
+    run_test_suite(ctx, lkq_signal_tests);
 }
 
 #endif /* _WIN32 */

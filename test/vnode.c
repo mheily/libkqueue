@@ -105,6 +105,12 @@ testfile_write(const char *path)
 }
 #endif
 
+#ifdef _WIN32
+#  define _ftruncate(fd, n) (_chsize_s((fd), (__int64)(n)) == 0 ? 0 : -1)
+#else
+#  define _ftruncate(fd, n) ftruncate((fd), (n))
+#endif
+
 static void
 testfile_rename(const char *path, int step)
 {
@@ -706,11 +712,6 @@ test_kevent_vnode_note_write_inplace(struct test_context *ctx)
 #endif
 
 #ifdef NOTE_TRUNCATE
-#ifdef _WIN32
-#  define _ftruncate(fd, n) (_chsize_s((fd), (__int64)(n)) == 0 ? 0 : -1)
-#else
-#  define _ftruncate(fd, n) ftruncate((fd), (n))
-#endif
 static void
 test_kevent_vnode_note_truncate(struct test_context *ctx)
 {
@@ -824,7 +825,7 @@ test_kevent_vnode_fflag_accumulation(struct test_context *ctx)
                EV_ADD | EV_ONESHOT, NOTE_ATTRIB | NOTE_EXTEND, 0, NULL);
 
     testfile_touch(ctx->testfile);
-    if (ftruncate(ctx->vnode_fd, st.st_size + 4096) < 0)
+    if (_ftruncate(ctx->vnode_fd, st.st_size + 4096) < 0)
         die("ftruncate(grow)");
 
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
