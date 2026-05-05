@@ -660,6 +660,29 @@ main(int argc, char **argv)
     setvbuf(stdout, stdout_buf, _IOLBF, sizeof(stdout_buf));
 #endif
 
+#if !defined(_WIN32)
+    /*
+     * The POSIX backend opens multiple FDs per kqueue (self-pipe pair plus
+     * one eventfd pipe pair per filter that has one: signal, proc, user).
+     * On macOS the default soft limit is 256, which can be too low for the
+     * stress tests.  Raise to 4096 (capped at the hard limit) at startup so
+     * the suite does not die with EMFILE mid-run.  This is best-effort;
+     * if setrlimit fails we continue and let the individual tests handle it.
+     */
+    {
+        struct rlimit rl;
+        if (getrlimit(RLIMIT_NOFILE, &rl) == 0) {
+            rlim_t want = 4096;
+            if (rl.rlim_max != RLIM_INFINITY && want > rl.rlim_max)
+                want = rl.rlim_max;
+            if (rl.rlim_cur < want) {
+                rl.rlim_cur = want;
+                (void) setrlimit(RLIMIT_NOFILE, &rl);
+            }
+        }
+    }
+#endif
+
     /*
      * Each filter test is gated on the public header actually
      * defining its EVFILT_* macro.  CMake renders sys/event.h
