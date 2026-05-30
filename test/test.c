@@ -164,7 +164,7 @@ run_test_suite(struct test_context *ctx, const struct lkq_test_case *cases)
                  tc->name, tc->desc ? tc->desc : "");
         /*
          * A NULL func means the body was compiled out on this build
-         * (LKQ_POSIX_FN); a gate must have skipped it above.  Reaching
+         * (TEST_FUNC_NEEDS_POSIX); a gate must have skipped it above.  Reaching
          * here without a func is a missing-gate misconfiguration.
          */
         assert(tc->func);

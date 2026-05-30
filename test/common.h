@@ -301,17 +301,17 @@ struct lkq_test_case {
  * NULL on the build where the body is compiled out (a matching gate
  * skips it before run_test_suite would call it).
  *
- *   LKQ_POSIX_FN(fn) - fn on POSIX builds, NULL on Windows.
- *   LKQ_GATES(...)   - a self-terminating gate array as a compound
+ *   TEST_FUNC_NEEDS_POSIX(fn) - fn on POSIX builds, NULL on Windows.
+ *   TEST_GATES(...)   - a self-terminating gate array as a compound
  *                      literal, for gates used by a single test.
  */
 #ifdef _WIN32
-#  define LKQ_POSIX_FN(_fn)  NULL
+#  define TEST_FUNC_NEEDS_POSIX(_fn)  NULL
 #else
-#  define LKQ_POSIX_FN(_fn)  (_fn)
+#  define TEST_FUNC_NEEDS_POSIX(_fn)  (_fn)
 #endif
 
-#define LKQ_GATES(...)  ((const struct lkq_test_gate[]){ __VA_ARGS__, { 0, NULL } })
+#define TEST_GATES(...)  ((const struct lkq_test_gate[]){ __VA_ARGS__, { 0, NULL } })
 
 /*
  * Current platform bitmask, OR of one OS bit and one backend bit.

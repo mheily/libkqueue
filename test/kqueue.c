@@ -828,14 +828,12 @@ const struct lkq_test_case lkq_kqueue_tests[] = {
         .func  = test_kqueue_recursive,
         .gates = gates_not_backend_native
     },
-#ifndef _WIN32
     {
         .name  = "kqueue_nevents_validation",
         .desc  = "negative/huge nevents must not overrun mmap guard pages",
-        .func  = test_kqueue_nevents_validation,
+        .func  = TEST_FUNC_NEEDS_POSIX(test_kqueue_nevents_validation),
         .gates = gates_not_netbsd_not_windows
     },
-#endif
     {
         .name  = "kqueue_fd_reuse_no_stale_events",
         .desc  = "no stale knote fires when a watched fd number is reused",
@@ -860,14 +858,12 @@ const struct lkq_test_case lkq_kqueue_tests[] = {
     },
 #  endif
 #endif
-#ifndef _WIN32
     {
         .name  = "ev_receipt",
         .desc  = "EV_RECEIPT returns the kevent back in the output list",
-        .func  = test_ev_receipt,
+        .func  = TEST_FUNC_NEEDS_POSIX(test_ev_receipt),
         .gates = gates_not_windows
     },
-#endif
 #ifdef NATIVE_KQUEUE
     {
         .name  = "kqueue_deep_recursive_chain",

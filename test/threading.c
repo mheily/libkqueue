@@ -1718,14 +1718,12 @@ const struct lkq_test_case lkq_threading_tests[] = {
 		.desc  = "EV_DELETE of a timer knote races with delivery",
 		.func  = test_kevent_threading_timer_delete_race,
 	},
-#ifndef _WIN32
 	{
 		.name  = "kevent_threading_signal_delete_race",
 		.desc  = "EV_DELETE of a signal knote races with delivery",
-		.func  = test_kevent_threading_signal_delete_race,
+		.func  = TEST_FUNC_NEEDS_POSIX(test_kevent_threading_signal_delete_race),
 		.gates = threading_signal_gates,
 	},
-#endif
 #ifdef EVFILT_VNODE
 	{
 		.name  = "kevent_threading_vnode_delete_race",
@@ -1734,11 +1732,11 @@ const struct lkq_test_case lkq_threading_tests[] = {
 		.gates = threading_solaris_gates,
 	},
 #endif
-#if defined(EVFILT_PROC) && !defined(_WIN32)
+#ifdef EVFILT_PROC
 	{
 		.name  = "kevent_threading_proc_delete_race",
 		.desc  = "EV_DELETE of a proc knote races with delivery",
-		.func  = test_kevent_threading_proc_delete_race,
+		.func  = TEST_FUNC_NEEDS_POSIX(test_kevent_threading_proc_delete_race),
 		.gates = threading_solaris_win32_gates,
 	},
 #endif
@@ -1762,14 +1760,12 @@ const struct lkq_test_case lkq_threading_tests[] = {
 		.desc  = "timer event delivered exactly once across threads",
 		.func  = test_kevent_threading_timer_single_delivery,
 	},
-#ifndef _WIN32
 	{
 		.name  = "kevent_threading_signal_single_delivery",
 		.desc  = "signal event delivered exactly once across threads",
-		.func  = test_kevent_threading_signal_single_delivery,
+		.func  = TEST_FUNC_NEEDS_POSIX(test_kevent_threading_signal_single_delivery),
 		.gates = threading_signal_gates,
 	},
-#endif
 #ifdef EVFILT_VNODE
 	{
 		.name  = "kevent_threading_vnode_single_delivery",
@@ -1778,11 +1774,11 @@ const struct lkq_test_case lkq_threading_tests[] = {
 		.gates = threading_win32_gates,
 	},
 #endif
-#if defined(EVFILT_PROC) && !defined(_WIN32)
+#ifdef EVFILT_PROC
 	{
 		.name  = "kevent_threading_proc_single_delivery",
 		.desc  = "proc event delivered exactly once across threads",
-		.func  = test_kevent_threading_proc_single_delivery,
+		.func  = TEST_FUNC_NEEDS_POSIX(test_kevent_threading_proc_single_delivery),
 		.gates = threading_signal_gates,
 	},
 #endif

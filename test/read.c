@@ -1435,20 +1435,18 @@ const struct lkq_test_case lkq_read_tests[] = {
         .desc  = "fflags carries SO_ERROR value on RST",
         .func  = test_kevent_socket_so_error,
     },
-#ifndef _WIN32
     {
         .name  = "test_kevent_socket_lowat_read",
         .desc  = "NOTE_LOWAT gates EVFILT_READ until threshold bytes arrive",
-        .func  = test_kevent_socket_lowat_read,
+        .func  = TEST_FUNC_NEEDS_POSIX(test_kevent_socket_lowat_read),
         .gates = read_lowat_read_gates,
     },
     {
         .name  = "test_kevent_socket_lowat_write",
         .desc  = "NOTE_LOWAT gates EVFILT_WRITE; threshold above SO_SNDBUF never fires",
-        .func  = test_kevent_socket_lowat_write,
+        .func  = TEST_FUNC_NEEDS_POSIX(test_kevent_socket_lowat_write),
         .gates = read_lowat_write_gates,
     },
-#endif
     {
         .name  = "test_kevent_socket_disable_drains",
         .desc  = "EV_DISABLE suppresses a pending read event",
@@ -1537,15 +1535,13 @@ const struct lkq_test_case lkq_read_tests[] = {
         .func  = test_kevent_socket_af_unix,
     },
 #endif
-#ifndef _WIN32
-    LKQ_SETUP(read_socket_reconnect),
+    { "", NULL, TEST_FUNC_NEEDS_POSIX(read_socket_reconnect), NULL },
     {
         .name  = "test_transition_from_write_to_read",
         .desc  = "replacing EVFILT_WRITE with EVFILT_READ on a socket does not error",
-        .func  = test_transition_from_write_to_read,
+        .func  = TEST_FUNC_NEEDS_POSIX(test_transition_from_write_to_read),
         .gates = read_transition_write_to_read_gates,
     },
-#endif
     LKQ_SUITE_END
 };
 
