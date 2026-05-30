@@ -77,12 +77,6 @@
     use the pidfd-based `EVFILT_PROC` backend, where this constraint
     doesn't apply.
 
- * `EVFILT_SIGNAL` on `SIGRTMIN+1` is rejected with `EINVAL`.  The
-    monitoring thread `sigwaitinfo`s this signal to detect kqueue fd
-    closures (set per-pipefd via `fcntl(F_SETSIG)`); a parallel
-    `EVFILT_SIGNAL` reader would race it and leave kqueue cleanup blind
-    to closures.
-
  * If a file descriptor outside of kqueue is closed, the internal kqueue
    state is not cleaned up.  On Linux this is pretty much impossible to
    fix as there's no mechanism to retrieve file descriptor reference
