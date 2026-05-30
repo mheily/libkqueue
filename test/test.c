@@ -14,6 +14,7 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 #include <sys/types.h>
+#include <assert.h>
 #include <limits.h>
 
 #if defined(__linux__) && (defined(__GLIBC__) && !defined(__UCLIBC__))
@@ -161,6 +162,13 @@ run_test_suite(struct test_context *ctx, const struct lkq_test_case *cases)
 
         snprintf(display, sizeof(display), "%s()\t%s",
                  tc->name, tc->desc ? tc->desc : "");
+        /*
+         * A NULL func means the body was compiled out on this build
+         * (LKQ_POSIX_FN); a gate must have skipped it above.  Reaching
+         * here without a func is a missing-gate misconfiguration.
+         */
+        assert(tc->func);
+
         watchdog_heartbeat(tc->name);
         test_begin(ctx, display);
         errno = 0;

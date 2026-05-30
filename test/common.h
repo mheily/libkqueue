@@ -294,6 +294,26 @@ struct lkq_test_case {
 #define GATE(_platform, _reason)  { (_platform), (_reason) }
 
 /*
+ * Test-case entries are metadata and must always be present so that
+ * --list-gated reports the full set on every platform; #ifdef'ing an
+ * entry out takes its .gates with it and leaves the matrix incomplete.
+ * Keep every entry, gate only the function body, and resolve .func to
+ * NULL on the build where the body is compiled out (a matching gate
+ * skips it before run_test_suite would call it).
+ *
+ *   LKQ_POSIX_FN(fn) - fn on POSIX builds, NULL on Windows.
+ *   LKQ_GATES(...)   - a self-terminating gate array as a compound
+ *                      literal, for gates used by a single test.
+ */
+#ifdef _WIN32
+#  define LKQ_POSIX_FN(_fn)  NULL
+#else
+#  define LKQ_POSIX_FN(_fn)  (_fn)
+#endif
+
+#define LKQ_GATES(...)  ((const struct lkq_test_gate[]){ __VA_ARGS__, { 0, NULL } })
+
+/*
  * Current platform bitmask, OR of one OS bit and one backend bit.
  * Defined in main.c; computed from compile-time macros.
  */

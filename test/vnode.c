@@ -1169,40 +1169,6 @@ test_kevent_vnode_receipt_preserved(struct test_context *ctx)
 #endif
 
 /*
- * note_extend_ftruncate: VOP_SETATTR doesn't fire NOTE_EXTEND on size grow
- * on native BSDs (only the write path does).  libkqueue's stat-poll backends
- * handle this correctly, so skip on native kqueue and Windows.
- */
-static const struct lkq_test_gate vnode_gate_extend_ftruncate[] =
-{
-    GATE(LKQ_PLATFORM_BACKEND_NATIVE, "VOP_SETATTR doesn't fire NOTE_EXTEND on ftruncate-up on native BSD kqueue"),
-    GATE(LKQ_PLATFORM_OS_WINDOWS,     "ftruncate not available on Windows"),
-    { 0, NULL }
-};
-
-/*
- * note_link (file): FindFirstChangeNotification doesn't reliably fire on
- * CreateHardLink; skip on Windows until tracked issue is resolved.
- */
-static const struct lkq_test_gate vnode_gate_note_link[] =
-{
-    GATE(LKQ_PLATFORM_OS_WINDOWS, "CreateHardLink doesn't reliably fire NOTE_LINK via FindFirstChangeNotification"),
-    { 0, NULL }
-};
-
-/*
- * fflag_accumulation: stat-snapshot polling only sees the end state after
- * both touch and ftruncate-up; only the Linux inotify backend drain-and-unions
- * both NOTE_ATTRIB and NOTE_EXTEND.  Also fails on native BSDs for the same
- * VOP_SETATTR/NOTE_EXTEND reason as note_extend_ftruncate.
- */
-static const struct lkq_test_gate vnode_gate_fflag_accumulation[] =
-{
-    GATE(LKQ_PLATFORM_NOT_BACKEND_LINUX, "stat-snapshot and native-BSD backends don't accumulate NOTE_ATTRIB + NOTE_EXTEND across touch + ftruncate-up"),
-    { 0, NULL }
-};
-
-/*
  * rename_overwrite_ordering: NtSetInformationFile(FileRenameInformation,
  * Replace=TRUE) hits STATUS_ACCESS_DENIED on this open-watched-target shape.
  * Tracked in https://github.com/mheily/libkqueue/issues/172
@@ -1283,48 +1249,48 @@ const struct lkq_test_case lkq_vnode_tests[] =
         .func  = test_kevent_vnode_note_rename,
     },
 #endif
-#ifndef _WIN32
     {
         .name  = "kevent_vnode_note_attrib_chmod",
         .desc  = "NOTE_ATTRIB fires on fchmod",
-        .func  = test_kevent_vnode_note_attrib_chmod,
+        .func  = LKQ_POSIX_FN(test_kevent_vnode_note_attrib_chmod),
         .gates = vnode_gate_posix_only,
     },
     {
         .name  = "kevent_vnode_note_attrib_chown",
         .desc  = "NOTE_ATTRIB fires on fchown",
-        .func  = test_kevent_vnode_note_attrib_chown,
+        .func  = LKQ_POSIX_FN(test_kevent_vnode_note_attrib_chown),
         .gates = vnode_gate_posix_only,
     },
-#endif
 #ifdef NOTE_EXTEND
     {
         .name  = "kevent_vnode_note_extend",
         .desc  = "NOTE_EXTEND fires on file size growth via write",
         .func  = test_kevent_vnode_note_extend,
     },
-#  ifndef _WIN32
     {
         .name  = "kevent_vnode_note_extend_ftruncate",
         .desc  = "NOTE_EXTEND fires on ftruncate-up (size grow without write)",
-        .func  = test_kevent_vnode_note_extend_ftruncate,
-        .gates = vnode_gate_extend_ftruncate,
+        .func  = LKQ_POSIX_FN(test_kevent_vnode_note_extend_ftruncate),
+        .gates = LKQ_GATES(
+            GATE(LKQ_PLATFORM_BACKEND_NATIVE, "VOP_SETATTR doesn't fire NOTE_EXTEND on ftruncate-up on native BSD kqueue"),
+            GATE(LKQ_PLATFORM_OS_WINDOWS,     "ftruncate not available on Windows")),
     },
-#  endif
 #endif
 #ifdef NOTE_LINK
     {
         .name  = "kevent_vnode_note_link",
         .desc  = "NOTE_LINK fires on hardlink create and remove",
         .func  = test_kevent_vnode_note_link,
-        .gates = vnode_gate_note_link,
+        .gates = LKQ_GATES(GATE(LKQ_PLATFORM_OS_WINDOWS,
+            "CreateHardLink doesn't reliably fire NOTE_LINK via FindFirstChangeNotification")),
     },
 #endif
     {
         .name  = "kevent_vnode_fflag_accumulation",
         .desc  = "Multiple NOTE_* bits coalesce into a single event",
         .func  = test_kevent_vnode_fflag_accumulation,
-        .gates = vnode_gate_fflag_accumulation,
+        .gates = LKQ_GATES(GATE(LKQ_PLATFORM_NOT_BACKEND_LINUX,
+            "stat-snapshot and native-BSD backends don't accumulate NOTE_ATTRIB + NOTE_EXTEND across touch + ftruncate-up")),
     },
 #ifdef NOTE_RENAME
     {
@@ -1334,11 +1300,11 @@ const struct lkq_test_case lkq_vnode_tests[] =
         .gates = vnode_gate_rename_overwrite,
     },
 #endif
-#if defined(NOTE_LINK) && !defined(_WIN32)
+#ifdef NOTE_LINK
     {
         .name  = "kevent_vnode_note_link_directory",
         .desc  = "NOTE_LINK fires on parent dir when a subdirectory is created",
-        .func  = test_kevent_vnode_note_link_directory,
+        .func  = LKQ_POSIX_FN(test_kevent_vnode_note_link_directory),
         .gates = vnode_gate_posix_only,
     },
 #endif
@@ -1355,17 +1321,17 @@ const struct lkq_test_case lkq_vnode_tests[] =
         .func  = test_kevent_vnode_note_delete_rename_over,
         .gates = vnode_gate_rename_overwrite,
     },
-#if defined(NOTE_WRITE) && !defined(_WIN32)
+#ifdef NOTE_WRITE
     {
         .name  = "kevent_vnode_note_write_directory",
         .desc  = "NOTE_WRITE fires on parent dir for child namespace mutations",
-        .func  = test_kevent_vnode_note_write_directory,
+        .func  = LKQ_POSIX_FN(test_kevent_vnode_note_write_directory),
         .gates = vnode_gate_posix_only,
     },
     {
         .name  = "kevent_vnode_note_write_inplace",
         .desc  = "NOTE_WRITE fires on same-size pwrite overwrite",
-        .func  = test_kevent_vnode_note_write_inplace,
+        .func  = LKQ_POSIX_FN(test_kevent_vnode_note_write_inplace),
         .gates = vnode_gate_posix_only,
     },
 #endif
