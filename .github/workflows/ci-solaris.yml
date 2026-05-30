@@ -237,14 +237,20 @@ jobs:
               fi
               echo "valgrind opts: ${VG_OPTS}"
               VG_LOG=valgrind.log
-              # If a test goes silent for 120s the watchdog runs the
-              # OS-appropriate stack-dump tool and SIGABRTs the parent.
-              # Without this, a hang just times out the runner with no
-              # diagnostic.
+              # If a test goes silent for the watchdog interval the
+              # watchdog runs the OS-appropriate stack-dump tool and
+              # SIGABRTs the parent.  Without this, a hang just times out
+              # the runner with no diagnostic.  The heartbeat fires once
+              # per test, so the interval must exceed the slowest single
+              # test under valgrind: fd_reuse_stress runs 5000 iterations
+              # across 4 threads and, with the debug build logging every
+              # kevent op under the kq lock, takes minutes at valgrind's
+              # ~30x slowdown.  The 30-minute job timeout backstops a real
+              # hang.
               /opt/valgrind-3.27.0-patched/bin/valgrind \
                   ${VG_OPTS} --log-file="${VG_LOG}" \
                   ./test/libkqueue-test \
-                      --watchdog-timeout=120 \
+                      --watchdog-timeout=600 \
                       --watchdog-cmd="$(pwd)/../tools/test-stack-dump.sh" \
                       -n "${ITERATIONS:-1}"
               TEST_RC=$?
