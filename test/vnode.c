@@ -930,6 +930,19 @@ test_kevent_vnode_fd_close(struct test_context *ctx)
         struct timespec poll = { 0, 100 * 1000 * 1000 };
         (void) kevent(ctx->kqfd, NULL, 0, ret, 1, &poll);
     }
+
+#if !defined(NATIVE_KQUEUE)
+    /*
+     * This test deliberately closed the watched fd without EV_DELETE
+     * (its whole point).  A native kqueue auto-removes the knote when
+     * the fd closes, but the libkqueue backends don't, so it would
+     * linger and a later test reusing this fd number would see a stale
+     * knote.  Remove it explicitly by ident on those backends; ENOENT
+     * is fine, the oneshot may already have fired and self-deleted.
+     */
+    EV_SET(&kev, fd, EVFILT_VNODE, EV_DELETE, 0, 0, NULL);
+    (void) kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
+#endif
 }
 
 /*
