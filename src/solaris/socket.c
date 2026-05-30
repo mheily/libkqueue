@@ -305,6 +305,22 @@ evfilt_socket_copyout(struct kevent *dst, UNUSED int nevents, struct filter *fil
         } else {
             dst->data = 0;
         }
+
+        /*
+         * illumos queues the writable port event at port_associate time.
+         * A reader that closes after the association leaves the queued
+         * event as POLLOUT with no POLLHUP, because port_getn delivers
+         * that snapshot unchanged.  fifo_poll reports the hangup
+         * synchronously once the reader's fn_open reaches 0, so re-poll
+         * the write end to surface EV_EOF.
+         */
+        if ((src->kev.filter == EVFILT_WRITE) && (src->kn_flags & KNFL_PIPE) &&
+            !(dst->flags & EV_EOF)) {
+            struct pollfd wpfd = { .fd = pe->portev_object, .events = POLLOUT };
+
+            if (poll(&wpfd, 1, 0) > 0 && (wpfd.revents & (POLLHUP | POLLERR)))
+                dst->flags |= EV_EOF;
+        }
     }
 
     if (pe->portev_events & POLLIN) {
