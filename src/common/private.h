@@ -595,6 +595,22 @@ struct kqueue {
 
 void    kqueue_complete_deferred_free(struct kqueue *kq);
 
+/** Capability flags for a backend's kqueue_vtable (the `flags` field). */
+enum kqueue_vtable_flags {
+    /** Close detection is asynchronous: a background thread frees a
+     *  kqueue when the user closes its fd.  kqueue()'s fd-reuse path
+     *  then only evicts the stale id from kqmap (map_delete) rather
+     *  than calling kqueue_free_by_id - the stale kqueue is owned by
+     *  the close-detection thread, which frees it when it observes the
+     *  close, so freeing it here too would double-free.  Backends
+     *  without this flag have no such thread and free on eviction.
+     */
+    KQUEUE_FLAG_CLOSE_ASYNC = (1u << 0)
+};
+
+/** True if the active backend's vtable advertises capability @p _flag. */
+#define KQOPS_FLAG(_flag) ((kqops.flags & (_flag)) != 0)
+
 /** Platform specific support functions
  *
  */
@@ -637,6 +653,9 @@ struct kqueue_vtable {
      *
      */
     void   (*kqueue_free)(struct kqueue *kq);
+
+    /** Backend capability flags - see enum kqueue_vtable_flags. */
+    enum kqueue_vtable_flags flags;
 
     /** Wake every thread currently parked in this kq's wait syscall
      *

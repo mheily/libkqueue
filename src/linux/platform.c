@@ -50,50 +50,44 @@ enum thread_exit_state {
 static enum thread_exit_state monitoring_thread_state;
 
 /*
- * Map for kqueue pipes where index is the read side (for which signals are received)
- * and value is the write side that gets closed and corresponds to the kqueue id.
+ * Close-detection epoll.  Every kqueue's pipefd[0] (read end of its
+ * close-detect pipe) is registered here with EPOLLHUP | EPOLLONESHOT
+ * and ev.data.ptr set to the owning struct kqueue.  When the user
+ * closes the kqueue fd (pipefd[1], the write end) the read end goes
+ * HUP and the monitoring thread frees the kqueue, identifying it
+ * directly from ev.data.ptr - no fd-number lookup.  EPOLLONESHOT stops
+ * a deferred free (in-flight kevent() callers) from re-firing the
+ * level-triggered HUP in a busy loop.
  *
- * @note Values in the fd_map are never cleared, as we still need to decrement
- * fd_use_cnt when signals for a particular FD are received.
+ * Process-global, created lazily on the first kqueue(); persists across
+ * monitoring-thread restarts.
  */
-static int *fd_map;
+static int monitoring_epfd = -1;
 
 /*
- * Map kqueue id to counter for kq cleanups.
- * When use counter is at 0, cleanup can be performed by signal handler.
- * Otherwise, it means cleanup was already performed for this FD in linux_kqueue_reused.
+ * eventfd that libkqueue_drain_pending_close writes to wake the
+ * monitoring thread for a synchronous flush.  Registered in
+ * monitoring_epfd level-triggered (EPOLLIN) with ev.data.ptr == NULL,
+ * which the monitor uses to distinguish it from a kqueue HUP.
  */
-static unsigned int *fd_use_cnt;
+static int monitoring_drain_efd = -1;
 
-static int nb_max_fd;
+/*
+ * Bumped by the monitoring thread each time it finishes flushing a
+ * drain request; libkqueue_drain_pending_close waits for it to advance.
+ * Protected by kq_mtx, signalled via monitoring_drain_cond.
+ */
+static unsigned long monitoring_drain_gen;
+static pthread_cond_t monitoring_drain_cond = PTHREAD_COND_INITIALIZER;
+
+/* Per-epoll_wait batch the monitoring thread reaps. */
+#define MONITORING_MAX_EVENTS 64
 
 static void
 linux_kqueue_free(struct kqueue *kq);
 
 static void
 linux_kqueue_interrupt(struct kqueue *kq);
-
-/*
- * Helper method for dealing with the fd_map to avoid calling calloc()
- * on the entire set of fds at once. fd_map uses 0 to indicate that
- * an fd is unused instead of -1, so this function adapts the stored
- * file descriptors to match.
- */
-static void
-fd_map_set(int from, int to)
-{
-    fd_map[from] = to + 1;
-}
-
-/*
- * Helper method for dealing with the fd_map to avoid calling calloc()
- * on the entire set of fds at once. See the comment on fd_map_set().
- */
-static int
-fd_map_get(int fd)
-{
-    return fd_map[fd] - 1;
-}
 
 /*
  * TSAN false-positive on this function.
@@ -140,10 +134,9 @@ monitoring_thread_cleanup(UNUSED void *arg)
          * If the entire process is exiting, then free all
          * the kqueues.
          *
-         * We do this because we don't reliably receive all the
-         * close MONITORING_THREAD_SIGNALs before the process
-         * exits, and this avoids ASAN or valgrind raising
-         * spurious memory leaks.
+         * We do this because a close HUP may not have been
+         * processed before the process exits, and this avoids
+         * ASAN or valgrind raising spurious memory leaks.
          *
          * If the user _hasn't_ closed a KQ fd, then we don't
          * free the underlying memory, and it'll be correctly
@@ -160,30 +153,20 @@ monitoring_thread_cleanup(UNUSED void *arg)
              */
             dbg_printf("kq=%p - fd=%i explicitly checking for closure", kq, kq->kq_id);
             if (fcntl(kq->kq_id, F_GETFD) < 0) {
-                dbg_printf("kq=%p - fd=%i forcefully cleaning up, current use_count=%u: %s",
-                           kq, kq->kq_id, fd_use_cnt[kq->kq_id],
+                dbg_printf("kq=%p - fd=%i closed, cleaning up: %s",
+                           kq, kq->kq_id,
                            errno == EBADF ? "File descriptor already closed" : strerror(errno));
-                fd_use_cnt[kq->kq_id] = 0;
-            } else {
-                /*
-                 * User never closed kqfd.  We still treat this as a
-                 * leak (sanity check below) but interrupt any threads
-                 * parked in epoll_wait first so they exit kevent()
-                 * with EBADF instead of staying stuck forever.  The
-                 * kq itself is still leaked per the existing contract
-                 * - the user is responsible for matching kqueue() with
-                 * close().
-                 */
-                assert(fd_use_cnt[kq->kq_id] > 0);
-                linux_kqueue_interrupt(kq);
-            }
-
-            if (fd_use_cnt[kq->kq_id] == 0) {
-                dbg_printf("kq=%p - fd=%i use_count=%u cleaning up...", kq, kq->kq_id, fd_use_cnt[kq->kq_id]);
                 kqueue_free(kq);
             } else {
-                dbg_printf("kq=%p - fd=%i is alive use_count=%u.  Skipping, this is likely a leak...",
-                           kq, kq->kq_id, fd_use_cnt[kq->kq_id]);
+                /*
+                 * User never closed kqfd.  Interrupt any threads
+                 * parked in epoll_wait so they exit kevent() with
+                 * EBADF instead of staying stuck forever, then leave
+                 * the kq leaked per the existing contract - the user
+                 * is responsible for matching kqueue() with close().
+                 */
+                dbg_printf("kq=%p - fd=%i still open, likely a leak; skipping", kq, kq->kq_id);
+                linux_kqueue_interrupt(kq);
             }
         }
 
@@ -196,12 +179,6 @@ monitoring_thread_cleanup(UNUSED void *arg)
                monitoring_thread_state == THREAD_EXIT_STATE_SELF_CANCEL ?
                    "no kqueues" : "process term");
 
-    /* Free thread resources */
-    free(fd_map);
-    fd_map = NULL;
-    free(fd_use_cnt);
-    fd_use_cnt = NULL;
-
     /* Reset so that thread can be restarted */
     monitoring_tid = 0;
 
@@ -210,114 +187,51 @@ monitoring_thread_cleanup(UNUSED void *arg)
 }
 
 
-/** Clean up a kqueue from the perspective of the monitoring thread
+/** Free a kqueue whose close-detect pipe reported EPOLLHUP.
  *
- * Called with the kq_mtx held.
+ * Called with kq_mtx held.  The kq pointer comes straight from the
+ * epoll event's udata, so there's no fd-number translation or lookup.
+ * kqueue_free removes the kq from kq_list immediately; if in-flight
+ * kevent() callers exist it defers the teardown to the last caller.
+ * Either way the EPOLLONESHOT registration won't re-fire, and
+ * linux_kqueue_free removes pipefd[0] from monitoring_epfd before
+ * closing it.
  */
 static void
-monitoring_thread_kqueue_cleanup(int signal_fd)
+monitoring_thread_close_kq(struct kqueue *kq)
 {
-    int fd;
-    struct kqueue *kq;
-
-    /*
-     * Signal is received for read side of pipe
-     * Get FD for write side as it's the kqueue identifier
-     */
-    fd = fd_map_get(signal_fd);
-    if (fd < 0) {
-       /* Should not happen */
-        dbg_printf("fd=%i - not a known FD", fd);
-        return;
-    }
-
-    kq = kqueue_lookup(fd);
-    if (!kq) {
-        /*
-         * Stale signal: kqueue_free already ran map_remove on
-         * this kq (e.g., we're being woken by linux_kqueue_interrupt
-         * writing to pipefd[1] from kqueue_free's defer path, OR
-         * a close-detect signal arrived after kqueue_free
-         * finished).  Nothing to clean up here.
-         */
-        dbg_printf("fd=%i - no kqueue associated, ignoring stale signal", fd);
-        return;
-    }
-
-    /*
-     * We should never have more pending signals than we have
-     * allocated kqueues against a given ID.
-     */
-    assert(fd_use_cnt[kq->kq_id] > 0);
-
-    /*
-     * Decrement use counter as signal handler has been run for
-     * this FD.  We rely on using an RT signal so that multiple
-     * signals are queued.
-     *
-     * Use count is tracked with the kq_id.
-     */
-    fd_use_cnt[kq->kq_id]--;
-
-    /*
-     * If kqueue instance for this FD hasn't been cleaned up yet
-     *
-     * When the main kqueue code frees a kq, the file descriptor
-     * of the kq often gets reused.
-     *
-     * We maintain a count of how many allocations have been
-     * performed against a given file descriptor ID, and only
-     * free the kqueue here if that count is zero.
-     */
-    if (fd_use_cnt[kq->kq_id] == 0) {
-        dbg_printf("kq=%p - fd=%i use_count=%u cleaning up...", kq, fd, fd_use_cnt[kq->kq_id]);
-        kqueue_free(kq);
-    } else {
-        dbg_printf("kq=%p - fd=%i use_count=%u skipping...", kq, fd, fd_use_cnt[kq->kq_id]);
-    }
+    dbg_printf("kq=%p - fd=%i freeing due to close (EPOLLHUP)", kq, kq->kq_id);
+    kqueue_free(kq);
 }
 
 /*
- * Monitoring thread that loops on waiting for signals to be received
+ * Monitoring thread: blocks in epoll_wait on monitoring_epfd and frees
+ * each kqueue whose pipefd[0] reports EPOLLHUP (the user closed the
+ * kqueue fd).  A readable monitoring_drain_efd (udata == NULL) is a
+ * synchronous drain request from libkqueue_drain_pending_close.
  */
 static void *
 monitoring_thread_loop(UNUSED void *arg)
 {
     int res = 0;
-    siginfo_t info;
-
-    sigset_t monitoring_sig_set;
+    pid_t my_tid;
+    sigset_t all;
 
     /* Set the thread's name to something descriptive so it shows up in gdb,
      * etc. glibc >= 2.1.2 supports pthread_setname_np, but this is a safer way
      * to do it for backwards compatibility. Max name length is 16 bytes. */
     prctl(PR_SET_NAME, "libkqueue_mon", 0, 0, 0);
 
-    nb_max_fd = get_fd_limit();
+    /*
+     * Block all signals here.  Close detection is epoll-based, so this
+     * thread needs no signal; blocking keeps stray application signals
+     * from interrupting epoll_wait or being delivered to us.
+     */
+    sigfillset(&all);
+    pthread_sigmask(SIG_BLOCK, &all, NULL);
 
-    sigemptyset(&monitoring_sig_set);
-    sigfillset(&monitoring_sig_set);
-
-    pthread_sigmask(SIG_BLOCK, &monitoring_sig_set, NULL);
-
-    sigemptyset(&monitoring_sig_set);
-    sigaddset(&monitoring_sig_set, MONITORING_THREAD_SIGNAL);
-
-    pid_t my_tid = syscall(SYS_gettid);
-
+    my_tid = syscall(SYS_gettid);
     dbg_printf("tid=%u - monitoring thread started", my_tid);
-
-    fd_map = calloc(nb_max_fd, sizeof(int));
-    if (fd_map == NULL) {
-    error:
-        return NULL;
-    }
-
-    fd_use_cnt = calloc(nb_max_fd, sizeof(unsigned int));
-    if (fd_use_cnt == NULL){
-        free(fd_map);
-        goto error;
-    }
 
     /*
      * Publish monitoring_tid and let kqueue init resume.  Writing
@@ -335,43 +249,61 @@ monitoring_thread_loop(UNUSED void *arg)
     monitoring_thread_state = THREAD_EXIT_STATE_CANCEL_UNLOCKED;
     pthread_cleanup_push(monitoring_thread_cleanup, NULL)
     while (true) {
+        struct epoll_event events[MONITORING_MAX_EVENTS];
+        bool drain_req = false;
+        int n, i;
+
         /*
-         * Wait for signal notifying us that a change has occured on the pipe
-         * It's not possible to only listen on FD close but no other operation
-         * should be performed on the kqueue.
+         * epoll_wait is the cancellation point; linux_libkqueue_free
+         * cancels + joins us here on teardown.  Everything below runs
+         * with cancellation disabled so a cancel can't interrupt a
+         * kqueue_free mid-flight.
          */
-        res = sigwaitinfo(&monitoring_sig_set, &info);
-        if (res == -1) {
-            dbg_printf("sigwaitinfo(2): %s", strerror(errno));
+        n = epoll_wait(monitoring_epfd, events, MONITORING_MAX_EVENTS, -1);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            dbg_printf("epoll_wait(2): %s", strerror(errno));
             continue;
         }
 
-        /*
-         * Don't allow cancellation in the middle of cleaning up resources
-         */
         pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
         tracing_mutex_lock(&kq_mtx);
 
-        /*
-         * Process the waking signal and then drain any additional
-         * signals that arrived while we were locked or between
-         * iterations.  Batching is important under instrumentation
-         * (ASAN/TSAN): stress tests can queue thousands of close
-         * signals, and processing one per sigwaitinfo call leaves
-         * libkqueue_drain_pending_close waiting far longer than its
-         * timeout.  sigtimedwait with a zero timeout gives us the
-         * next queued signal without blocking.
-         */
-        {
-            siginfo_t cur = info;
-            struct timespec zero = { 0, 0 };
+        for (i = 0; i < n; i++) {
+            if (events[i].data.ptr == NULL) {
+                drain_req = true;       /* the drain eventfd */
+                continue;
+            }
+            monitoring_thread_close_kq(events[i].data.ptr);
+        }
 
-            do {
-                dbg_printf("fd=%i - freeing kqueue due to fd closure (signal) for sfd=%i ",
-                           fd_map_get(cur.si_fd), cur.si_fd);
-                monitoring_thread_kqueue_cleanup(cur.si_fd);
-                if (kq_cnt == 0) break;
-            } while (sigtimedwait(&monitoring_sig_set, &cur, &zero) > 0);
+        /*
+         * A drain request: a caller wants every already-closed kqueue
+         * freed before we acknowledge.  HUP is level-triggered and
+         * every such kq's read end is HUP right now, so a zero-timeout
+         * sweep collects them all (EPOLLONESHOT means each fires at
+         * most once).  Then bump the generation the drainer waits on.
+         */
+        if (drain_req) {
+            uint64_t v;
+
+            while (read(monitoring_drain_efd, &v, sizeof(v)) > 0)
+                ;       /* clear the eventfd counter */
+
+            for (;;) {
+                int m = epoll_wait(monitoring_epfd, events, MONITORING_MAX_EVENTS, 0);
+                if (m <= 0)
+                    break;
+                for (i = 0; i < m; i++) {
+                    if (events[i].data.ptr == NULL)
+                        continue;
+                    monitoring_thread_close_kq(events[i].data.ptr);
+                }
+            }
+
+            monitoring_drain_gen++;
+            pthread_cond_broadcast(&monitoring_drain_cond);
         }
 
         /*
@@ -482,6 +414,22 @@ linux_libkqueue_fork(void)
             dbg_perror("close(2)");
         kq->pipefd[1] = -1;
     }
+
+    /*
+     * Drop the inherited monitoring epoll + drain eventfd.  An epoll
+     * fd duplicated across fork shares the parent's interest list, so
+     * the child must start fresh; reset to -1 and the child's next
+     * kqueue() lazily recreates them.  close() is async-signal-safe.
+     */
+    if (monitoring_epfd >= 0) {
+        close(monitoring_epfd);
+        monitoring_epfd = -1;
+    }
+    if (monitoring_drain_efd >= 0) {
+        close(monitoring_drain_efd);
+        monitoring_drain_efd = -1;
+    }
+    monitoring_drain_gen = 0;
 }
 
 /*
@@ -524,82 +472,100 @@ linux_libkqueue_free(void)
     } else {
         tracing_mutex_unlock(&kq_mtx);
     }
+
+    /*
+     * Thread is joined (or was never started).  Tear down the
+     * process-global monitoring epoll + drain eventfd.
+     */
+    if (monitoring_epfd >= 0) {
+        if (close(monitoring_epfd) < 0)
+            dbg_perror("close(monitoring_epfd)");
+        monitoring_epfd = -1;
+    }
+    if (monitoring_drain_efd >= 0) {
+        if (close(monitoring_drain_efd) < 0)
+            dbg_perror("close(monitoring_drain_efd)");
+        monitoring_drain_efd = -1;
+    }
 }
 
-/** Block until the monitoring thread has processed any pending close signals
+/** Block until the monitoring thread has freed every closed kqueue
  *
  * The normal close-cleanup path is asynchronous: close(kqfd) closes
- * the write end of the close-detect pipe, the kernel signals the
- * monitoring thread via SIGRTMIN+1, and the monitoring thread
- * eventually runs `monitoring_thread_kqueue_cleanup` to free the
- * kqueue.  Tests that close kqs and exit immediately can race the
- * monitoring thread - the process exits before the signal has been
- * delivered, leaving allocations associated with the kq unfreed
- * when LSAN runs at process teardown.
+ * the write end of the close-detect pipe (pipefd[1]), the read end
+ * (pipefd[0]) goes EPOLLHUP in monitoring_epfd, and the monitoring
+ * thread frees the kqueue.  Tests that close kqs and return
+ * immediately can race the monitoring thread, leaving allocations
+ * unfreed when LSAN runs at process teardown.
  *
- * libkqueue_drain_pending_close polls kq_list under kq_mtx,
- * yielding until every kq whose user-facing fd is closed has been
- * removed by the monitoring thread.  Polling rather than forcibly
- * freeing avoids the assertion in monitoring_thread_kqueue_cleanup
- * that would fire if both the drainer and the monitoring thread
- * tried to claim the same kq.
+ * This is a deterministic request/ack handshake, not a poll: we write
+ * the drain eventfd to wake the monitoring thread, which flushes every
+ * currently-ready HUP (all the just-closed kqs, since HUP is
+ * level-triggered) and then bumps monitoring_drain_gen.  We wait for
+ * that generation to advance.  No timeout, no fd probing, no fd-reuse
+ * hazard - the HUP is the source of truth.
  *
- * Caveats:
- *   - Uses fcntl(F_GETFD) to detect "fd is closed".  If the kq's
- *     fd has been reused by a new allocation between close() and
- *     this call, the heuristic falsely concludes the kq is live
- *     and the drain may spin forever (bounded by the iteration
- *     cap below).  Callers must drain BEFORE allocating any new
- *     fds.
- *   - The monitoring thread must be running.  If not, the drain
- *     no-ops once it observes no closed-fd kqs (which is the
- *     correct behaviour for that case).
+ * If the monitoring thread isn't running (monitoring_tid == 0) it has
+ * already exited, which only happens once every kqueue is freed, so
+ * there is nothing to wait for.
  *
  * Intended for tests that need deterministic teardown.
  */
+
+/*
+ * pthread_cond_wait on monitoring_drain_cond with kq_mtx held.
+ *
+ * kq_mtx is a tracing_mutex_t: in debug builds it wraps a
+ * pthread_mutex_t with lock-tracking metadata, so cond_wait must
+ * operate on the inner lock and we restore the bookkeeping by hand
+ * around it.  In NDEBUG builds tracing_mutex_t IS a pthread_mutex_t.
+ */
+static void
+monitoring_drain_cond_wait(void)
+{
+#ifdef NDEBUG
+    pthread_cond_wait(&monitoring_drain_cond, &kq_mtx);
+#else
+    kq_mtx.mtx_status = MTX_UNLOCKED;
+    kq_mtx.mtx_owner = -1;
+    pthread_cond_wait(&monitoring_drain_cond, &kq_mtx.mtx_lock);
+    kq_mtx.mtx_owner = THREAD_ID;
+    kq_mtx.mtx_status = MTX_LOCKED;
+#endif
+}
+
 void VISIBLE
 libkqueue_drain_pending_close(void)
 {
-    /*
-     * Bounded wait for the monitoring thread to process all pending
-     * kqueue closes.  Under instrumentation (ASAN/TSAN) the monitoring
-     * thread can fall far behind when a stress test hammers kqueue
-     * create/close at high rate, so we use a real-time 30-second
-     * deadline with 1ms sleeps rather than a fixed iteration count.
-     * In normal operation the drain completes in < 1ms.
-     */
-    enum { TIMEOUT_SEC = 30 };
-    struct timespec deadline, now, nap = { 0, 1000000L }; /* 1ms */
-    struct kqueue  *kq;
-    bool            any_closed;
+    unsigned long gen;
+    uint64_t one = 1;
 
-    clock_gettime(CLOCK_MONOTONIC, &deadline);
-    deadline.tv_sec += TIMEOUT_SEC;
+    tracing_mutex_lock(&kq_mtx);
 
-    do {
-        any_closed = false;
-        tracing_mutex_lock(&kq_mtx);
-        LIST_FOREACH(kq, &kq_list, kq_entry) {
-            if (fcntl(kq->kq_id, F_GETFD) < 0) {
-                any_closed = true;
-                break;
-            }
-        }
+    if (monitoring_tid == 0 || monitoring_drain_efd < 0) {
         tracing_mutex_unlock(&kq_mtx);
-        if (!any_closed) return;
-        nanosleep(&nap, NULL);
-        clock_gettime(CLOCK_MONOTONIC, &now);
-    } while (now.tv_sec < deadline.tv_sec ||
-             (now.tv_sec == deadline.tv_sec && now.tv_nsec < deadline.tv_nsec));
+        return;
+    }
 
-    dbg_puts("libkqueue_drain_pending_close: timeout waiting for monitoring thread");
+    /*
+     * Snapshot the generation, then wake the monitor.  We hold kq_mtx
+     * across the write and the wait so the monitor can't process the
+     * request and exit (kq_cnt == 0) before we start waiting - it
+     * blocks on kq_mtx until our cond_wait releases it.
+     */
+    gen = monitoring_drain_gen;
+    if (write(monitoring_drain_efd, &one, sizeof(one)) < 0)
+        dbg_perror("write(monitoring_drain_efd)");
+
+    while (monitoring_drain_gen == gen)
+        monitoring_drain_cond_wait();
+
+    tracing_mutex_unlock(&kq_mtx);
 }
 
 static int
 linux_kqueue_init(struct kqueue *kq)
 {
-    struct f_owner_ex sig_owner;
-
     kq->kq_next_epoch = 0;
     TAILQ_INIT(&kq->kq_inflight);
     TAILQ_INIT(&kq->ud_deferred_free);
@@ -644,13 +610,12 @@ linux_kqueue_init(struct kqueue *kq)
     }
 
     /*
-     * O_NONBLOCK - Ensure pipe ends are non-blocking so that
-     * there's no chance of them delaying close().
-     *
-     * O_ASYNC - Raise a SIGIO signal if the file descriptor
-     * becomes readable or is closed.
+     * O_NONBLOCK - Ensure pipe ends are non-blocking so that there's
+     * no chance of them delaying close(), and so the wake-byte write
+     * (linux_kqueue_interrupt) and the residual drain in
+     * linux_kqueue_free never block.
      */
-    if ((fcntl(kq->pipefd[0], F_SETFL, O_NONBLOCK | O_ASYNC ) < 0) ||
+    if ((fcntl(kq->pipefd[0], F_SETFL, O_NONBLOCK) < 0) ||
         (fcntl(kq->pipefd[1], F_SETFL, O_NONBLOCK) < 0)) {
         dbg_perror("fcntl(2)");
         goto error;
@@ -659,36 +624,14 @@ linux_kqueue_init(struct kqueue *kq)
     kq->kq_id = kq->pipefd[1];
 
     /*
-     * SIGIO may be used by the application, so we use F_SETSIG
-     * to change the signal sent to one in the realtime range
-     * which are all user defined.
-     *
-     * We may want to make this configurable at runtime later
-     * so we won't conflict with the application.
-     *
-     * Note: MONITORING_THREAD_SIGNAL must be >= SIGRTMIN so that
-     * multiple signals are queued.
-     */
-    if (fcntl(kq->pipefd[0], F_SETSIG, MONITORING_THREAD_SIGNAL) < 0) {
-        dbg_printf("fd=%i - failed setting F_SETSIG sig=%u: %s",
-                   kq->pipefd[0], MONITORING_THREAD_SIGNAL, strerror(errno));
-        goto error;
-    }
-
-    /*
-     * Register pipefd[0] in the kq's epoll set.  When the user
+     * Register pipefd[0] in the kq's own epoll set.  When the user
      * closes pipefd[1] (= kq_id), the kernel marks pipefd[0] as
      * "no writers" and every epoll_wait that has it registered
-     * returns with EPOLLHUP.  That gives us a wake mechanism for
-     * parked waiters when kqueue_free defers behind in-flight
-     * callers - without it, a thread blocked on an empty queue
-     * with no timeout would stay parked forever and the kq
-     * would leak until process exit.
+     * returns with EPOLLHUP.  That wakes threads parked in this kq's
+     * own epoll_wait so they exit kevent() instead of staying stuck.
      *
      * Copyout sees EPOLL_UDATA_KQ_WAKE and skips the slot so the
-     * fake "ready" event isn't surfaced to the application.  The
-     * existing F_SETSIG path that triggers the monitoring thread
-     * is unaffected; both wake mechanisms coexist.
+     * fake "ready" event isn't surfaced to the application.
      */
     kq->kq_wake_udata = epoll_udata_alloc(EPOLL_UDATA_KQ_WAKE, kq);
     if (kq->kq_wake_udata == NULL) {
@@ -706,35 +649,64 @@ linux_kqueue_init(struct kqueue *kq)
         }
     }
 
+    /*
+     * Lazily create the process-global close-detection epoll and its
+     * drain eventfd on first use.  The monitoring thread blocks on
+     * this epoll; each kqueue's pipefd[0] is registered below so a
+     * user close surfaces as EPOLLHUP.  The drain eventfd has
+     * ev.data.ptr == NULL, which the monitor uses to tell it apart
+     * from a kqueue HUP.
+     */
+    if (monitoring_epfd < 0) {
+        struct epoll_event de = { .events = EPOLLIN, .data = { .ptr = NULL } };
+
+        monitoring_epfd = epoll_create1(EPOLL_CLOEXEC);
+        if (monitoring_epfd < 0) {
+            dbg_perror("epoll_create1(monitoring)");
+            goto error;
+        }
+        monitoring_drain_efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+        if (monitoring_drain_efd < 0) {
+            dbg_perror("eventfd(monitoring_drain)");
+            close(monitoring_epfd);
+            monitoring_epfd = -1;
+            goto error;
+        }
+        if (epoll_ctl(monitoring_epfd, EPOLL_CTL_ADD, monitoring_drain_efd, &de) < 0) {
+            dbg_perror("epoll_ctl(ADD drain eventfd)");
+            close(monitoring_drain_efd);
+            monitoring_drain_efd = -1;
+            close(monitoring_epfd);
+            monitoring_epfd = -1;
+            goto error;
+        }
+    }
+
+    /*
+     * Register pipefd[0] for close detection.  ev.data.ptr is the kq
+     * itself, so the monitoring thread frees it directly with no fd
+     * lookup.  EPOLLONESHOT: when kqueue_free defers behind in-flight
+     * kevent() callers the HUP stays asserted until the last caller
+     * completes teardown; without ONESHOT the level-triggered HUP
+     * would busy-loop the monitor until then.
+     */
+    {
+        struct epoll_event me = { .events = EPOLLHUP | EPOLLONESHOT,
+                                  .data = { .ptr = kq } };
+        if (epoll_ctl(monitoring_epfd, EPOLL_CTL_ADD, kq->pipefd[0], &me) < 0) {
+            dbg_perror("epoll_ctl(monitoring ADD pipefd[0])");
+            goto error;
+        }
+    }
+
     /* Start monitoring thread during first initialization */
     if (monitoring_tid == 0) {
         if (linux_kqueue_start_thread() < 0)
             goto error;
     }
-
-    /* Update pipe FD map */
-    fd_map_set(kq->pipefd[0], kq->kq_id);
-
-    /* Mark this id as in use */
-    fd_use_cnt[kq->kq_id]++;
-
-    dbg_printf("kq=%p - fd=%i use_count=%u", kq, kq->kq_id, fd_use_cnt[kq->kq_id]);
-
     assert(monitoring_tid != 0);
 
-    /*
-     * Finally, ensure that signals generated by I/O operations
-     * on the FD get dispatch to the monitoring thread, and
-     * not anywhere else.
-     */
-    sig_owner.type = F_OWNER_TID;
-    sig_owner.pid = monitoring_tid;
-    if (fcntl(kq->pipefd[0], F_SETOWN_EX, &sig_owner) < 0) {
-        dbg_printf("fd=%i - failed setting F_SETOWN to tid=%u: %s", monitoring_tid, kq->kq_id, strerror(errno));
-        tracing_mutex_unlock(&kq_mtx);
-        goto error;
-    }
-    dbg_printf("kq=%p - monitoring fd=%i for closure", kq, kq->pipefd[0]);
+    dbg_printf("kq=%p - fd=%i monitoring for closure", kq, kq->kq_id);
 
     return (0);
 }
@@ -793,6 +765,17 @@ linux_kqueue_free(struct kqueue *kq)
 
     pipefd = kq->pipefd[0];
     if (pipefd > 0) {
+        /*
+         * Remove pipefd[0] from the close-detection epoll before
+         * closing it.  Closing would auto-remove it anyway, but an
+         * explicit DEL keeps the interest list tidy and closes the
+         * window where a HUP could carry this (about-to-be-freed) kq
+         * pointer as udata.  ENOENT (never registered, e.g. an init
+         * error path) is benign.
+         */
+        if (monitoring_epfd >= 0)
+            (void) epoll_ctl(monitoring_epfd, EPOLL_CTL_DEL, pipefd, NULL);
+
         if (close(pipefd) < 0) {
             dbg_perror("close(2) - kq_fd=%i", kq->pipefd[0]);
         } else {
@@ -844,12 +827,9 @@ linux_kqueue_free(struct kqueue *kq)
  * cases (atexit/fork/kqueue_free_by_id) where the auto-wake
  * doesn't fire.
  *
- * Writing to pipefd[1] also fires the F_SETSIG-bound MONITORING_THREAD_SIGNAL
- * to the monitoring thread, which would normally treat it as a
- * close-detect notification.  monitoring_thread_kqueue_cleanup is
- * tolerant of "kq not in map" since by the time we call this hook
- * kqueue_free has already run map_remove.  See the softened
- * assert there.
+ * The wake byte only makes pipefd[0] readable (EPOLLIN), not HUP, so
+ * the close-detection epoll (which watches EPOLLHUP only) ignores it -
+ * the monitoring thread is not disturbed.
  */
 static void
 linux_kqueue_interrupt(struct kqueue *kq)
@@ -2091,6 +2071,7 @@ const struct kqueue_vtable kqops = {
     .libkqueue_free     = linux_libkqueue_free,
     .kqueue_init        = linux_kqueue_init,
     .kqueue_free        = linux_kqueue_free,
+    .flags              = KQUEUE_FLAG_CLOSE_ASYNC,   /* monitoring thread frees on close; eviction must not double-free */
     .kqueue_interrupt   = linux_kqueue_interrupt,
     .kevent_wait        = linux_kevent_wait,
     .kevent_copyout     = linux_kevent_copyout,

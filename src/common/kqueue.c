@@ -388,6 +388,15 @@ kqueue_free_by_id(int id)
     kq = map_delete(kqmap, id);
     if (!kq) return;
 
+    /*
+     * With asynchronous close detection the stale kqueue is owned by
+     * the backend's close-detection thread, which frees it when it
+     * observes the close.  The map_delete above is all the eviction
+     * needs; freeing it here too would double-free.
+     */
+    if (KQOPS_FLAG(KQUEUE_FLAG_CLOSE_ASYNC))
+        return;
+
     kqueue_free(kq);
 }
 
@@ -430,12 +439,10 @@ kqueue(void)
     tracing_mutex_init(&kq->kq_mtx, NULL);
 
     /*
-     * Init, delete and insert should be atomic
-     * this is mainly for the monitoring thread
-     * on Linux, to ensure if an FD gets reused
-     * for a new KQ, the signal handler doesn't
-     * accidentally free up memory allocated to
-     * the new KQ.
+     * Init, evict and insert must be atomic under kq_mtx.  When an fd
+     * number is reused for a new kqueue this serialises against the
+     * Linux monitoring thread (which also takes kq_mtx to reap closed
+     * kqueues), so neither side observes a half-updated kqmap/kq_list.
      */
     tracing_mutex_lock(&kq_mtx);
     if (kqops.kqueue_init(kq) < 0) {
@@ -452,7 +459,13 @@ kqueue(void)
 
     dbg_printf("kq=%p - alloced with fd=%d", kq, kq->kq_id);
 
-    kqueue_free_by_id(kq->kq_id);   /* Free any old map entries */
+    /*
+     * Evict any stale kqueue still mapped to this fd id (the previous
+     * owner of this fd number closed it but hasn't been reaped yet).
+     * kqueue_free_by_id drops it from the map and, unless close
+     * detection is asynchronous, frees it.
+     */
+    kqueue_free_by_id(kq->kq_id);
 
     if (map_insert(kqmap, kq->kq_id, kq) < 0) {
         dbg_printf("kq=%p - map insertion failed, freeing", kq);

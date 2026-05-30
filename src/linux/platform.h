@@ -136,15 +136,6 @@ extern long int syscall (long int __sysno, ...);
 # define EPOLLONESHOT (1 << 30)
 #endif
 
-/*
- * RT signal the monitoring thread sigwaitinfos for fd-close
- * notifications (set on each kqueue's close-detect pipefd via
- * F_SETSIG).  Exposed in the public platform header so EVFILT_SIGNAL
- * can refuse to register on it - the monitoring thread is the
- * exclusive consumer.
- */
-#define MONITORING_THREAD_SIGNAL  (SIGRTMIN + 1)
-
 /* Convenience macros to access the epoll descriptor for the kqueue */
 #define kqueue_epoll_fd(kq)     ((kq)->epollfd)
 #define filter_epoll_fd(filt)   ((filt)->kf_kqueue->epollfd)
