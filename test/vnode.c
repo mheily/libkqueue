@@ -1214,12 +1214,12 @@ static const struct lkq_test_gate vnode_gate_rename_overwrite[] =
 };
 
 /*
- * Tests that require POSIX-only syscalls (fchmod, fchown, pwrite,
- * O_DIRECTORY open of a directory, rename over open target).
+ * Tests that depend on a POSIX file API with no Windows equivalent:
+ * fchmod, fchown, pwrite, or an O_DIRECTORY open of a directory.
  */
 static const struct lkq_test_gate vnode_gate_posix_only[] =
 {
-    GATE(LKQ_PLATFORM_OS_WINDOWS, "POSIX-only syscall not available on Windows"),
+    GATE(LKQ_PLATFORM_OS_WINDOWS, "POSIX file API (fchmod/fchown/pwrite/O_DIRECTORY) has no Windows equivalent"),
     { 0, NULL }
 };
 
@@ -1353,7 +1353,7 @@ const struct lkq_test_case lkq_vnode_tests[] =
         .name  = "kevent_vnode_note_delete_rename_over",
         .desc  = "NOTE_DELETE fires on target vnode when renamed over",
         .func  = test_kevent_vnode_note_delete_rename_over,
-        .gates = vnode_gate_posix_only,
+        .gates = vnode_gate_rename_overwrite,
     },
 #if defined(NOTE_WRITE) && !defined(_WIN32)
     {
