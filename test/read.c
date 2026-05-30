@@ -1319,6 +1319,10 @@ test_kevent_read_socket_eof_with_buffered(struct test_context *ctx)
         die("expected data=%zu with EV_EOF, got %lld",
             len, (long long) ret[0].data);
 
+    /* Remove the knote before closing the watched fd (contract). */
+    EV_SET(&kev, c, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    if (kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent delete");
+
     close(c);
     close(s);
 }
