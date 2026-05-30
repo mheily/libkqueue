@@ -47,15 +47,25 @@ jobs:
         repo-name: llvm-toolchain
         keys-asc: https://apt.llvm.org/llvm-snapshot.gpg.key
 
+    # Coverity's download endpoint 404s when the project is unpublished or
+    # the token is missing/rotated.  Treat that as "scan unavailable" and
+    # skip the rest of the job (it stays green) instead of failing the run.
     - name: Download coverity tool MD5
+      id: coverity-md5
       run: |
-        wget https://scan.coverity.com/download/linux64 \
+        if wget https://scan.coverity.com/download/linux64 \
           --post-data "token=${TOKEN}&project=`urlencode ${GITHUB_REPOSITORY}`&md5=1" \
-          -O coverity_tool.tar.gz.md5
+          -O coverity_tool.tar.gz.md5 && [ -s coverity_tool.tar.gz.md5 ]; then
+          echo "available=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::Coverity tool download failed; skipping scan"
+        fi
       env:
         TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
 
     - name: Cache coverity tool
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       uses: actions/cache@v4
       id: cache-coverity
       with:
@@ -63,7 +73,7 @@ jobs:
         key: coverity-tool-cache-${{ hashFiles('coverity_tool.tar.gz.md5') }}
 
     - name: Download coverity tool
-      if: ${{ steps.cache-coverity.outputs.cache-hit != 'true' }}
+      if: ${{ steps.coverity-md5.outputs.available == 'true' && steps.cache-coverity.outputs.cache-hit != 'true' }}
       run: |
         wget https://scan.coverity.com/download/linux64 \
           --post-data "token=${TOKEN}&project=`urlencode ${GITHUB_REPOSITORY}`" \
@@ -72,17 +82,20 @@ jobs:
         TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
 
     - name: Extract coverity tool
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       run: |
         mkdir coverity_tool
         tar xzf coverity_tool.tar.gz --strip 1 -C coverity_tool
 
     - name: Install LLVM ${{ env.CLANG_VER }}
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       run: |
         sudo apt-get install -y --no-install-recommends clang-${{ env.CLANG_VER }} llvm-${{ env.CLANG_VER }} libclang-rt-${{ env.CLANG_VER }}-dev
         sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-${{ env.CLANG_VER }} 60 && sudo update-alternatives --set clang /usr/bin/clang-${{ env.CLANG_VER }}
         sudo update-alternatives --install /usr/bin/llvm-symbolizer llvm-symbolizer /usr/bin/llvm-symbolizer-${{ env.CLANG_VER }} 60 && sudo update-alternatives --set llvm-symbolizer /usr/bin/llvm-symbolizer-${{ env.CLANG_VER }}
 
     - name: Configure build system
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       run: |
         cmake . -G "Unix Makefiles" \
           -DCMAKE_INSTALL_PREFIX="/usr" \
@@ -92,6 +105,7 @@ jobs:
           -DCMAKE_BUILD_TYPE="Debug"
 
     - name: Build libkqueue
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       run: |
         export PATH=`pwd`/coverity_tool/bin:$PATH
         export CC=clang
@@ -99,10 +113,12 @@ jobs:
         cov-build --dir cov-int make
 
     - name: Display build result
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       run: |
         cat /home/runner/work/libkqueue/libkqueue/cov-int/build-log.txt
 
     - name: Submit result
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       run: |
         tar czf cov-int.tar.gz cov-int
         curl \
