@@ -182,6 +182,15 @@ monitoring_thread_cleanup(UNUSED void *arg)
     /* Reset so that thread can be restarted */
     monitoring_tid = 0;
 
+    /*
+     * Wake any libkqueue_drain_pending_close() blocked on us.  If we
+     * exit on kq_cnt == 0 after a drain was requested but before we
+     * read the drain eventfd, the drainer would otherwise wait on a
+     * generation that never advances; monitoring_tid == 0 tells it the
+     * monitor is gone and every kqueue is already freed.
+     */
+    pthread_cond_broadcast(&monitoring_drain_cond);
+
     if (monitoring_thread_state == THREAD_EXIT_STATE_CANCEL_LOCKED)
         tracing_mutex_unlock(&kq_mtx);
 }
@@ -557,7 +566,13 @@ libkqueue_drain_pending_close(void)
     if (write(monitoring_drain_efd, &one, sizeof(one)) < 0)
         dbg_perror("write(monitoring_drain_efd)");
 
-    while (monitoring_drain_gen == gen)
+    /*
+     * Wait until the monitor acknowledges the drain (generation
+     * advances) or exits (monitoring_tid clears - it only exits on
+     * kq_cnt == 0, so every kqueue is already freed and there is
+     * nothing left to drain).
+     */
+    while (monitoring_drain_gen == gen && monitoring_tid != 0)
         monitoring_drain_cond_wait();
 
     tracing_mutex_unlock(&kq_mtx);
