@@ -74,7 +74,10 @@ test_kevent_proc_get(struct test_context *ctx)
         pause();
         printf(" -- child caught signal, exiting\n");
         testing_end_quiet();
-        exit(0);
+        /* _exit, not exit: a forked child must skip the atexit LSAN
+         * leak check - it would try to scan the parent's threads, which
+         * are absent in the child, and report false leaks. */
+        _exit(0);
     }
     printf(" -- child created (pid %d)\n", (int) pid);
 
@@ -125,7 +128,7 @@ test_kevent_proc_exit_status_ok(struct test_context *ctx)
             _exit(127);
         printf(" -- child got go-ahead, exiting (0)\n");
         testing_end_quiet();
-        exit(0);
+        _exit(0);
     }
     close(sync_pipe[0]);
     printf(" -- child created (pid %d)\n", (int) pid);
@@ -176,7 +179,7 @@ test_kevent_proc_exit_status_error(struct test_context *ctx)
             _exit(127);
         printf(" -- child got go-ahead, exiting (64)\n");
         testing_end_quiet();
-        exit(64);
+        _exit(64);
     }
     close(sync_pipe[0]);
     printf(" -- child created (pid %d)\n", (int) pid);
@@ -244,7 +247,7 @@ test_kevent_proc_disable_drains(struct test_context *ctx)
             _exit(127);
         printf(" -- child got go-ahead, exiting (0)\n");
         testing_end_quiet();
-        exit(0);
+        _exit(0);
     }
     close(sync_pipe[0]);
     printf(" -- child created (pid %d)\n", (int) pid);
@@ -312,7 +315,7 @@ test_kevent_proc_modify_clobbers_udata(struct test_context *ctx)
         if (read(sync_pipe[0], &b, 1) != 1)
             _exit(127);
         testing_end_quiet();
-        exit(0);
+        _exit(0);
     }
     close(sync_pipe[0]);
 
@@ -374,7 +377,7 @@ test_kevent_proc_delete_drains(struct test_context *ctx)
         if (read(sync_pipe[0], &b, 1) != 1)
             _exit(127);
         testing_end_quiet();
-        exit(0);
+        _exit(0);
     }
     close(sync_pipe[0]);
 
@@ -437,7 +440,7 @@ test_kevent_proc_modify_arms_late(struct test_context *ctx)
             _exit(127);
         printf(" -- child got go-ahead, exiting (0)\n");
         testing_end_quiet();
-        exit(0);
+        _exit(0);
     }
     close(sync_pipe[0]);
     printf(" -- child created (pid %d)\n", (int) pid);
@@ -507,7 +510,7 @@ test_kevent_proc_already_exited(struct test_context *ctx)
     early = fork();
     if (early == 0) {
         close(sync_pipe[0]);
-        /* close(sync_pipe[1]) happens implicitly in exit(0). */
+        /* close(sync_pipe[1]) happens implicitly on _exit(0). */
         testing_end_quiet();
         _exit(0);
     }
@@ -594,7 +597,7 @@ test_kevent_proc_modify_disarms(struct test_context *ctx)
             _exit(127);
         printf(" -- child got go-ahead, exiting (0)\n");
         testing_end_quiet();
-        exit(0);
+        _exit(0);
     }
     close(sync_pipe[0]);
     printf(" -- child created (pid %d)\n", (int) pid);
@@ -668,7 +671,7 @@ test_kevent_proc_multiple_kqueue(struct test_context *ctx)
             _exit(127);  /* parent died before signalling */
         printf(" -- child got go-ahead, exiting (64)\n");
         testing_end_quiet();
-        exit(64);
+        _exit(64);
     }
     close(sync_pipe[0]);
     printf(" -- child created (pid %d)\n", (int) pid);
@@ -839,7 +842,7 @@ test_kevent_proc_del_nonexistent(struct test_context *ctx)
     child = fork();
     if (child == 0) {
         pause();
-        exit(0);
+        _exit(0);
     }
 
     EV_SET(&kev, child, EVFILT_PROC, EV_DELETE, NOTE_EXIT, 0, NULL);
@@ -894,7 +897,7 @@ test_kevent_proc_udata_preserved(struct test_context *ctx)
         close(sync_pipe[1]);
         /* Drain the gate; ignore short reads. */ 
             if (read(sync_pipe[0], &buf, 1) <= 0) _exit(1);
-        exit(0);
+        _exit(0);
     }
     close(sync_pipe[0]);
 
@@ -924,7 +927,7 @@ test_kevent_proc_receipt_preserved(struct test_context *ctx)
     child = fork();
     if (child == 0) {
         pause();
-        exit(0);
+        _exit(0);
     }
 
     EV_SET(&kev[0], child, EVFILT_PROC, EV_ADD | EV_RECEIPT, NOTE_EXIT, 0, NULL);
@@ -969,7 +972,7 @@ test_kevent_proc_disable_preserves_events(struct test_context *ctx)
         close(sync_pipe[1]);
         /* Drain the gate; ignore short reads. */ 
             if (read(sync_pipe[0], &buf, 1) <= 0) _exit(1);
-        exit(0);
+        _exit(0);
     }
     close(sync_pipe[0]);
 
@@ -1281,7 +1284,7 @@ test_evfilt_proc(struct test_context *ctx)
     if (pid == 0) {
         pause();
         testing_end_quiet();
-        exit(2);
+        _exit(2);
     }
     printf(" -- child created (pid %d)\n", (int) pid);
 
