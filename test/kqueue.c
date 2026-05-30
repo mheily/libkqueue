@@ -631,7 +631,15 @@ _pipe_uaf_worker(void *arg)
         struct kevent kev;
         EV_SET(&kev, p[1], EVFILT_WRITE, EV_ADD, 0, 0, NULL);
         (void) kevent(kq, &kev, 1, NULL, 0, NULL);
-        /* Close in adverse order: read end first, then write. */
+        /*
+         * Contract: a watched fd must be removed from the kqueue
+         * before it is closed.  Drop the knote first, then close in
+         * adverse order (read end then write end).  Without the
+         * EV_DELETE the close-before-remove would orphan the knote's
+         * fd_state, which is unsupported usage, not a libkqueue bug.
+         */
+        EV_SET(&kev, p[1], EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+        (void) kevent(kq, &kev, 1, NULL, 0, NULL);
         close(p[0]);
         close(p[1]);
         close(kq);
