@@ -693,16 +693,22 @@ static const struct lkq_test_gate signal_invalid_signum_rejected_gates[] =
 };
 
 /*
- * pthread_kill(self) hangs on the Linux backend (signalfd may not see
- * per-thread-targeted signals) and on macOS native kqueue (psignal_internal
- * doesn't fire EVFILT_SIGNAL for pthread_kill-routed signals).  Only FreeBSD's
- * tdksignal -> tdsendsignal path posts to the proc-level klist regardless of
- * source thread.
+ * pthread_kill(self) hangs on the signalfd backends (Linux and Solaris).
+ * Those backends read the signalfd from a dedicated dispatch thread, and
+ * the kernel only lets a thread dequeue its own per-thread pending queue
+ * plus the process-wide shared queue.  pthread_kill(self) targets the
+ * caller's thread, so the signal lands in a per-thread queue the dispatch
+ * thread can never read; the knote never fires and kevent() blocks.
+ * macOS native kqueue has a different miss: psignal_internal doesn't fire
+ * EVFILT_SIGNAL for pthread_kill-routed signals.  Only FreeBSD's
+ * tdksignal -> tdsendsignal path posts to the proc-level klist regardless
+ * of source thread.
  */
 static const struct lkq_test_gate signal_pthread_kill_self_gates[] =
 {
-    GATE(LKQ_PLATFORM_BACKEND_LINUX, "signalfd may not see per-thread-targeted signals"),
-    GATE(LKQ_PLATFORM_OS_MACOS,      "psignal_internal doesn't fire EVFILT_SIGNAL for pthread_kill"),
+    GATE(LKQ_PLATFORM_BACKEND_LINUX,   "signalfd may not see per-thread-targeted signals"),
+    GATE(LKQ_PLATFORM_BACKEND_SOLARIS, "signalfd may not see per-thread-targeted signals"),
+    GATE(LKQ_PLATFORM_OS_MACOS,        "psignal_internal doesn't fire EVFILT_SIGNAL for pthread_kill"),
     { 0, NULL }
 };
 
