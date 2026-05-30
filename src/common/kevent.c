@@ -381,7 +381,14 @@ kevent_copyin(struct kqueue *kq, const struct kevent changelist[], int nchanges,
             errno = 0; /* Reset back to 0 if we recorded the error as a kevent */
 
         receipt:
-            memcpy(el_p, cl_p, sizeof(*el_p));
+            /*
+             * A caller may pass one array as both changelist and
+             * eventlist; el_p and cl_p then alias and the copy is a
+             * self-memcpy (undefined).  The kev is already in place in
+             * that case, so only copy when they differ.
+             */
+            if (el_p != cl_p)
+                memcpy(el_p, cl_p, sizeof(*el_p));
             el_p->flags |= EV_ERROR; /* This is set both on error and for EV_RECEIPT */
             el_p->data = status;
             el_p++;
