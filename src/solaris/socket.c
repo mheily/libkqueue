@@ -27,6 +27,15 @@
 #include "private.h"
 
 /*
+ * illumos fifofs pipe buffer high-water mark (FIFOHIWAT in
+ * sys/fs/fifonode.h): a write blocks once the peer's queued byte count
+ * reaches this.  No syscall exposes the live free space or the constant
+ * to userspace, so report it as the pipe write end's buffer capacity,
+ * the analogue of FreeBSD's pipe_buffer.size.
+ */
+#define SOLARIS_PIPE_HIWAT (16 * 1024)
+
+/*
  * Cache the fd type in kn_flags so the read filter's copyout can
  * branch without per-event fstat/getsockopt (mirrors Linux's
  * linux_get_descriptor_type).  KNFL_SOCKET_PASSIVE flags listening
@@ -290,8 +299,9 @@ evfilt_socket_copyout(struct kevent *dst, UNUSED int nevents, struct filter *fil
          * report SO_SNDBUF (the high-water mark): an upper bound on a
          * single write the kernel will accept without blocking.
          * Approximate, but matches the value most consumers expect.
-         * Non-sockets (e.g. pipes) don't accept SO_SNDBUF; leave data=0
-         * rather than stamp errno into it.
+         * Pipes don't accept SO_SNDBUF and expose no live free-space
+         * query either, so report the fifofs buffer capacity.  Other
+         * fd types have no meaningful write-space value; leave data=0.
          */
         if (src->kn_flags & KNFL_SOCKET) {
             int       sndbuf = 0;
@@ -302,6 +312,8 @@ evfilt_socket_copyout(struct kevent *dst, UNUSED int nevents, struct filter *fil
             } else {
                 dst->data = sndbuf;
             }
+        } else if (src->kn_flags & KNFL_PIPE) {
+            dst->data = SOLARIS_PIPE_HIWAT;
         } else {
             dst->data = 0;
         }
