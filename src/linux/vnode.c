@@ -142,15 +142,34 @@ add_watch(struct filter *filt, struct knote *kn)
     mask = IN_CLOSE;
     if (kn->kev.fflags & NOTE_DELETE)
         mask |= IN_ATTRIB | IN_DELETE_SELF;
+    /*
+     * NOTE_WRITE: file content writes are IN_MODIFY; for a directory a
+     * "write" is a child namespace mutation (create/remove/rename),
+     * which inotify reports on the dir as IN_CREATE/IN_DELETE/IN_MOVED_*
+     * rather than IN_MODIFY.  Watch both (the extra bits never fire on
+     * a plain file).
+     */
     if (kn->kev.fflags & NOTE_WRITE)
-        mask |= IN_MODIFY | IN_ATTRIB;
+        mask |= IN_MODIFY | IN_ATTRIB | IN_CREATE | IN_DELETE |
+                IN_MOVED_FROM | IN_MOVED_TO;
     if (kn->kev.fflags & NOTE_EXTEND)
         mask |= IN_MODIFY | IN_ATTRIB;
     if (kn->kev.fflags & NOTE_TRUNCATE)
         mask |= IN_MODIFY | IN_ATTRIB;
-    if ((kn->kev.fflags & NOTE_ATTRIB) ||
-            (kn->kev.fflags & NOTE_LINK))
+    if (kn->kev.fflags & NOTE_ATTRIB)
         mask |= IN_ATTRIB;
+    /*
+     * NOTE_LINK means "link count changed".  For a file that's a
+     * hardlink add/remove, which inotify reports as IN_ATTRIB.  For a
+     * directory it's a subdirectory create/remove (each subdir's ".."
+     * is a link back to the parent), which inotify reports on the
+     * parent as IN_CREATE/IN_DELETE, not IN_ATTRIB.  Watch all three;
+     * copyout confirms an actual st_nlink change, so plain file
+     * create/remove in the directory (which don't change its link
+     * count) don't fire NOTE_LINK.
+     */
+    if (kn->kev.fflags & NOTE_LINK)
+        mask |= IN_ATTRIB | IN_CREATE | IN_DELETE;
     if (kn->kev.fflags & NOTE_RENAME)
         mask |= IN_MOVE_SELF;
     if (kn->kev.flags & EV_ONESHOT)
@@ -294,7 +313,15 @@ evfilt_vnode_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
         if (src->kev.fflags & NOTE_DELETE)
             dst->fflags |= NOTE_DELETE;
     } else {
-        if (merged_mask & (IN_ATTRIB | IN_MODIFY)) {
+        /*
+         * IN_CREATE/IN_DELETE are here for directory NOTE_LINK: a
+         * subdir create/remove changes the watched dir's st_nlink but
+         * arrives as IN_CREATE/IN_DELETE rather than IN_ATTRIB.  The
+         * st_nlink comparison below is what actually decides NOTE_LINK,
+         * so a plain file create/remove (no link-count change) is a
+         * no-op here.
+         */
+        if (merged_mask & (IN_ATTRIB | IN_MODIFY | IN_CREATE | IN_DELETE)) {
             if (sb.st_nlink == 0 && src->kev.fflags & NOTE_DELETE)
                 dst->fflags |= NOTE_DELETE;
             if (sb.st_nlink != src->kn_vnode.nlink &&
@@ -326,7 +353,11 @@ evfilt_vnode_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
         }
     }
 
-    if (merged_mask & IN_MODIFY && src->kev.fflags & NOTE_WRITE)
+    /* IN_MODIFY = file write; IN_CREATE/IN_DELETE/IN_MOVED_* = directory
+     * child namespace mutation.  Both surface as NOTE_WRITE. */
+    if (merged_mask & (IN_MODIFY | IN_CREATE | IN_DELETE |
+                       IN_MOVED_FROM | IN_MOVED_TO) &&
+        src->kev.fflags & NOTE_WRITE)
         dst->fflags |= NOTE_WRITE;
     if (merged_mask & IN_ATTRIB && src->kev.fflags & NOTE_ATTRIB)
         dst->fflags |= NOTE_ATTRIB;
@@ -334,6 +365,15 @@ evfilt_vnode_copyout(struct kevent *dst, UNUSED int nevents, struct filter *filt
         dst->fflags |= NOTE_RENAME;
     if (merged_mask & IN_DELETE_SELF && src->kev.fflags & NOTE_DELETE)
         dst->fflags |= NOTE_DELETE;
+
+    /*
+     * The directory masks above are broad (a NOTE_LINK-only watch also
+     * sees IN_CREATE for file creates that change no link count), so a
+     * wake can map to no requested note.  Don't deliver an empty event
+     * or run its oneshot/dispatch actions; leave the knote armed.
+     */
+    if (dst->fflags == 0)
+        return (0);
 
     if (knote_copyout_flag_actions(filt, src) < 0) return -1;
 
@@ -390,12 +430,15 @@ evfilt_vnode_knote_modify(struct filter *filt UNUSED, struct knote *kn,
     mask = IN_CLOSE;
     if (kev->fflags & NOTE_DELETE)
         mask |= IN_ATTRIB | IN_DELETE_SELF;
-    if (kev->fflags & NOTE_WRITE)
-        mask |= IN_MODIFY | IN_ATTRIB;
+    if (kev->fflags & NOTE_WRITE)   /* + dir child mutations; see add_watch */
+        mask |= IN_MODIFY | IN_ATTRIB | IN_CREATE | IN_DELETE |
+                IN_MOVED_FROM | IN_MOVED_TO;
     if (kev->fflags & NOTE_EXTEND)
         mask |= IN_MODIFY | IN_ATTRIB;
-    if ((kev->fflags & NOTE_ATTRIB) || (kev->fflags & NOTE_LINK))
+    if (kev->fflags & NOTE_ATTRIB)
         mask |= IN_ATTRIB;
+    if (kev->fflags & NOTE_LINK)   /* + dir subdir create/remove; see add_watch */
+        mask |= IN_ATTRIB | IN_CREATE | IN_DELETE;
     if (kev->fflags & NOTE_RENAME)
         mask |= IN_MOVE_SELF;
     if (kn->kev.flags & EV_ONESHOT)
