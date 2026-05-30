@@ -3,6 +3,7 @@ libkqueue
 
 ### Targets + Test suite
 [![CI Linux](https://github.com/mheily/libkqueue/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-linux.yml)
+[![CI POSIX](https://github.com/mheily/libkqueue/actions/workflows/ci-posix.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-posix.yml)
 [![CI Windows](https://github.com/mheily/libkqueue/actions/workflows/ci-windows.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-windows.yml)
 [![CI Solaris (OmniOS)](https://github.com/mheily/libkqueue/actions/workflows/ci-solaris.yml/badge.svg)](https://github.com/mheily/libkqueue/actions/workflows/ci-solaris.yml)
 [![Coverity](https://scan.coverity.com/projects/24822/badge.svg)](https://scan.coverity.com/projects/mheily-libkqueue)
