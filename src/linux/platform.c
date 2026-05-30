@@ -45,11 +45,6 @@ enum thread_exit_state {
 };
 
 /*
- * Monitoring thread is exiting because the process is terminating
- */
-static enum thread_exit_state monitoring_thread_state;
-
-/*
  * Close-detection epoll.  Every kqueue's pipefd[0] (read end of its
  * close-detect pipe) is registered here with EPOLLHUP | EPOLLONESHOT
  * and ev.data.ptr set to the owning struct kqueue.  When the user
@@ -67,8 +62,10 @@ static int monitoring_epfd = -1;
 /*
  * eventfd that libkqueue_drain_pending_close writes to wake the
  * monitoring thread for a synchronous flush.  Registered in
- * monitoring_epfd level-triggered (EPOLLIN) with ev.data.ptr == NULL,
- * which the monitor uses to distinguish it from a kqueue HUP.
+ * monitoring_epfd level-triggered (EPOLLIN) with ev.data.ptr set to
+ * &monitoring_drain_efd itself, so the monitor tells the drain wake-up
+ * apart from a kqueue HUP (whose udata is the struct kqueue *) by a
+ * unique, self-documenting address rather than a magic NULL.
  */
 static int monitoring_drain_efd = -1;
 
@@ -117,17 +114,18 @@ linux_kqueue_interrupt(struct kqueue *kq);
  * TSAN_OPTIONS=suppressions=.
  */
 static void
-monitoring_thread_cleanup(UNUSED void *arg)
+monitoring_thread_cleanup(void *arg)
 {
+    enum thread_exit_state state = *(enum thread_exit_state *)arg;
     struct kqueue *kq, *kq_tmp;
 
-    if ((monitoring_thread_state == THREAD_EXIT_STATE_CANCEL_LOCKED) ||
-        (monitoring_thread_state == THREAD_EXIT_STATE_CANCEL_UNLOCKED)) {
+    if ((state == THREAD_EXIT_STATE_CANCEL_LOCKED) ||
+        (state == THREAD_EXIT_STATE_CANCEL_UNLOCKED)) {
 
         /*
          * Keep the assertion in kqueue_free happy
          */
-        if (monitoring_thread_state == THREAD_EXIT_STATE_CANCEL_UNLOCKED)
+        if (state == THREAD_EXIT_STATE_CANCEL_UNLOCKED)
             tracing_mutex_lock(&kq_mtx);
 
         /*
@@ -170,13 +168,13 @@ monitoring_thread_cleanup(UNUSED void *arg)
             }
         }
 
-        if (monitoring_thread_state == THREAD_EXIT_STATE_CANCEL_UNLOCKED)
+        if (state == THREAD_EXIT_STATE_CANCEL_UNLOCKED)
             tracing_mutex_unlock(&kq_mtx);
     }
 
     dbg_printf("tid=%u - monitoring thread exiting (%s)",
                monitoring_tid,
-               monitoring_thread_state == THREAD_EXIT_STATE_SELF_CANCEL ?
+               state == THREAD_EXIT_STATE_SELF_CANCEL ?
                    "no kqueues" : "process term");
 
     /* Reset so that thread can be restarted */
@@ -191,7 +189,7 @@ monitoring_thread_cleanup(UNUSED void *arg)
      */
     pthread_cond_broadcast(&monitoring_drain_cond);
 
-    if (monitoring_thread_state == THREAD_EXIT_STATE_CANCEL_LOCKED)
+    if (state == THREAD_EXIT_STATE_CANCEL_LOCKED)
         tracing_mutex_unlock(&kq_mtx);
 }
 
@@ -216,7 +214,7 @@ monitoring_thread_close_kq(struct kqueue *kq)
 /*
  * Monitoring thread: blocks in epoll_wait on monitoring_epfd and frees
  * each kqueue whose pipefd[0] reports EPOLLHUP (the user closed the
- * kqueue fd).  A readable monitoring_drain_efd (udata == NULL) is a
+ * kqueue fd).  A readable monitoring_drain_efd (udata == &monitoring_drain_efd) is a
  * synchronous drain request from libkqueue_drain_pending_close.
  */
 static void *
@@ -225,6 +223,7 @@ monitoring_thread_loop(UNUSED void *arg)
     int res = 0;
     pid_t my_tid;
     sigset_t all;
+    enum thread_exit_state state;
 
     /* Set the thread's name to something descriptive so it shows up in gdb,
      * etc. glibc >= 2.1.2 supports pthread_setname_np, but this is a safer way
@@ -255,8 +254,8 @@ monitoring_thread_loop(UNUSED void *arg)
     pthread_cond_signal(&monitoring_thread_cond);
     (void) pthread_mutex_unlock(&monitoring_thread_mtx);
 
-    monitoring_thread_state = THREAD_EXIT_STATE_CANCEL_UNLOCKED;
-    pthread_cleanup_push(monitoring_thread_cleanup, NULL)
+    state = THREAD_EXIT_STATE_CANCEL_UNLOCKED;
+    pthread_cleanup_push(monitoring_thread_cleanup, &state)
     while (true) {
         struct epoll_event events[MONITORING_MAX_EVENTS];
         bool drain_req = false;
@@ -280,7 +279,7 @@ monitoring_thread_loop(UNUSED void *arg)
         tracing_mutex_lock(&kq_mtx);
 
         for (i = 0; i < n; i++) {
-            if (events[i].data.ptr == NULL) {
+            if (events[i].data.ptr == &monitoring_drain_efd) {
                 drain_req = true;       /* the drain eventfd */
                 continue;
             }
@@ -305,7 +304,7 @@ monitoring_thread_loop(UNUSED void *arg)
                 if (m <= 0)
                     break;
                 for (i = 0; i < m; i++) {
-                    if (events[i].data.ptr == NULL)
+                    if (events[i].data.ptr == &monitoring_drain_efd)
                         continue;
                     monitoring_thread_close_kq(events[i].data.ptr);
                 }
@@ -328,11 +327,11 @@ monitoring_thread_loop(UNUSED void *arg)
     /*
      * Ensure that any cancellation requests are acted on
      */
-    monitoring_thread_state = THREAD_EXIT_STATE_CANCEL_LOCKED;
+    state = THREAD_EXIT_STATE_CANCEL_LOCKED;
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
     pthread_testcancel();
 
-    monitoring_thread_state = THREAD_EXIT_STATE_SELF_CANCEL;
+    state = THREAD_EXIT_STATE_SELF_CANCEL;
     pthread_cleanup_pop(true); /* Executes the cleanup function (monitoring_thread_cleanup) */
     res = pthread_detach(pthread_self());
     if (res != 0)
@@ -669,11 +668,11 @@ linux_kqueue_init(struct kqueue *kq)
      * drain eventfd on first use.  The monitoring thread blocks on
      * this epoll; each kqueue's pipefd[0] is registered below so a
      * user close surfaces as EPOLLHUP.  The drain eventfd has
-     * ev.data.ptr == NULL, which the monitor uses to tell it apart
+     * ev.data.ptr == &monitoring_drain_efd, which the monitor uses to tell it apart
      * from a kqueue HUP.
      */
     if (monitoring_epfd < 0) {
-        struct epoll_event de = { .events = EPOLLIN, .data = { .ptr = NULL } };
+        struct epoll_event de = { .events = EPOLLIN, .data = { .ptr = &monitoring_drain_efd } };
 
         monitoring_epfd = epoll_create1(EPOLL_CLOEXEC);
         if (monitoring_epfd < 0) {
