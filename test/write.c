@@ -550,6 +550,12 @@ static const struct lkq_test_gate write_socket_eof_on_peer_close_gates[] = {
     { 0, NULL }
 };
 
+static const struct lkq_test_gate write_socket_receipt_preserved_gates[] = {
+    GATE(LKQ_PLATFORM_OS_OPENBSD,
+         "OpenBSD kqueue blocks on EV_ADD|EV_RECEIPT for EVFILT_WRITE instead of echoing the receipt"),
+    { 0, NULL }
+};
+
 const struct lkq_test_case lkq_write_tests[] = {
     {
         .name  = "test_kevent_write_socket_add",
@@ -588,6 +594,7 @@ const struct lkq_test_case lkq_write_tests[] = {
         .name  = "test_kevent_write_socket_receipt_preserved",
         .desc  = "EV_RECEIPT returns the echo entry with EV_ERROR=0",
         .func  = test_kevent_write_socket_receipt_preserved,
+        .gates = write_socket_receipt_preserved_gates,
     },
 #endif
     {
