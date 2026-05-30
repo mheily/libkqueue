@@ -1994,10 +1994,20 @@ epoll_update(int op, struct filter *filt, struct knote *kn, int ev, bool delete)
         case EPOLL_CTL_DEL:
         case EPOLL_CTL_MOD:
             /*
-             * File descriptor went away and we weren't notified
-             * not necessarily an error.
+             * The fd's registration in our epoll is already gone and
+             * we weren't notified - not necessarily an error.  Two
+             * ways this happens, both meaning "drop our fd_state":
+             *   EBADF  - the fd was closed (kernel auto-removed it).
+             *   ENOENT - the fd was closed AND its number reused by an
+             *            unrelated open, so it's a valid fd that was
+             *            never in our epoll.  Common when close
+             *            detection is asynchronous: the monitoring
+             *            thread reaps the kqueue long after the user
+             *            closed the watched fd, by which point the
+             *            number has been recycled.  Without handling
+             *            this, the fd_state (and its udata) leak.
              */
-            if (errno == EBADF) {
+            if (errno == EBADF || errno == ENOENT) {
                 int kn_ev = 0;
 
                 if (kn == fds->fds_read) {
