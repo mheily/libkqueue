@@ -96,9 +96,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $bin = ".\build_x64\test\${{ matrix.build_type }}\libkqueue-test.exe"
+          Write-Host "DIAG bin=$bin exists=$(Test-Path $bin)"
           $gated = $null
           if (Test-Path $bin) {
-            $gated = & $bin --list-gated=windows 2>$null
+            $gated = & $bin --list-gated=windows 2>&1
+            Write-Host "DIAG list-gated exit=$LASTEXITCODE count=$(@($gated).Count)"
+            Write-Host "DIAG --- raw output ---"
+            $gated | ForEach-Object { Write-Host "DIAG| $_" }
+            Write-Host "DIAG --- end ---"
             $LASTEXITCODE = 0
           }
           $lines = [System.Collections.Generic.List[string]]@(
