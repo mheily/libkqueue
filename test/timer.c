@@ -735,29 +735,12 @@ static const struct lkq_test_gate timer_negative_interval_gates[] = {
 };
 
 #ifdef NOTE_NSECONDS
-static const struct lkq_test_gate timer_huge_interval_gates[] = {
-    GATE(LKQ_PLATFORM_BACKEND_NATIVE,
-         "native kqueue sbintime conversion overflows on very large NOTE_NSECONDS values"),
-    { 0, NULL }
-};
 #endif
 
 #ifdef EV_DISPATCH
-static const struct lkq_test_gate timer_dispatch_gates[] = {
-    GATE(LKQ_PLATFORM_OS_NETBSD,
-         "NetBSD native kqueue does not auto-disable the timer knote on EV_DISPATCH"),
-    GATE(LKQ_PLATFORM_OS_OPENBSD,
-         "OpenBSD delivers accumulated ticks immediately on re-enable after EV_DISPATCH"),
-    { 0, NULL }
-};
 #endif
 
 #ifdef NOTE_ABSOLUTE
-static const struct lkq_test_gate timer_note_absolute_gates[] = {
-    GATE(LKQ_PLATFORM_OS_MACOS,
-         "macOS XNU NOTE_ABSOLUTE timer semantics differ from POSIX-clock-based BSDs"),
-    { 0, NULL }
-};
 #endif
 
 static const struct lkq_test_gate timer_modify_preserves_ev_receipt_gates[] = {
@@ -816,14 +799,15 @@ const struct lkq_test_case lkq_timer_tests[] =
         .func  = test_kevent_timer_negative_interval_rejected,
         .gates = timer_negative_interval_gates,
     },
-#ifdef NOTE_NSECONDS
     {
         .name  = "test_kevent_timer_huge_interval",
         .desc  = "very large NOTE_NSECONDS interval does not overflow",
-        .func  = test_kevent_timer_huge_interval,
-        .gates = timer_huge_interval_gates,
+        .func  = TEST_FUNC_NEEDS_NOTE_NSECONDS(test_kevent_timer_huge_interval),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_NSECONDS, "NOTE_NSECONDS undefined in this build's <sys/event.h>"),
+            GATE(LKQ_PLATFORM_BACKEND_NATIVE, "native kqueue sbintime conversion overflows on very large NOTE_NSECONDS values")
+        ),
     },
-#endif
     {
         .name  = "test_kevent_timer_overrun_count",
         .desc  = "data field accumulates tick overruns",
@@ -834,20 +818,23 @@ const struct lkq_test_case lkq_timer_tests[] =
         .desc  = "EV_CLEAR zeroes the overrun counter on delivery",
         .func  = test_kevent_timer_ev_clear_resets_data,
     },
-#if defined(NOTE_NSECONDS) && defined(NOTE_SECONDS)
     {
         .name  = "test_kevent_timer_modify_replaces_fflags",
         .desc  = "re-EV_ADD with new fflags replaces rather than ORs the unit",
-        .func  = test_kevent_timer_modify_replaces_fflags,
+        .func  = TEST_FUNC_NEEDS_NOTE_NSECONDS(TEST_FUNC_NEEDS_NOTE_SECONDS(test_kevent_timer_modify_replaces_fflags)),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_NSECONDS, "NOTE_NSECONDS undefined in this build's <sys/event.h>"),
+            GATE(TEST_GATE_NEEDS_NOTE_SECONDS,  "NOTE_SECONDS undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
-#ifdef NOTE_ABSOLUTE
     {
         .name  = "test_kevent_timer_note_absolute_past",
         .desc  = "NOTE_ABSOLUTE timestamp in the past fires immediately",
-        .func  = test_kevent_timer_note_absolute_past,
+        .func  = TEST_FUNC_NEEDS_NOTE_ABSOLUTE(test_kevent_timer_note_absolute_past),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_ABSOLUTE, "NOTE_ABSOLUTE undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
     {
         .name  = "test_kevent_timer_oneshot",
         .desc  = "EV_ONESHOT timer fires once then auto-deletes",
@@ -875,49 +862,58 @@ const struct lkq_test_case lkq_timer_tests[] =
         .desc  = "EV_DISABLE suppresses delivery; EV_ENABLE restores",
         .func  = test_kevent_timer_disable_and_enable,
     },
-#ifdef EV_DISPATCH
     {
         .name  = "test_kevent_timer_dispatch",
         .desc  = "EV_DISPATCH fires once then auto-disables",
-        .func  = test_kevent_timer_dispatch,
-        .gates = timer_dispatch_gates,
+        .func  = TEST_FUNC_NEEDS_EV_DISPATCH(test_kevent_timer_dispatch),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_EV_DISPATCH, "EV_DISPATCH undefined in this build's <sys/event.h>"),
+            GATE(LKQ_PLATFORM_OS_NETBSD, "NetBSD native kqueue does not auto-disable the timer knote on EV_DISPATCH"),
+            GATE(LKQ_PLATFORM_OS_OPENBSD, "OpenBSD delivers accumulated ticks immediately on re-enable after EV_DISPATCH")
+        ),
     },
-#endif
-#ifdef NOTE_USECONDS
     {
         .name  = "test_kevent_timer_note_useconds",
         .desc  = "NOTE_USECONDS sets the timer interval in microseconds",
-        .func  = test_kevent_timer_note_useconds,
+        .func  = TEST_FUNC_NEEDS_NOTE_USECONDS(test_kevent_timer_note_useconds),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_USECONDS, "NOTE_USECONDS undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
-#ifdef NOTE_NSECONDS
     {
         .name  = "test_kevent_timer_note_nseconds",
         .desc  = "NOTE_NSECONDS sets the timer interval in nanoseconds",
-        .func  = test_kevent_timer_note_nseconds,
+        .func  = TEST_FUNC_NEEDS_NOTE_NSECONDS(test_kevent_timer_note_nseconds),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_NSECONDS, "NOTE_NSECONDS undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
-#ifdef NOTE_SECONDS
     {
         .name  = "test_kevent_timer_note_seconds",
         .desc  = "NOTE_SECONDS sets the timer interval in seconds",
-        .func  = test_kevent_timer_note_seconds,
+        .func  = TEST_FUNC_NEEDS_NOTE_SECONDS(test_kevent_timer_note_seconds),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_SECONDS, "NOTE_SECONDS undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
-#ifdef NOTE_ABSOLUTE
     {
         .name  = "test_kevent_timer_note_absolute",
         .desc  = "NOTE_ABSOLUTE fires at an absolute wall-clock time",
-        .func  = test_kevent_timer_note_absolute,
-        .gates = timer_note_absolute_gates,
+        .func  = TEST_FUNC_NEEDS_NOTE_ABSOLUTE(test_kevent_timer_note_absolute),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_ABSOLUTE, "NOTE_ABSOLUTE undefined in this build's <sys/event.h>"),
+            GATE(LKQ_PLATFORM_OS_MACOS, "macOS XNU NOTE_ABSOLUTE timer semantics differ from POSIX-clock-based BSDs")
+        ),
     },
     {
         .name  = "test_kevent_timer_note_absolute_after_modify",
         .desc  = "NOTE_ABSOLUTE deadline updates correctly via re-EV_ADD",
-        .func  = test_kevent_timer_note_absolute_after_modify,
-        .gates = timer_note_absolute_gates,
+        .func  = TEST_FUNC_NEEDS_NOTE_ABSOLUTE(test_kevent_timer_note_absolute_after_modify),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_ABSOLUTE, "NOTE_ABSOLUTE undefined in this build's <sys/event.h>"),
+            GATE(LKQ_PLATFORM_OS_MACOS, "macOS XNU NOTE_ABSOLUTE timer semantics differ from POSIX-clock-based BSDs")
+        ),
     },
-#endif
     {
         .name  = "test_kevent_timer_modify_preserves_ev_receipt",
         .desc  = "EV_RECEIPT flag survives a timer knote modify",

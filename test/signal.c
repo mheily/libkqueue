@@ -718,11 +718,6 @@ static const struct lkq_test_gate signal_pthread_kill_self_gates[] =
  * than being buffered for re-enable.
  */
 #ifdef EV_DISPATCH
-static const struct lkq_test_gate signal_dispatch_gates[] =
-{
-    GATE(LKQ_PLATFORM_OS_NETBSD, "NetBSD doesn't buffer signals across EV_DISPATCH disable"),
-    { 0, NULL }
-};
 #endif
 
 const struct lkq_test_case lkq_signal_tests[] =
@@ -816,14 +811,15 @@ const struct lkq_test_case lkq_signal_tests[] =
         .desc  = "re-EV_ADD modifies an existing signal knote",
         .func  = test_kevent_signal_modify,
     },
-#ifdef EV_DISPATCH
     {
         .name  = "test_kevent_signal_dispatch",
         .desc  = "EV_DISPATCH disables the knote after each delivery",
-        .func  = test_kevent_signal_dispatch,
-        .gates = signal_dispatch_gates,
+        .func  = TEST_FUNC_NEEDS_EV_DISPATCH(test_kevent_signal_dispatch),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_EV_DISPATCH, "EV_DISPATCH undefined in this build's <sys/event.h>"),
+            GATE(LKQ_PLATFORM_OS_NETBSD, "NetBSD doesn't buffer signals across EV_DISPATCH disable")
+        ),
     },
-#endif
     {
         .name  = "test_kevent_signal_multi_kqueue",
         .desc  = "single kill observed by two kqueues watching the same signum",
@@ -844,13 +840,14 @@ const struct lkq_test_case lkq_signal_tests[] =
         .desc  = "re-EV_ADD overwrites udata",
         .func  = test_kevent_signal_modify_clobbers_udata,
     },
-#ifdef SIGRTMIN
     {
         .name  = "test_kevent_signal_rt_late_register",
         .desc  = "RT signal queueing: late-registered kqueue sees only post-registration fires",
-        .func  = test_kevent_signal_rt_late_register,
+        .func  = TEST_FUNC_NEEDS_SIGRTMIN(test_kevent_signal_rt_late_register),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_SIGRTMIN, "SIGRTMIN undefined on this build (no POSIX realtime signals)")
+        ),
     },
-#endif
     LKQ_SUITE_END
 };
 

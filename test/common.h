@@ -424,6 +424,62 @@ struct lkq_test_case {
 #  define TEST_GATE_NEEDS_NOTE_LINK       LKQ_BUILD_PLATFORM
 #endif
 
+#ifdef NOTE_SECONDS
+#  define TEST_FUNC_NEEDS_NOTE_SECONDS(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_NOTE_SECONDS       0
+#else
+#  define TEST_FUNC_NEEDS_NOTE_SECONDS(_fn)  NULL
+#  define TEST_GATE_NEEDS_NOTE_SECONDS       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef NOTE_USECONDS
+#  define TEST_FUNC_NEEDS_NOTE_USECONDS(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_NOTE_USECONDS       0
+#else
+#  define TEST_FUNC_NEEDS_NOTE_USECONDS(_fn)  NULL
+#  define TEST_GATE_NEEDS_NOTE_USECONDS       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef NOTE_NSECONDS
+#  define TEST_FUNC_NEEDS_NOTE_NSECONDS(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_NOTE_NSECONDS       0
+#else
+#  define TEST_FUNC_NEEDS_NOTE_NSECONDS(_fn)  NULL
+#  define TEST_GATE_NEEDS_NOTE_NSECONDS       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef NOTE_ABSOLUTE
+#  define TEST_FUNC_NEEDS_NOTE_ABSOLUTE(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_NOTE_ABSOLUTE       0
+#else
+#  define TEST_FUNC_NEEDS_NOTE_ABSOLUTE(_fn)  NULL
+#  define TEST_GATE_NEEDS_NOTE_ABSOLUTE       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef EVFILT_VNODE
+#  define TEST_FUNC_NEEDS_EVFILT_VNODE(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_EVFILT_VNODE       0
+#else
+#  define TEST_FUNC_NEEDS_EVFILT_VNODE(_fn)  NULL
+#  define TEST_GATE_NEEDS_EVFILT_VNODE       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef EVFILT_PROC
+#  define TEST_FUNC_NEEDS_EVFILT_PROC(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_EVFILT_PROC       0
+#else
+#  define TEST_FUNC_NEEDS_EVFILT_PROC(_fn)  NULL
+#  define TEST_GATE_NEEDS_EVFILT_PROC       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef SIGRTMIN
+#  define TEST_FUNC_NEEDS_SIGRTMIN(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_SIGRTMIN       0
+#else
+#  define TEST_FUNC_NEEDS_SIGRTMIN(_fn)  NULL
+#  define TEST_GATE_NEEDS_SIGRTMIN       LKQ_BUILD_PLATFORM
+#endif
+
 /*
  * Current platform bitmask, OR of one OS bit and one backend bit.
  * Defined in main.c; computed from compile-time macros.

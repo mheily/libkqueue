@@ -550,12 +550,6 @@ static const struct lkq_test_gate write_socket_eof_on_peer_close_gates[] = {
     { 0, NULL }
 };
 
-static const struct lkq_test_gate write_socket_receipt_preserved_gates[] = {
-    GATE(LKQ_PLATFORM_OS_OPENBSD,
-         "OpenBSD kqueue blocks on EV_ADD|EV_RECEIPT for EVFILT_WRITE instead of echoing the receipt"),
-    { 0, NULL }
-};
-
 const struct lkq_test_case lkq_write_tests[] = {
     {
         .name  = "test_kevent_write_socket_add",
@@ -582,21 +576,23 @@ const struct lkq_test_case lkq_write_tests[] = {
         .desc  = "EV_ONESHOT auto-deletes after first write event",
         .func  = test_kevent_write_socket_oneshot,
     },
-#ifdef EV_DISPATCH
     {
         .name  = "test_kevent_write_socket_dispatch",
         .desc  = "EV_DISPATCH auto-disables after delivery",
-        .func  = test_kevent_write_socket_dispatch,
+        .func  = TEST_FUNC_NEEDS_EV_DISPATCH(test_kevent_write_socket_dispatch),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_EV_DISPATCH, "EV_DISPATCH undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
-#ifdef EV_RECEIPT
     {
         .name  = "test_kevent_write_socket_receipt_preserved",
         .desc  = "EV_RECEIPT returns the echo entry with EV_ERROR=0",
-        .func  = test_kevent_write_socket_receipt_preserved,
-        .gates = write_socket_receipt_preserved_gates,
+        .func  = TEST_FUNC_NEEDS_EV_RECEIPT(test_kevent_write_socket_receipt_preserved),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_EV_RECEIPT, "EV_RECEIPT undefined in this build's <sys/event.h>"),
+            GATE(LKQ_PLATFORM_OS_OPENBSD, "OpenBSD kqueue blocks on EV_ADD|EV_RECEIPT for EVFILT_WRITE instead of echoing the receipt")
+        ),
     },
-#endif
     {
         .name  = "test_kevent_write_socket_udata_preserved",
         .desc  = "udata round-trips through EVFILT_WRITE delivery",

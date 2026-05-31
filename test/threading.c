@@ -1622,41 +1622,6 @@ static const struct lkq_test_gate threading_close_gates[] = {
 };
 
 /*
- * Concurrent delete-race tests exercise EV_ADD/EV_DELETE against another
- * thread parked in kevent_wait.  Solaris holds the kq lock across port_getn
- * (no KEVENT_WAIT_DROP_LOCK) and lacks UAF-safe portev_user wrappers around
- * port_event retrieval, so these races deadlock or trip EFAULT.  Gated until
- * the backend grows knote refcounting + lock-drop.
- */
-static const struct lkq_test_gate threading_solaris_gates[] = {
-	GATE(LKQ_PLATFORM_OS_SOLARIS,        "port_getn holds kq lock; knote refcounting not yet implemented"),
-	{ 0, NULL }
-};
-
-/*
- * proc_delete_race uses fork(), which Win32 doesn't support.
- */
-static const struct lkq_test_gate threading_solaris_win32_gates[] = {
-	GATE(LKQ_PLATFORM_OS_SOLARIS,        "port_getn holds kq lock; knote refcounting not yet implemented"),
-	GATE(LKQ_PLATFORM_OS_WINDOWS,        "proc_delete_race uses fork()"),
-	{ 0, NULL }
-};
-
-/*
- * Win32's vnode backend uses FindFirstChangeNotificationW, which fires when
- * the kernel flushes metadata for the parent dir.  For a 1-byte file write
- * that flush can be tens of seconds out (the consumer's write goes to the
- * cache; FILE_NOTIFY_CHANGE_SIZE / LAST_WRITE only re-arms the dir handle once
- * the OS commits), which makes a "fire then sem_wait the delivery" test
- * fundamentally racy against any reasonable watchdog.  Re-enable once the
- * vnode backend is rewritten on top of ReadDirectoryChangesW.
- */
-static const struct lkq_test_gate threading_win32_gates[] = {
-	GATE(LKQ_PLATFORM_OS_WINDOWS,        "vnode backend timing unreliable with FindFirstChangeNotificationW"),
-	{ 0, NULL }
-};
-
-/*
  * NetBSD: native kqueue's main-thread kevent() blocks indefinitely while
  * sibling threads churn EV_ADD / EV_DELETE on the same kq, so the
  * 5000-iter * 100us-poll drain loop never returns and the watchdog kills the
@@ -1724,22 +1689,25 @@ const struct lkq_test_case lkq_threading_tests[] = {
 		.func  = TEST_FUNC_NEEDS_POSIX(test_kevent_threading_signal_delete_race),
 		.gates = threading_signal_gates,
 	},
-#ifdef EVFILT_VNODE
 	{
 		.name  = "kevent_threading_vnode_delete_race",
 		.desc  = "EV_DELETE of a vnode knote races with delivery",
-		.func  = test_kevent_threading_vnode_delete_race,
-		.gates = threading_solaris_gates,
+		.func  = TEST_FUNC_NEEDS_EVFILT_VNODE(test_kevent_threading_vnode_delete_race),
+		.gates = TEST_GATES(
+			GATE(TEST_GATE_NEEDS_EVFILT_VNODE, "EVFILT_VNODE undefined in this build's <sys/event.h>"),
+			GATE(LKQ_PLATFORM_OS_SOLARIS, "port_getn holds kq lock; knote refcounting not yet implemented")
+		),
 	},
-#endif
-#ifdef EVFILT_PROC
 	{
 		.name  = "kevent_threading_proc_delete_race",
 		.desc  = "EV_DELETE of a proc knote races with delivery",
-		.func  = TEST_FUNC_NEEDS_POSIX(test_kevent_threading_proc_delete_race),
-		.gates = threading_solaris_win32_gates,
+		.func  = TEST_FUNC_NEEDS_EVFILT_PROC(TEST_FUNC_NEEDS_POSIX(test_kevent_threading_proc_delete_race)),
+		.gates = TEST_GATES(
+			GATE(TEST_GATE_NEEDS_EVFILT_PROC, "EVFILT_PROC undefined in this build's <sys/event.h>"),
+			GATE(LKQ_PLATFORM_OS_SOLARIS, "port_getn holds kq lock; knote refcounting not yet implemented"),
+			GATE(LKQ_PLATFORM_OS_WINDOWS, "proc_delete_race uses fork()")
+		),
 	},
-#endif
 	{
 		.name  = "kevent_threading_read_delete_race",
 		.desc  = "EV_DELETE of a read knote races with delivery",
@@ -1766,22 +1734,24 @@ const struct lkq_test_case lkq_threading_tests[] = {
 		.func  = TEST_FUNC_NEEDS_POSIX(test_kevent_threading_signal_single_delivery),
 		.gates = threading_signal_gates,
 	},
-#ifdef EVFILT_VNODE
 	{
 		.name  = "kevent_threading_vnode_single_delivery",
 		.desc  = "vnode event delivered exactly once across threads",
-		.func  = test_kevent_threading_vnode_single_delivery,
-		.gates = threading_win32_gates,
+		.func  = TEST_FUNC_NEEDS_EVFILT_VNODE(test_kevent_threading_vnode_single_delivery),
+		.gates = TEST_GATES(
+			GATE(TEST_GATE_NEEDS_EVFILT_VNODE, "EVFILT_VNODE undefined in this build's <sys/event.h>"),
+			GATE(LKQ_PLATFORM_OS_WINDOWS, "vnode backend timing unreliable with FindFirstChangeNotificationW")
+		),
 	},
-#endif
-#ifdef EVFILT_PROC
 	{
 		.name  = "kevent_threading_proc_single_delivery",
 		.desc  = "proc event delivered exactly once across threads",
-		.func  = TEST_FUNC_NEEDS_POSIX(test_kevent_threading_proc_single_delivery),
-		.gates = threading_signal_gates,
+		.func  = TEST_FUNC_NEEDS_EVFILT_PROC(TEST_FUNC_NEEDS_POSIX(test_kevent_threading_proc_single_delivery)),
+		.gates = TEST_GATES(
+			GATE(TEST_GATE_NEEDS_EVFILT_PROC, "EVFILT_PROC undefined in this build's <sys/event.h>"),
+			GATE(LKQ_PLATFORM_OS_WINDOWS, "no SIGUSR1 or kqueue signal filter on Win32")
+		),
 	},
-#endif
 	{
 		.name  = "kevent_threading_read_single_delivery",
 		.desc  = "read event delivered exactly once across threads",

@@ -1249,13 +1249,14 @@ const struct lkq_test_case lkq_proc_tests[] =
         .desc  = "udata round-trips unchanged through NOTE_EXIT delivery",
         .func  = test_kevent_proc_udata_preserved,
     },
-#ifdef EV_RECEIPT
     {
         .name  = "test_kevent_proc_receipt_preserved",
         .desc  = "EV_RECEIPT echoes the kev with EV_ERROR=0",
-        .func  = test_kevent_proc_receipt_preserved,
+        .func  = TEST_FUNC_NEEDS_EV_RECEIPT(test_kevent_proc_receipt_preserved),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_EV_RECEIPT, "EV_RECEIPT undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
     {
         .name  = "test_kevent_proc_disable_preserves_events",
         .desc  = "NOTE_EXIT fired while disabled surfaces on EV_ENABLE",

@@ -926,23 +926,30 @@ const struct lkq_test_case lkq_user_tests[] = {
         .desc  = "multiple FFOR triggers between drains accumulate bits in one event",
         .func  = test_kevent_user_multi_trigger_fflags_or,
     },
-#ifdef EV_DISPATCH
     {
         .name  = "test_kevent_user_dispatch",
         .desc  = "EV_DISPATCH auto-disables after EVFILT_USER delivery",
-        .func  = test_kevent_user_dispatch,
+        .func  = TEST_FUNC_NEEDS_EV_DISPATCH(test_kevent_user_dispatch),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_EV_DISPATCH, "EV_DISPATCH undefined in this build's <sys/event.h>")
+        ),
     },
     {
         .name  = "test_kevent_user_dispatch_durable",
         .desc  = "EV_DISPATCH survives NOTE_TRIGGER and EV_DISABLE/EV_ENABLE cycles",
-        .func  = test_kevent_user_dispatch_durable,
+        .func  = TEST_FUNC_NEEDS_EV_DISPATCH(test_kevent_user_dispatch_durable),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_EV_DISPATCH, "EV_DISPATCH undefined in this build's <sys/event.h>")
+        ),
     },
     {
         .name  = "test_kevent_user_dispatch_enable_and_trigger_atomic",
         .desc  = "EV_ENABLE | NOTE_TRIGGER in one call re-arms and fires atomically",
-        .func  = test_kevent_user_dispatch_enable_and_trigger_atomic,
+        .func  = TEST_FUNC_NEEDS_EV_DISPATCH(test_kevent_user_dispatch_enable_and_trigger_atomic),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_EV_DISPATCH, "EV_DISPATCH undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
     {
         .name  = "test_kevent_user_trigger_from_thread",
         .desc  = "NOTE_TRIGGER from a separate thread wakes the kevent waiter",

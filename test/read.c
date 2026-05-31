@@ -1408,13 +1408,14 @@ const struct lkq_test_case lkq_read_tests[] = {
         .desc  = "EV_CLEAR makes EVFILT_READ edge-triggered on sockets",
         .func  = test_kevent_socket_clear,
     },
-#ifdef EV_DISPATCH
     {
         .name  = "test_kevent_socket_dispatch",
         .desc  = "EV_DISPATCH auto-disables after delivery",
-        .func  = test_kevent_socket_dispatch,
+        .func  = TEST_FUNC_NEEDS_EV_DISPATCH(test_kevent_socket_dispatch),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_EV_DISPATCH, "EV_DISPATCH undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
     {
         .name  = "test_kevent_socket_listen_backlog",
         .desc  = "EVFILT_READ on a listen socket fires when connection pending",
