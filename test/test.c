@@ -20,11 +20,128 @@
 #if defined(__linux__) && (defined(__GLIBC__) && !defined(__UCLIBC__))
 #  include <execinfo.h>
 #endif
+#ifdef _WIN32
+#  include <io.h>
+#  include <process.h>
+#endif
 
 #include "common.h"
 
 static int testnum = 1;
 static int error_flag = 1;
+
+/*
+ * Per-test debug-log routing.
+ *
+ * libkqueue's KQUEUE_DEBUG output and the crash backtrace both land on
+ * stderr; across a 50-iteration soak that is gigabytes in a single
+ * stream, useless for finding the one test that died.  With
+ * --log-file=<template>, stderr is redirected to a freshly truncated
+ * file around each test body so each test's trail lands in its own
+ * small file, while stdout keeps the clean pass/skip/crash progress.
+ * stderr is restored between tests so the sanitizers' at-exit report
+ * still reaches the console.
+ *
+ * Template specifiers: %{t} test name, %{i} iteration, %{p} pid,
+ * %% literal percent.
+ */
+#ifdef _WIN32
+#  define kq_dup    _dup
+#  define kq_dup2   _dup2
+#  define kq_getpid ((long) _getpid())
+#else
+#  define kq_dup    dup
+#  define kq_dup2   dup2
+#  define kq_getpid ((long) getpid())
+#endif
+
+static char *test_log_template    = NULL;
+static int   test_log_orig_stderr = -1;
+
+void
+test_log_set_template(const char *tmpl)
+{
+    free(test_log_template);
+    test_log_template = tmpl ? strdup(tmpl) : NULL;
+}
+
+static void
+test_log_expand(char *out, size_t outlen, const char *tmpl,
+                const char *test, int iter)
+{
+    const char *p = tmpl;
+    size_t      o = 0;
+
+    while (*p && ((o + 1) < outlen)) {
+        if ((p[0] == '%') && (p[1] == '%')) {
+            out[o++] = '%';
+            p += 2;
+            continue;
+        }
+        if ((p[0] == '%') && (p[1] == '{') && p[2] && (p[3] == '}')) {
+            char        num[32];
+            const char *ins = NULL;
+
+            switch (p[2]) {
+            case 't':
+                ins = test;
+                break;
+            case 'i':
+                snprintf(num, sizeof(num), "%d", iter);
+                ins = num;
+                break;
+            case 'p':
+                snprintf(num, sizeof(num), "%ld", kq_getpid);
+                ins = num;
+                break;
+            default:
+                break;
+            }
+            if (ins) {
+                while (*ins && ((o + 1) < outlen))
+                    out[o++] = *ins++;
+                p += 4;
+                continue;
+            }
+        }
+        out[o++] = *p++;
+    }
+    out[o] = '\0';
+}
+
+static void
+test_log_begin(const char *test, int iter)
+{
+    char path[1024];
+
+    if (!test_log_template)
+        return;
+
+    test_log_expand(path, sizeof(path), test_log_template, test, iter);
+
+    if (test_log_orig_stderr < 0)
+        test_log_orig_stderr = kq_dup(fileno(stderr));
+
+    fflush(stderr);
+    if (!freopen(path, "w", stderr)) {
+        if (test_log_orig_stderr >= 0)
+            kq_dup2(test_log_orig_stderr, fileno(stderr));
+        return;
+    }
+    /* Line-buffered: a crash mid-test still leaves the trail on disk. */
+    setvbuf(stderr, NULL, _IOLBF, 0);
+}
+
+static void
+test_log_end(void)
+{
+    if (!test_log_template || (test_log_orig_stderr < 0))
+        return;
+
+    fflush(stderr);
+    kq_dup2(test_log_orig_stderr, fileno(stderr));
+    clearerr(stderr);
+}
 
 #ifndef _WIN32
 static void
@@ -172,7 +289,9 @@ run_test_suite(struct test_context *ctx, const struct lkq_test_case *cases)
         watchdog_heartbeat(tc->name);
         test_begin(ctx, display);
         errno = 0;
+        test_log_begin(tc->name, ctx->iteration);
         tc->func(ctx);
+        test_log_end();
         test_end(ctx);
         ctx->test->ut_num++;
     }

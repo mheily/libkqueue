@@ -704,6 +704,11 @@ usage(void)
            "                            '/usr/bin/eu-stack -p'\n"
            " --tmpdir=DIR               Directory for on-disk test files\n"
            "                            (override $TMPDIR, default /tmp).\n"
+           " --log-file=TEMPLATE        Route each test's stderr (libkqueue\n"
+           "                            KQUEUE_DEBUG output + crash backtrace)\n"
+           "                            to a file.  Specifiers: %%{t} test name,\n"
+           "                            %%{i} iteration, %%{p} pid, %%%% literal.\n"
+           "                            e.g. --log-file='kqlog-%%{t}.log'\n"
            " --list-gated[=PLATFORM]    Print tab-separated list of gated tests\n"
            "                            for PLATFORM (or current build if omitted).\n"
            "                            Output: suite TAB test TAB reason\n"
@@ -906,12 +911,14 @@ main(int argc, char **argv)
             OPT_WATCHDOG_CMD,
             OPT_TMPDIR,
             OPT_LIST_GATED,
+            OPT_LOG_FILE,
         };
         static const struct option long_opts[] = {
             { "watchdog-timeout", required_argument, NULL, OPT_WATCHDOG_TIMEOUT },
             { "watchdog-cmd",     required_argument, NULL, OPT_WATCHDOG_CMD     },
             { "tmpdir",           required_argument, NULL, OPT_TMPDIR           },
             { "list-gated",       optional_argument, NULL, OPT_LIST_GATED       },
+            { "log-file",         required_argument, NULL, OPT_LOG_FILE         },
             { NULL,               0,                 NULL, 0                    },
         };
         while ((c = getopt_long(argc, argv, "hn:", long_opts, NULL)) != -1) {
@@ -934,6 +941,9 @@ main(int argc, char **argv)
                     break;
                 case OPT_TMPDIR:
                     test_tmpdir_set(optarg);
+                    break;
+                case OPT_LOG_FILE:
+                    test_log_set_template(optarg);
                     break;
                 case OPT_LIST_GATED: {
                     lkq_platform_t target = lkq_current_platform;
@@ -976,6 +986,8 @@ main(int argc, char **argv)
             }
         } else if (strncmp(a, "--watchdog-cmd=", 15) == 0) {
             watchdog_parse_cmd(a + 15);
+        } else if (strncmp(a, "--log-file=", 11) == 0) {
+            test_log_set_template(a + 11);
         } else if (strncmp(a, "--list-gated", 12) == 0) {
             lkq_platform_t target = lkq_current_platform;
             const char *eq = strchr(a, '=');

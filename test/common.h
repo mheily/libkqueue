@@ -666,6 +666,11 @@ void    test_end(struct test_context *);
  * platform default ("/tmp" usually). */
 const char *test_tmpdir(void);
 void        test_tmpdir_set(const char *path);
+
+/* Route per-test libkqueue debug/stderr to files named by expanding a
+ * template (%{t} test, %{i} iteration, %{p} pid, %% literal).  NULL or
+ * unset leaves stderr on the console. */
+void        test_log_set_template(const char *tmpl);
 void    test_atexit(void);
 void    testing_begin(void);
 void    testing_end(void);
