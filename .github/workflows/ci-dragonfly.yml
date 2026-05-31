@@ -45,7 +45,10 @@ jobs:
       uses: vmactions/dragonflybsd-vm@v1
       with:
         usesh: true
-        sync: sshfs
+        # DragonFly's sshfs sync returns EOPNOTSUPP on the file writes cmake
+        # needs ("file write failed (Operation not supported)"); rsync copies
+        # the tree into the VM's native FS where writes work.
+        sync: rsync
         prepare: |
           pkg install -y cmake gdb
         envs: 'KQUEUE_DEBUG GITHUB_STEP_SUMMARY'
