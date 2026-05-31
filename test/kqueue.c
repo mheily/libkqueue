@@ -201,6 +201,14 @@ test_fork(struct test_context *ctx)
 }
 #endif
 
+/*
+ * EV_RECEIPT itself works on every backend, but this test drives it
+ * through EVFILT_SIGNAL on SIGUSR2, and MSVC's <signal.h> ships none
+ * of the POSIX user signals.  The test TU doesn't pull in the
+ * kqueue/signal.h shim that signal_win32.c uses, so SIGUSR2 is
+ * undeclared and the body can't compile under MSVC.
+ */
+#if !defined(_WIN32)
 void
 test_ev_receipt(struct test_context *ctx)
 {
@@ -229,6 +237,7 @@ test_ev_receipt(struct test_context *ctx)
     EV_SET(&kev, SIGUSR2, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
     (void) kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
 }
+#endif
 
 /* Maximum number of threads that can be created */
 #define MAX_THREADS 100
@@ -887,7 +896,10 @@ const struct lkq_test_case lkq_kqueue_tests[] = {
     {
         .name  = "ev_receipt",
         .desc  = "EV_RECEIPT returns the kevent back in the output list",
-        .func  = test_ev_receipt
+        .func  = TEST_FUNC_NEEDS_POSIX(test_ev_receipt),
+        .gates = TEST_GATES(
+            GATE(LKQ_PLATFORM_OS_WINDOWS, "drives EV_RECEIPT via EVFILT_SIGNAL on SIGUSR2, which MSVC's <signal.h> does not declare")
+        )
     },
     {
         .name  = "kqueue_deep_recursive_chain",
