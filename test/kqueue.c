@@ -844,7 +844,7 @@ const struct lkq_test_case lkq_kqueue_tests[] = {
         .desc  = "kqueue create/close cycle under lowered RLIMIT_NOFILE",
         .func  = TEST_FUNC_NEEDS_DRAIN(test_cleanup),
         .gates = TEST_GATES(
-            GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close not available (native kqueue build)")
+            GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close is implemented only by the Linux backend")
         ),
     },
     {
@@ -852,7 +852,7 @@ const struct lkq_test_case lkq_kqueue_tests[] = {
         .desc  = "close(kqfd) without EV_DELETE reclaims all knote memory",
         .func  = TEST_FUNC_NEEDS_DRAIN(test_close_cleans_up_active_knotes),
         .gates = TEST_GATES(
-            GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close not available (native kqueue build)")
+            GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close is implemented only by the Linux backend")
         ),
     },
     {
@@ -860,7 +860,7 @@ const struct lkq_test_case lkq_kqueue_tests[] = {
         .desc  = "fork closes all kqueue fds in the child",
         .func  = TEST_FUNC_NEEDS_DRAIN(TEST_FUNC_NEEDS_TSAN_IGNORE(test_fork)),
         .gates = TEST_GATES(
-            GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close not available (native kqueue build)"),
+            GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close is implemented only by the Linux backend"),
             GATE(TEST_GATE_NEEDS_TSAN_IGNORE, "needs ANNOTATE_IGNORE for the forked-child false leak (HAVE_TSAN_IGNORE)")
         ),
     },
