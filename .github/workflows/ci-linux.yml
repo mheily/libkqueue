@@ -28,6 +28,11 @@ on:
     # iteration won't catch.
     - cron: '0 6 * * *'
   workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Soak iteration count (default 50)"
+        required: false
+        default: "50"
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -208,10 +213,21 @@ jobs:
         KQUEUE_DEBUG: ${{ matrix.env.BUILD_TYPE == 'Release' && '' || '1' }}
         TSAN_OPTIONS: suppressions=${{ github.workspace }}/tools/tsan.supp
       run: |
+        mkdir -p "$RUNNER_TEMP/kqlogs"
         test/libkqueue-test \
           --watchdog-timeout=120 \
           --watchdog-cmd="${{ github.workspace }}/tools/test-stack-dump.sh" \
-          -n ${{ github.event_name == 'schedule' && 50 || 1 }}
+          --log-file="$RUNNER_TEMP/kqlogs/kq-%{t}.log" \
+          -n ${{ github.event_name == 'workflow_dispatch' && inputs.iterations || (github.event_name == 'schedule' && 50 || 1) }}
+
+    - name: Upload soak logs on failure
+      if: ${{ failure() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: soak-logs-${{ matrix.env.NAME }}
+        path: ${{ runner.temp }}/kqlogs
+        retention-days: 3
+        if-no-files-found: ignore
 
     - name: Build debian packages
       run: cpack -G DEB
