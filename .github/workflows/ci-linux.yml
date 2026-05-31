@@ -37,6 +37,10 @@ env:
   ASAN_OPTIONS: symbolize=1 detect_leaks=1 detect_stack_use_after_return=1
   LSAN_OPTIONS: fast_unwind_on_malloc=0:malloc_context_size=50
   M_PERTURB: "0x42"
+  # actions/cache@v4 and actions/{up,down}load-artifact@v4 still ship on
+  # Node 20; opt their JS into the Node 24 runtime ahead of the default
+  # flip (deprecated 2026-06-16).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   linux-build-and-test:
