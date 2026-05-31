@@ -49,10 +49,14 @@ static int error_flag = 1;
 #  define kq_dup    _dup
 #  define kq_dup2   _dup2
 #  define kq_getpid ((long) _getpid())
+#  define kq_open(p) _open((p), _O_WRONLY | _O_CREAT | _O_TRUNC, 0600)
+#  define kq_close  _close
 #else
 #  define kq_dup    dup
 #  define kq_dup2   dup2
 #  define kq_getpid ((long) getpid())
+#  define kq_open(p) open((p), O_WRONLY | O_CREAT | O_TRUNC, 0644)
+#  define kq_close  close
 #endif
 
 static char *test_log_template    = NULL;
@@ -113,6 +117,7 @@ static void
 test_log_begin(const char *test, int iter)
 {
     char path[1024];
+    int  fd;
 
     if (!test_log_template)
         return;
@@ -122,14 +127,23 @@ test_log_begin(const char *test, int iter)
     if (test_log_orig_stderr < 0)
         test_log_orig_stderr = kq_dup(fileno(stderr));
 
-    fflush(stderr);
-    if (!freopen(path, "w", stderr)) {
-        if (test_log_orig_stderr >= 0)
-            kq_dup2(test_log_orig_stderr, fileno(stderr));
+    fd = kq_open(path);
+    if (fd < 0)
         return;
-    }
-    /* Line-buffered: a crash mid-test still leaves the trail on disk. */
-    setvbuf(stderr, NULL, _IOLBF, 0);
+
+    /*
+     * Repoint fd 2 at the per-test file with dup2() rather than
+     * freopen(stderr).  freopen frees and reallocates the stderr FILE
+     * object's buffer, which races libkqueue's monitoring thread
+     * writing debug to stderr (a use-after-free flagged by ASAN/TSAN).
+     * dup2 only swaps the kernel fd; the FILE object is untouched and
+     * stdio's per-stream lock keeps concurrent writers safe.  stderr is
+     * unbuffered by default, so a crash mid-test still leaves the trail
+     * on disk without a setvbuf() that would itself touch the buffer.
+     */
+    fflush(stderr);
+    kq_dup2(fd, fileno(stderr));
+    kq_close(fd);
 }
 
 static void
