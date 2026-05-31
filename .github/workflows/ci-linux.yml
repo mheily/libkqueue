@@ -220,12 +220,34 @@ jobs:
           --log-file="$RUNNER_TEMP/kqlogs/kq-%{t}.log" \
           -n ${{ github.event_name == 'workflow_dispatch' && inputs.iterations || (github.event_name == 'schedule' && 50 || 1) }}
 
+    - name: Collect soak logs on failure
+      if: ${{ failure() }}
+      run: |
+        dir="$RUNNER_TEMP/kqlogs"
+        [ -d "$dir" ] || exit 0
+        cd "$dir"
+        # The failing test's log is the most-recently-written one (it was
+        # open at the crash); print the tail of the newest few so the
+        # cause is visible inline without downloading the artifact.
+        echo "::group::Most-recently-written test logs"
+        for f in $(ls -1t *.log 2>/dev/null | head -3); do
+          echo "----- $f ($(wc -l < "$f") lines) -----"
+          tail -n 200 "$f"
+        done
+        echo "::endgroup::"
+        echo "::group::Largest test logs"
+        ls -1S *.log 2>/dev/null | head -5 | while read -r f; do
+          printf '%s\t%s lines\n' "$f" "$(wc -l < "$f")"
+        done
+        echo "::endgroup::"
+        tar czf "$RUNNER_TEMP/kqlogs.tar.gz" -C "$RUNNER_TEMP" kqlogs
+
     - name: Upload soak logs on failure
       if: ${{ failure() }}
       uses: actions/upload-artifact@v4
       with:
         name: soak-logs-${{ matrix.env.NAME }}
-        path: ${{ runner.temp }}/kqlogs
+        path: ${{ runner.temp }}/kqlogs.tar.gz
         retention-days: 3
         if-no-files-found: ignore
 
