@@ -36,10 +36,6 @@ concurrency:
 
 env:
   KQUEUE_DEBUG: yes
-  # actions/cache@v4 and actions/{up,down}load-artifact@v4 still ship on
-  # Node 20; opt their JS into the Node 24 runtime ahead of the default
-  # flip (deprecated 2026-06-16).
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   windows-build:
