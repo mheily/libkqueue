@@ -1211,44 +1211,48 @@ const struct lkq_test_case lkq_vnode_tests[] =
         .desc  = "udata round-trips through delivery",
         .func  = test_kevent_vnode_udata_preserved,
     },
-#ifdef EV_RECEIPT
     {
         .name  = "kevent_vnode_receipt_preserved",
         .desc  = "EV_RECEIPT echoes kev with EV_ERROR=0",
-        .func  = test_kevent_vnode_receipt_preserved,
+        .func  = TEST_FUNC_NEEDS_EV_RECEIPT(test_kevent_vnode_receipt_preserved),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_EV_RECEIPT, "EV_RECEIPT undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
     {
         .name  = "kevent_vnode_disable_and_enable",
         .desc  = "EV_DISABLE suppresses events; EV_ENABLE restores delivery",
         .func  = test_kevent_vnode_disable_and_enable,
     },
-#ifdef EV_DISPATCH
     {
         .name  = "kevent_vnode_dispatch",
         .desc  = "EV_DISPATCH auto-disables after first delivery",
-        .func  = test_kevent_vnode_dispatch,
+        .func  = TEST_FUNC_NEEDS_EV_DISPATCH(test_kevent_vnode_dispatch),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_EV_DISPATCH, "EV_DISPATCH undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
-#ifdef NOTE_WRITE
     {
         .name  = "kevent_vnode_note_write",
         .desc  = "NOTE_WRITE fires on file data append",
-        .func  = test_kevent_vnode_note_write,
+        .func  = TEST_FUNC_NEEDS_NOTE_WRITE(test_kevent_vnode_note_write),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_WRITE, "NOTE_WRITE undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
     {
         .name  = "kevent_vnode_note_attrib",
         .desc  = "NOTE_ATTRIB fires on utimes",
         .func  = test_kevent_vnode_note_attrib,
     },
-#ifdef NOTE_RENAME
     {
         .name  = "kevent_vnode_note_rename",
         .desc  = "NOTE_RENAME fires on file rename",
-        .func  = test_kevent_vnode_note_rename,
+        .func  = TEST_FUNC_NEEDS_NOTE_RENAME(test_kevent_vnode_note_rename),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_RENAME, "NOTE_RENAME undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
     {
         .name  = "kevent_vnode_note_attrib_chmod",
         .desc  = "NOTE_ATTRIB fires on fchmod",
@@ -1261,33 +1265,34 @@ const struct lkq_test_case lkq_vnode_tests[] =
         .func  = TEST_FUNC_NEEDS_POSIX(test_kevent_vnode_note_attrib_chown),
         .gates = vnode_gate_posix_only,
     },
-#ifdef NOTE_EXTEND
     {
         .name  = "kevent_vnode_note_extend",
         .desc  = "NOTE_EXTEND fires on file size growth via write",
-        .func  = test_kevent_vnode_note_extend,
+        .func  = TEST_FUNC_NEEDS_NOTE_EXTEND(test_kevent_vnode_note_extend),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_EXTEND, "NOTE_EXTEND undefined in this build's <sys/event.h>")
+        ),
     },
     {
         .name  = "kevent_vnode_note_extend_ftruncate",
         .desc  = "NOTE_EXTEND fires on ftruncate-up (size grow without write)",
-        .func  = TEST_FUNC_NEEDS_POSIX(test_kevent_vnode_note_extend_ftruncate),
+        .func  = TEST_FUNC_NEEDS_POSIX(TEST_FUNC_NEEDS_NOTE_EXTEND(test_kevent_vnode_note_extend_ftruncate)),
         .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_EXTEND, "NOTE_EXTEND undefined in this build's <sys/event.h>"),
             GATE(LKQ_PLATFORM_BACKEND_NATIVE, "VOP_SETATTR doesn't fire NOTE_EXTEND on ftruncate-up on native BSD kqueue"),
             GATE(LKQ_PLATFORM_OS_WINDOWS,     "ftruncate not available on Windows")
         ),
     },
-#endif
-#ifdef NOTE_LINK
     {
         .name  = "kevent_vnode_note_link",
         .desc  = "NOTE_LINK fires on hardlink create and remove",
-        .func  = test_kevent_vnode_note_link,
+        .func  = TEST_FUNC_NEEDS_NOTE_LINK(test_kevent_vnode_note_link),
         .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_LINK, "NOTE_LINK undefined in this build's <sys/event.h>"),
             GATE(LKQ_PLATFORM_OS_WINDOWS,
                  "CreateHardLink doesn't reliably fire NOTE_LINK via FindFirstChangeNotification")
         ),
     },
-#endif
     {
         .name  = "kevent_vnode_fflag_accumulation",
         .desc  = "Multiple NOTE_* bits coalesce into a single event",
@@ -1297,49 +1302,57 @@ const struct lkq_test_case lkq_vnode_tests[] =
                  "stat-snapshot and native-BSD backends don't accumulate NOTE_ATTRIB + NOTE_EXTEND across touch + ftruncate-up")
         ),
     },
-#ifdef NOTE_RENAME
     {
         .name  = "kevent_vnode_rename_overwrite_ordering",
         .desc  = "rename(A,B) fires NOTE_DELETE on B then NOTE_RENAME on A",
-        .func  = test_kevent_vnode_rename_overwrite_ordering,
-        .gates = vnode_gate_rename_overwrite,
+        .func  = TEST_FUNC_NEEDS_NOTE_RENAME(test_kevent_vnode_rename_overwrite_ordering),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_RENAME, "NOTE_RENAME undefined in this build's <sys/event.h>"),
+            GATE(LKQ_PLATFORM_OS_WINDOWS, "NtSetInformationFile rename-over hits STATUS_ACCESS_DENIED on Windows (issue #172)")
+        ),
     },
-#endif
-#ifdef NOTE_LINK
     {
         .name  = "kevent_vnode_note_link_directory",
         .desc  = "NOTE_LINK fires on parent dir when a subdirectory is created",
-        .func  = TEST_FUNC_NEEDS_POSIX(test_kevent_vnode_note_link_directory),
-        .gates = vnode_gate_posix_only,
+        .func  = TEST_FUNC_NEEDS_POSIX(TEST_FUNC_NEEDS_NOTE_LINK(test_kevent_vnode_note_link_directory)),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_LINK, "NOTE_LINK undefined in this build's <sys/event.h>"),
+            GATE(LKQ_PLATFORM_OS_WINDOWS, "POSIX file API (fchmod/fchown/pwrite/O_DIRECTORY) has no Windows equivalent")
+        ),
     },
-#endif
-#ifdef NOTE_TRUNCATE
     {
         .name  = "kevent_vnode_note_truncate",
         .desc  = "NOTE_TRUNCATE fires on ftruncate shrink",
-        .func  = test_kevent_vnode_note_truncate,
+        .func  = TEST_FUNC_NEEDS_NOTE_TRUNCATE(test_kevent_vnode_note_truncate),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_TRUNCATE,
+                 "NOTE_TRUNCATE undefined in this build's <sys/event.h>")
+        ),
     },
-#endif
     {
         .name  = "kevent_vnode_note_delete_rename_over",
         .desc  = "NOTE_DELETE fires on target vnode when renamed over",
         .func  = test_kevent_vnode_note_delete_rename_over,
         .gates = vnode_gate_rename_overwrite,
     },
-#ifdef NOTE_WRITE
     {
         .name  = "kevent_vnode_note_write_directory",
         .desc  = "NOTE_WRITE fires on parent dir for child namespace mutations",
-        .func  = TEST_FUNC_NEEDS_POSIX(test_kevent_vnode_note_write_directory),
-        .gates = vnode_gate_posix_only,
+        .func  = TEST_FUNC_NEEDS_POSIX(TEST_FUNC_NEEDS_NOTE_WRITE(test_kevent_vnode_note_write_directory)),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_WRITE, "NOTE_WRITE undefined in this build's <sys/event.h>"),
+            GATE(LKQ_PLATFORM_OS_WINDOWS, "POSIX file API (fchmod/fchown/pwrite/O_DIRECTORY) has no Windows equivalent")
+        ),
     },
     {
         .name  = "kevent_vnode_note_write_inplace",
         .desc  = "NOTE_WRITE fires on same-size pwrite overwrite",
-        .func  = TEST_FUNC_NEEDS_POSIX(test_kevent_vnode_note_write_inplace),
-        .gates = vnode_gate_posix_only,
+        .func  = TEST_FUNC_NEEDS_POSIX(TEST_FUNC_NEEDS_NOTE_WRITE(test_kevent_vnode_note_write_inplace)),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NOTE_WRITE, "NOTE_WRITE undefined in this build's <sys/event.h>"),
+            GATE(LKQ_PLATFORM_OS_WINDOWS, "POSIX file API (fchmod/fchown/pwrite/O_DIRECTORY) has no Windows equivalent")
+        ),
     },
-#endif
     {
         .name  = "kevent_vnode_ev_clear",
         .desc  = "EV_CLEAR resets the fflags accumulator after delivery",

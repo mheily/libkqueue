@@ -664,39 +664,7 @@ static const struct lkq_platform_name lkq_known_platforms[] = {
 static void
 init_platform(void)
 {
-    lkq_current_platform = 0;
-
-    /* Backend */
-#if defined(NATIVE_KQUEUE)
-    lkq_current_platform |= LKQ_PLATFORM_BACKEND_NATIVE;
-#elif defined(LIBKQUEUE_BACKEND_POSIX)
-    lkq_current_platform |= LKQ_PLATFORM_BACKEND_POSIX;
-#elif defined(LIBKQUEUE_BACKEND_LINUX)
-    lkq_current_platform |= LKQ_PLATFORM_BACKEND_LINUX;
-#elif defined(_WIN32)
-    lkq_current_platform |= LKQ_PLATFORM_BACKEND_WINDOWS;
-#elif defined(__sun)
-    lkq_current_platform |= LKQ_PLATFORM_BACKEND_SOLARIS;
-#endif
-
-    /* OS */
-#if defined(__linux__) && defined(__ANDROID__)
-    lkq_current_platform |= LKQ_PLATFORM_OS_ANDROID;
-#elif defined(__linux__)
-    lkq_current_platform |= LKQ_PLATFORM_OS_LINUX;
-#elif defined(__FreeBSD__)
-    lkq_current_platform |= LKQ_PLATFORM_OS_FREEBSD;
-#elif defined(__NetBSD__)
-    lkq_current_platform |= LKQ_PLATFORM_OS_NETBSD;
-#elif defined(__OpenBSD__)
-    lkq_current_platform |= LKQ_PLATFORM_OS_OPENBSD;
-#elif defined(__APPLE__)
-    lkq_current_platform |= LKQ_PLATFORM_OS_MACOS;
-#elif defined(__sun)
-    lkq_current_platform |= LKQ_PLATFORM_OS_SOLARIS;
-#elif defined(_WIN32)
-    lkq_current_platform |= LKQ_PLATFORM_OS_WINDOWS;
-#endif
+    lkq_current_platform = LKQ_BUILD_PLATFORM;
 }
 
 static void

@@ -263,6 +263,50 @@ typedef unsigned int lkq_platform_t;
     (LKQ_PLATFORM_OS_MACOS | LKQ_PLATFORM_OS_NETBSD | LKQ_PLATFORM_OS_OPENBSD)
 
 /*
+ * Compile-time bitmask for the platform this binary targets - the same
+ * OS|backend bits init_platform() assigns to lkq_current_platform, but
+ * usable inside static initializers.  A test whose body is compiled out
+ * because a feature macro or capability is missing self-gates with
+ * GATE(LKQ_BUILD_PLATFORM, ...) so the entry stays present and the gate
+ * matrix is complete on every platform.
+ */
+#if defined(NATIVE_KQUEUE)
+#  define LKQ_BUILD_BACKEND  LKQ_PLATFORM_BACKEND_NATIVE
+#elif defined(LIBKQUEUE_BACKEND_POSIX)
+#  define LKQ_BUILD_BACKEND  LKQ_PLATFORM_BACKEND_POSIX
+#elif defined(LIBKQUEUE_BACKEND_LINUX)
+#  define LKQ_BUILD_BACKEND  LKQ_PLATFORM_BACKEND_LINUX
+#elif defined(_WIN32)
+#  define LKQ_BUILD_BACKEND  LKQ_PLATFORM_BACKEND_WINDOWS
+#elif defined(__sun)
+#  define LKQ_BUILD_BACKEND  LKQ_PLATFORM_BACKEND_SOLARIS
+#else
+#  define LKQ_BUILD_BACKEND  0
+#endif
+
+#if defined(__linux__) && defined(__ANDROID__)
+#  define LKQ_BUILD_OS  LKQ_PLATFORM_OS_ANDROID
+#elif defined(__linux__)
+#  define LKQ_BUILD_OS  LKQ_PLATFORM_OS_LINUX
+#elif defined(__FreeBSD__)
+#  define LKQ_BUILD_OS  LKQ_PLATFORM_OS_FREEBSD
+#elif defined(__NetBSD__)
+#  define LKQ_BUILD_OS  LKQ_PLATFORM_OS_NETBSD
+#elif defined(__OpenBSD__)
+#  define LKQ_BUILD_OS  LKQ_PLATFORM_OS_OPENBSD
+#elif defined(__APPLE__)
+#  define LKQ_BUILD_OS  LKQ_PLATFORM_OS_MACOS
+#elif defined(__sun)
+#  define LKQ_BUILD_OS  LKQ_PLATFORM_OS_SOLARIS
+#elif defined(_WIN32)
+#  define LKQ_BUILD_OS  LKQ_PLATFORM_OS_WINDOWS
+#else
+#  define LKQ_BUILD_OS  0
+#endif
+
+#define LKQ_BUILD_PLATFORM  (LKQ_BUILD_OS | LKQ_BUILD_BACKEND)
+
+/*
  * Gate entry: skip the test when (lkq_current_platform & platform) != 0.
  * A NULL reason field terminates the gate array.
  */
@@ -312,6 +356,73 @@ struct lkq_test_case {
 #endif
 
 #define TEST_GATES(...)  ((const struct lkq_test_gate[]){ __VA_ARGS__, { 0, NULL } })
+
+/*
+ * Per-feature resolvers for a test whose body needs an optional macro.
+ * The entry and its gate stay present on every build (never #ifdef'd
+ * out); only the resolved values change with the macro's availability:
+ *
+ *   TEST_FUNC_NEEDS_<X>(fn) - fn where <X> is defined, NULL where it
+ *                             isn't (the body is compiled out there).
+ *   TEST_GATE_NEEDS_<X>     - 0 where <X> is defined (gate inert, test
+ *                             runs), else LKQ_BUILD_PLATFORM (the gate
+ *                             skips and lists the test on this build).
+ */
+#ifdef NOTE_TRUNCATE
+#  define TEST_FUNC_NEEDS_NOTE_TRUNCATE(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_NOTE_TRUNCATE       0
+#else
+#  define TEST_FUNC_NEEDS_NOTE_TRUNCATE(_fn)  NULL
+#  define TEST_GATE_NEEDS_NOTE_TRUNCATE       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef EV_RECEIPT
+#  define TEST_FUNC_NEEDS_EV_RECEIPT(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_EV_RECEIPT       0
+#else
+#  define TEST_FUNC_NEEDS_EV_RECEIPT(_fn)  NULL
+#  define TEST_GATE_NEEDS_EV_RECEIPT       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef EV_DISPATCH
+#  define TEST_FUNC_NEEDS_EV_DISPATCH(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_EV_DISPATCH       0
+#else
+#  define TEST_FUNC_NEEDS_EV_DISPATCH(_fn)  NULL
+#  define TEST_GATE_NEEDS_EV_DISPATCH       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef NOTE_WRITE
+#  define TEST_FUNC_NEEDS_NOTE_WRITE(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_NOTE_WRITE       0
+#else
+#  define TEST_FUNC_NEEDS_NOTE_WRITE(_fn)  NULL
+#  define TEST_GATE_NEEDS_NOTE_WRITE       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef NOTE_RENAME
+#  define TEST_FUNC_NEEDS_NOTE_RENAME(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_NOTE_RENAME       0
+#else
+#  define TEST_FUNC_NEEDS_NOTE_RENAME(_fn)  NULL
+#  define TEST_GATE_NEEDS_NOTE_RENAME       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef NOTE_EXTEND
+#  define TEST_FUNC_NEEDS_NOTE_EXTEND(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_NOTE_EXTEND       0
+#else
+#  define TEST_FUNC_NEEDS_NOTE_EXTEND(_fn)  NULL
+#  define TEST_GATE_NEEDS_NOTE_EXTEND       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef NOTE_LINK
+#  define TEST_FUNC_NEEDS_NOTE_LINK(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_NOTE_LINK       0
+#else
+#  define TEST_FUNC_NEEDS_NOTE_LINK(_fn)  NULL
+#  define TEST_GATE_NEEDS_NOTE_LINK       LKQ_BUILD_PLATFORM
+#endif
 
 /*
  * Current platform bitmask, OR of one OS bit and one backend bit.
