@@ -18,10 +18,15 @@ on:
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Soak iteration count (default 50)"
+        required: false
+        default: "50"
 
 jobs:
   openbsd-tests:
-    timeout-minutes: ${{ github.event_name == 'schedule' && 60 || 10 }}
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 60 || 10 }}
     runs-on: ubuntu-latest
     name: "OpenBSD tests"
     env:
@@ -57,4 +62,4 @@ jobs:
           ./libkqueue-test \
             --watchdog-timeout=120 \
             --watchdog-cmd=../tools/test-stack-dump.sh \
-            -n ${{ github.event_name == 'schedule' && 50 || 1 }}
+            -n ${{ github.event_name == 'workflow_dispatch' && inputs.iterations || (github.event_name == 'schedule' && 50 || 1) }}

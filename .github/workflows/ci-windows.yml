@@ -7,6 +7,12 @@ on:
         description: "Branch / tag / SHA to run against"
         required: false
         default: ""
+      iterations:
+        description: "Soak iteration count (default 50 on dispatch)"
+        required: false
+        default: "50"
+  schedule:
+    - cron: '0 6 * * *'
   push:
     branches:
       - master
@@ -160,14 +166,14 @@ jobs:
           if-no-files-found: ignore
 
       - name: Run tests
-        timeout-minutes: 8
+        timeout-minutes: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && 60 || 8 }}
         shell: cmd
         env:
           KQUEUE_DEBUG: 1
           KQUEUE_DEBUG_OUTPUT: stderr
         run: |
           set PATH=%CD%\build_x64\${{ matrix.build_type }};%PATH%
-          .\build_x64\test\${{ matrix.build_type }}\libkqueue-test.exe -n 1 --watchdog-timeout=120 "--watchdog-cmd=\"${{ steps.cdb.outputs.path }}\" -pv -c \"~*kb;qd\" -p" > test_full.log 2>&1
+          .\build_x64\test\${{ matrix.build_type }}\libkqueue-test.exe -n ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.iterations || (github.event_name == 'schedule' && 50 || 1) }} --watchdog-timeout=120 "--watchdog-cmd=\"${{ steps.cdb.outputs.path }}\" -pv -c \"~*kb;qd\" -p" > test_full.log 2>&1
           set RC=%ERRORLEVEL%
           type test_full.log
           exit /b %RC%

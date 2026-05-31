@@ -23,7 +23,14 @@ on:
       - 'test/*'
       - 'tools/test-stack-dump.sh'
       - '.github/workflows/ci-posix.yml'
+  schedule:
+    - cron: '0 6 * * *'
   workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Soak iteration count (default 50)"
+        required: false
+        default: "50"
 
 env:
   # detect_leaks is Linux-only; setting it on macOS makes ASAN
@@ -34,7 +41,7 @@ env:
 
 jobs:
   posix-build-and-test:
-    timeout-minutes: 15
+    timeout-minutes: ${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && 60 || 15 }}
     strategy:
       fail-fast: false
       matrix:
@@ -104,4 +111,5 @@ jobs:
       run: |
         test/libkqueue-test \
           --watchdog-timeout=120 \
-          --watchdog-cmd="${{ github.workspace }}/tools/test-stack-dump.sh"
+          --watchdog-cmd="${{ github.workspace }}/tools/test-stack-dump.sh" \
+          -n ${{ github.event_name == 'workflow_dispatch' && inputs.iterations || (github.event_name == 'schedule' && 50 || 1) }}

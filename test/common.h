@@ -106,7 +106,7 @@
 #include <string.h>
 #include <stdint.h>
 
-#if !defined(__APPLE__) && !defined(__FreeBSD__)
+#if !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__DragonFly__)
 #  include "config.h"
 #endif
 
@@ -123,7 +123,8 @@
  * not the host's native kqueue, so leave NATIVE_KQUEUE unset.
  */
 #if (defined(__APPLE__) || defined(__FreeBSD__) || \
-     defined(__OpenBSD__) || defined(__NetBSD__)) && \
+     defined(__OpenBSD__) || defined(__NetBSD__) || \
+     defined(__DragonFly__)) && \
     !defined(LIBKQUEUE_BACKEND_POSIX)
 #define NATIVE_KQUEUE 1
 #endif
@@ -230,6 +231,7 @@ typedef unsigned int lkq_platform_t;
 #define LKQ_PLATFORM_OS_SOLARIS   (1u <<  5)
 #define LKQ_PLATFORM_OS_ANDROID   (1u <<  6)
 #define LKQ_PLATFORM_OS_WINDOWS   (1u <<  7)
+#define LKQ_PLATFORM_OS_DRAGONFLY (1u << 13)  /* native kqueue, FreeBSD-derived */
 
 /* Backend bits - orthogonal to OS */
 #define LKQ_PLATFORM_BACKEND_NATIVE   (1u <<  8)  /* host's own kqueue(2) */
@@ -290,6 +292,8 @@ typedef unsigned int lkq_platform_t;
 #  define LKQ_BUILD_OS  LKQ_PLATFORM_OS_LINUX
 #elif defined(__FreeBSD__)
 #  define LKQ_BUILD_OS  LKQ_PLATFORM_OS_FREEBSD
+#elif defined(__DragonFly__)
+#  define LKQ_BUILD_OS  LKQ_PLATFORM_OS_DRAGONFLY
 #elif defined(__NetBSD__)
 #  define LKQ_BUILD_OS  LKQ_PLATFORM_OS_NETBSD
 #elif defined(__OpenBSD__)

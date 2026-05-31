@@ -45,7 +45,9 @@ env:
 
 jobs:
   linux-build-and-test:
-    timeout-minutes: ${{ github.event_name == 'schedule' && 60 || 10 }}
+    # schedule and manual dispatch run the -n 50 soak, which needs the
+    # longer budget; ordinary push/PR runs (-n 1) keep the tight 10m cap.
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 60 || 10 }}
     strategy:
       fail-fast: false
       matrix:

@@ -653,6 +653,7 @@ static const struct lkq_platform_name lkq_known_platforms[] = {
     { "linux",       LKQ_PLATFORM_OS_LINUX   | LKQ_PLATFORM_BACKEND_LINUX    },
     { "linux-posix", LKQ_PLATFORM_OS_LINUX   | LKQ_PLATFORM_BACKEND_POSIX    },
     { "freebsd",     LKQ_PLATFORM_OS_FREEBSD | LKQ_PLATFORM_BACKEND_NATIVE   },
+    { "dragonfly",   LKQ_PLATFORM_OS_DRAGONFLY | LKQ_PLATFORM_BACKEND_NATIVE },
     { "netbsd",      LKQ_PLATFORM_OS_NETBSD  | LKQ_PLATFORM_BACKEND_NATIVE   },
     { "openbsd",     LKQ_PLATFORM_OS_OPENBSD | LKQ_PLATFORM_BACKEND_NATIVE   },
     { "macos",       LKQ_PLATFORM_OS_MACOS   | LKQ_PLATFORM_BACKEND_NATIVE   },

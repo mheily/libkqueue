@@ -1,4 +1,4 @@
-name: CI tests FreeBSD
+name: CI tests DragonFly
 
 on:
   push:
@@ -7,14 +7,14 @@ on:
     paths:
       - 'test/*'
       - 'tools/test-stack-dump.sh'
-      - '.github/workflows/ci-freebsd.yml'
+      - '.github/workflows/ci-dragonfly.yml'
   pull_request:
     branches:
       - master
     paths:
       - 'test/*'
       - 'tools/test-stack-dump.sh'
-      - '.github/workflows/ci-freebsd.yml'
+      - '.github/workflows/ci-dragonfly.yml'
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
@@ -29,11 +29,11 @@ concurrency:
 
 
 jobs:
-  freebsd-tests:
+  dragonfly-tests:
 # virtualbox takes a long time to start
     timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 60 || 10 }}
     runs-on: ubuntu-latest
-    name: "FreeBSD tests"
+    name: "DragonFly tests"
     env:
       KQUEUE_DEBUG: yes
     steps:
@@ -42,21 +42,21 @@ jobs:
         path: libkqueue
 
     - name: libkqueue test suite
-      uses: vmactions/freebsd-vm@v1
+      uses: vmactions/dragonflybsd-vm@v1
       with:
         usesh: true
         sync: sshfs
         prepare: |
-          pkg install -y cmake llvm gdb
+          pkg install -y cmake gdb
         envs: 'KQUEUE_DEBUG GITHUB_STEP_SUMMARY'
         run: |
-          freebsd-version
+          uname -a
           cd libkqueue/test
           cmake .
           make
-          GATED=$(./libkqueue-test --list-gated=freebsd 2>/dev/null) || true
+          GATED=$(./libkqueue-test --list-gated=dragonfly 2>/dev/null) || true
           {
-            printf '## Gated on freebsd\n'
+            printf '## Gated on dragonfly\n'
             printf '| Suite | Test | Reason |\n| --- | --- | --- |\n'
             if [ -n "$GATED" ]; then
               printf '%s\n' "$GATED" | awk -F'\t' '{gsub(/\|/,"&#124;",$3); print "| "$1" | "$2" | "$3" |"}'

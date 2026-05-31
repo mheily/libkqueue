@@ -38,6 +38,11 @@ on:
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Soak iteration count (default 50)"
+        required: false
+        default: "50"
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -129,7 +134,7 @@ jobs:
 
   omnios-tests:
     needs: valgrind-build
-    timeout-minutes: ${{ github.event_name == 'schedule' && 60 || 30 }}
+    timeout-minutes: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 60 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -286,4 +291,4 @@ jobs:
         # Valgrind is pinned at 1 iteration: memcheck's shadow memory
         # accumulates across the suite and a single iteration already
         # peaks at multiple GB; running more in-process OOMs the VM.
-        ITERATIONS: ${{ matrix.env.VALGRIND_TOOL && '1' || (github.event_name == 'schedule' && '50' || '1') }}
+        ITERATIONS: ${{ matrix.env.VALGRIND_TOOL && '1' || (github.event_name == 'workflow_dispatch' && inputs.iterations || (github.event_name == 'schedule' && '50' || '1')) }}
