@@ -201,8 +201,6 @@ test_fork(struct test_context *ctx)
 }
 #endif
 
-/* EV_RECEIPT is not available or running on Win32 */
-#if !defined(_WIN32)
 void
 test_ev_receipt(struct test_context *ctx)
 {
@@ -231,7 +229,6 @@ test_ev_receipt(struct test_context *ctx)
     EV_SET(&kev, SIGUSR2, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
     (void) kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
 }
-#endif
 
 /* Maximum number of threads that can be created */
 #define MAX_THREADS 100
@@ -795,8 +792,6 @@ test_kqueue_timer_callout_detach_race(struct test_context *ctx)
  * SIZE_MAX iterations).  Upstream DoS-class kernel bug; skip on NetBSD and
  * Windows (no mmap/mprotect).
  *
- * ev_receipt: EV_RECEIPT is unavailable on Windows.
- *
  * kqueue_pipe_peer_close_uaf / kqueue_timer_callout_detach_race: target
  * BSD-kernel-internal races in filt_pipedetach and filt_timerdetach.  The
  * POSIX select-polling backend doesn't share those code paths, and the rapid
@@ -814,11 +809,6 @@ static const struct lkq_test_gate gates_not_netbsd_not_windows[] = {
          "NetBSD kqueue_scan hangs on nevents=-1 (upstream kernel bug)"),
     GATE(LKQ_PLATFORM_OS_WINDOWS,
          "uses mmap/mprotect which are unavailable on Windows"),
-    { 0, NULL }
-};
-
-static const struct lkq_test_gate gates_not_windows[] = {
-    GATE(LKQ_PLATFORM_OS_WINDOWS, "EV_RECEIPT unavailable on Windows"),
     { 0, NULL }
 };
 
@@ -897,8 +887,7 @@ const struct lkq_test_case lkq_kqueue_tests[] = {
     {
         .name  = "ev_receipt",
         .desc  = "EV_RECEIPT returns the kevent back in the output list",
-        .func  = TEST_FUNC_NEEDS_POSIX(test_ev_receipt),
-        .gates = gates_not_windows
+        .func  = test_ev_receipt
     },
     {
         .name  = "kqueue_deep_recursive_chain",
