@@ -812,7 +812,7 @@ const struct lkq_test_case lkq_signal_tests[] =
         .func  = TEST_FUNC_NEEDS_EV_DISPATCH(test_kevent_signal_dispatch),
         .gates = TEST_GATES(
             GATE(TEST_GATE_NEEDS_EV_DISPATCH, "EV_DISPATCH undefined in this build's <sys/event.h>"),
-            GATE(LKQ_PLATFORM_OS_NETBSD, "NetBSD doesn't buffer signals across EV_DISPATCH disable")
+            GATE(LKQ_PLATFORM_OS_NETBSD, "NetBSD forces EV_CLEAR on EVFILT_SIGNAL, which overrides EV_DISPATCH in kqueue_scan's flag chain, so the knote is never disabled and the second kill fires through immediately")
         ),
     },
     {

@@ -805,7 +805,7 @@ const struct lkq_test_case lkq_timer_tests[] =
         .func  = TEST_FUNC_NEEDS_NOTE_NSECONDS(test_kevent_timer_huge_interval),
         .gates = TEST_GATES(
             GATE(TEST_GATE_NEEDS_NOTE_NSECONDS, "NOTE_NSECONDS undefined in this build's <sys/event.h>"),
-            GATE(LKQ_PLATFORM_BACKEND_NATIVE, "native kqueue sbintime conversion overflows on very large NOTE_NSECONDS values")
+            GATE(LKQ_PLATFORM_BACKEND_NATIVE, "native kqueue implementations handle very large NOTE_NSECONDS inconsistently (FreeBSD clamps to SBT_MAX, macOS rejects with ERANGE, OpenBSD/NetBSD convert without overflow checks)")
         ),
     },
     {
@@ -869,7 +869,7 @@ const struct lkq_test_case lkq_timer_tests[] =
         .func  = TEST_FUNC_NEEDS_EV_DISPATCH(test_kevent_timer_dispatch),
         .gates = TEST_GATES(
             GATE(TEST_GATE_NEEDS_EV_DISPATCH, "EV_DISPATCH undefined in this build's <sys/event.h>"),
-            GATE(LKQ_PLATFORM_OS_NETBSD, "NetBSD native kqueue does not auto-disable the timer knote on EV_DISPATCH"),
+            GATE(LKQ_PLATFORM_OS_NETBSD, "NetBSD forces EV_CLEAR on the timer knote, which overrides EV_DISPATCH in kqueue_scan's flag chain, so the knote is never auto-disabled"),
             GATE(LKQ_PLATFORM_OS_OPENBSD, "OpenBSD delivers accumulated ticks immediately on re-enable after EV_DISPATCH")
         ),
     },
@@ -903,7 +903,7 @@ const struct lkq_test_case lkq_timer_tests[] =
         .func  = TEST_FUNC_NEEDS_NOTE_ABSOLUTE(test_kevent_timer_note_absolute),
         .gates = TEST_GATES(
             GATE(TEST_GATE_NEEDS_NOTE_ABSOLUTE, "NOTE_ABSOLUTE undefined in this build's <sys/event.h>"),
-            GATE(LKQ_PLATFORM_OS_MACOS, "macOS XNU NOTE_ABSOLUTE timer semantics differ from POSIX-clock-based BSDs")
+            GATE(LKQ_PLATFORM_OS_MACOS, "macOS shared CI runners miss the tight NOTE_ABSOLUTE future-deadline window under scheduling jitter (epoch-ms semantics match; the _past variant runs unguarded)")
         ),
     },
     {
@@ -912,7 +912,7 @@ const struct lkq_test_case lkq_timer_tests[] =
         .func  = TEST_FUNC_NEEDS_NOTE_ABSOLUTE(test_kevent_timer_note_absolute_after_modify),
         .gates = TEST_GATES(
             GATE(TEST_GATE_NEEDS_NOTE_ABSOLUTE, "NOTE_ABSOLUTE undefined in this build's <sys/event.h>"),
-            GATE(LKQ_PLATFORM_OS_MACOS, "macOS XNU NOTE_ABSOLUTE timer semantics differ from POSIX-clock-based BSDs")
+            GATE(LKQ_PLATFORM_OS_MACOS, "macOS shared CI runners miss the tight NOTE_ABSOLUTE future-deadline window under scheduling jitter (epoch-ms semantics match; the _past variant runs unguarded)")
         ),
     },
     {

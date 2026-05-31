@@ -1342,7 +1342,7 @@ static const struct lkq_test_gate read_lowat_write_gates[] = {
 
 static const struct lkq_test_gate read_multi_kqueue_gates[] = {
     GATE(LKQ_PLATFORM_OS_WINDOWS,
-         "Win32 WSAEventSelect allows only one event slot per socket"),
+         "Win32 binds a pipe HANDLE to a single IOCP for its lifetime; a second kqueue cannot receive completions for the same fd"),
     { 0, NULL }
 };
 
@@ -1360,9 +1360,8 @@ static const struct lkq_test_gate read_socket_eof_with_buffered_gates[] = {
 };
 
 static const struct lkq_test_gate read_regular_file_reactivate_gates[] = {
-    GATE(LKQ_PLATFORM_BACKEND_LINUX | LKQ_PLATFORM_BACKEND_POSIX |
-         LKQ_PLATFORM_OS_WINDOWS,
-         "backend cannot detect file-size growth for re-arm"),
+    GATE(LKQ_PLATFORM_BACKEND_LINUX | LKQ_PLATFORM_OS_WINDOWS,
+         "backend stops firing at first EOF and cannot re-arm on later file-size growth"),
     { 0, NULL }
 };
 

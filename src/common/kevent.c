@@ -559,17 +559,14 @@ kevent(int kqfd,
          * Drop the kq mutex across the wait on platforms that opt
          * in via KEVENT_WAIT_DROP_LOCK in their platform.h.
          *
-         * Linux opts in: holding the userspace kq_mtx across the
-         * epoll_wait syscall blocks any other thread that wants to
-         * add or trigger events on this kq, which breaks the
-         * cross-thread EVFILT_USER wake pattern.
-         *
-         * Other platforms (BSD/macOS/Solaris/Windows) currently do
-         * NOT opt in.  Whether they should is an open question -
-         * none of them have been audited or tested for the same
-         * cross-thread wake behaviour.  Until someone exercises it,
-         * leaving the lock held preserves whatever the existing
-         * (pre-Linux-fix) semantics were.
+         * Holding the userspace kq_mtx across the wait syscall blocks
+         * any other thread that wants to add or trigger events on this
+         * kq, which breaks the cross-thread EVFILT_USER wake pattern.
+         * Every libkqueue backend that compiles this file (Linux,
+         * POSIX, Solaris, Windows) opts in; each pairs the drop with
+         * its own in-flight tracking so the wait doesn't return into a
+         * freed kq.  Native BSD/macOS use the host kqueue and never
+         * build this path.
          */
 #ifdef KEVENT_WAIT_DROP_LOCK
         kqueue_unlock(kq);

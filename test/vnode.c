@@ -366,9 +366,9 @@ test_kevent_vnode_note_link(struct test_context *ctx)
  */
 /*
  * Subscribe to NOTE_EXTEND alone and grow the file via ftruncate
- * (no write path involved).  FreeBSD's vop_setattr_post fires
- * NOTE_EXTEND when va_size > oldsize; libkqueue must do the same
- * for non-write growth.
+ * (no write path involved).  Native BSD/macOS fire only NOTE_ATTRIB
+ * on a setattr/truncate-up (NOTE_EXTEND comes from the write path),
+ * so this exercises libkqueue's stat-diff synthesis of NOTE_EXTEND.
  */
 #if defined(NOTE_EXTEND) && !defined(_WIN32)
 /* Win32 has _chsize, not ftruncate; rely on the POSIX-only path. */
@@ -1290,7 +1290,7 @@ const struct lkq_test_case lkq_vnode_tests[] =
         .gates = TEST_GATES(
             GATE(TEST_GATE_NEEDS_NOTE_LINK, "NOTE_LINK undefined in this build's <sys/event.h>"),
             GATE(LKQ_PLATFORM_OS_WINDOWS,
-                 "CreateHardLink doesn't reliably fire NOTE_LINK via FindFirstChangeNotification")
+                 "Win32 NOTE_LINK uses an nNumberOfLinks delta; the test's re-add after unlink resets the baseline in knote_create, so the unlink half cannot produce a delta")
         ),
     },
     {

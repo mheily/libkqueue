@@ -1622,23 +1622,26 @@ static const struct lkq_test_gate threading_close_gates[] = {
 };
 
 /*
- * NetBSD: native kqueue's main-thread kevent() blocks indefinitely while
- * sibling threads churn EV_ADD / EV_DELETE on the same kq, so the
- * 5000-iter * 100us-poll drain loop never returns and the watchdog kills the
- * suite at 120s.  Reproduces against the upstream kernel; not a libkqueue bug.
- * Gate until either the NetBSD kqueue serialisation is fixed upstream or the
- * test is redesigned around a deterministic stop condition.
+ * NetBSD: kqueue_scan drops kq_lock during cv_timedwait_sig, so concurrent
+ * registration isn't starved.  The cost is scan-side marker / in-flux relock
+ * churn under heavy concurrent EV_ADD / EV_DELETE on recycled fds, which makes
+ * each bounded (5000-iter * 100us-poll) drain crawl until the watchdog kills
+ * the suite at 120s.  Reproduces against the upstream kernel; not a libkqueue
+ * bug.  Gate until the test is redesigned around a deterministic stop
+ * condition.
  */
 static const struct lkq_test_gate threading_netbsd_gates[] = {
-	GATE(LKQ_PLATFORM_OS_NETBSD,         "native kqueue serialises on kq lock across concurrent add/delete"),
+	GATE(LKQ_PLATFORM_OS_NETBSD,         "native kqueue scan relock/in-flux churn under concurrent add/delete + fd recycle makes each poll crawl; the bounded drain blows the watchdog"),
 	{ 0, NULL }
 };
 
 /*
- * sigaction-driven; Win32 has no SIGUSR1 / kqueue signal filter.
+ * The test drives the POSIX kernel signal layer (sigaction/sigwait/raise/kill
+ * + SIGUSR1), none of which Win32 provides; libkqueue's Win32 EVFILT_SIGNAL
+ * bridge uses named events and doesn't interoperate with OS signals.
  */
 static const struct lkq_test_gate threading_signal_gates[] = {
-	GATE(LKQ_PLATFORM_OS_WINDOWS,        "no SIGUSR1 or kqueue signal filter on Win32"),
+	GATE(LKQ_PLATFORM_OS_WINDOWS,        "test uses POSIX signal APIs (sigaction/sigwait/raise) and SIGUSR1, which Win32 lacks; the Win32 EVFILT_SIGNAL bridge uses named events and doesn't interoperate with OS signals"),
 	{ 0, NULL }
 };
 
@@ -1750,7 +1753,7 @@ const struct lkq_test_case lkq_threading_tests[] = {
 		.func  = TEST_FUNC_NEEDS_EVFILT_PROC(TEST_FUNC_NEEDS_POSIX(test_kevent_threading_proc_single_delivery)),
 		.gates = TEST_GATES(
 			GATE(TEST_GATE_NEEDS_EVFILT_PROC, "EVFILT_PROC undefined in this build's <sys/event.h>"),
-			GATE(LKQ_PLATFORM_OS_WINDOWS, "no SIGUSR1 or kqueue signal filter on Win32")
+			GATE(LKQ_PLATFORM_OS_WINDOWS, "test uses POSIX signal APIs (sigaction/sigwait/raise) and SIGUSR1, which Win32 lacks; the Win32 EVFILT_SIGNAL bridge uses named events and doesn't interoperate with OS signals")
 		),
 	},
 	{

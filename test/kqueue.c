@@ -801,11 +801,12 @@ test_kqueue_timer_callout_detach_race(struct test_context *ctx)
  * SIZE_MAX iterations).  Upstream DoS-class kernel bug; skip on NetBSD and
  * Windows (no mmap/mprotect).
  *
- * kqueue_pipe_peer_close_uaf / kqueue_timer_callout_detach_race: target
- * BSD-kernel-internal races in filt_pipedetach and filt_timerdetach.  The
- * POSIX select-polling backend doesn't share those code paths, and the rapid
- * kqueue create/close cycles exhaust FD_SETSIZE=1024 before deferred cleanup
- * fires under concurrent pipe() calls.
+ * kqueue_pipe_peer_close_uaf / kqueue_timer_callout_detach_race: stress
+ * libkqueue's own fd_state/knote teardown and run on every backend except
+ * POSIX.  The POSIX dispatcher waits via pselect(2) with a hard
+ * FD_SETSIZE=1024 fd-number ceiling, and the rapid per-iteration
+ * pipe()+kqueue() churn (each kqueue allocates a 2-fd self-pipe) exhausts it
+ * under concurrent threads, returning EMFILE from posix_kqueue_init.
  */
 static const struct lkq_test_gate gates_not_backend_native[] = {
     GATE(LKQ_PLATFORM_NOT_BACKEND_NATIVE,
@@ -823,7 +824,7 @@ static const struct lkq_test_gate gates_not_netbsd_not_windows[] = {
 
 static const struct lkq_test_gate gates_not_backend_posix[] = {
     GATE(LKQ_PLATFORM_BACKEND_POSIX,
-         "POSIX backend lacks BSD-internal pipe/timer detach paths and hits FD_SETSIZE under concurrent pipe()"),
+         "POSIX pselect backend's FD_SETSIZE=1024 fd-number ceiling is exhausted by the rapid per-iteration pipe()+kqueue() churn (each kqueue allocates a 2-fd self-pipe), returning EMFILE"),
     { 0, NULL }
 };
 
