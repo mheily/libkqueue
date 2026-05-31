@@ -388,8 +388,17 @@ _multi_waiter(void *arg)
     if (a->ready && sem_post(a->ready) != 0) die("sem_post(ready)");
 
     while (!a->stop) {
-        n = kevent_get_timeout(ret, NUM_ELEMENTS(ret), a->kqfd, &timeout);
+        /*
+         * Call kevent() directly rather than via kevent_get_timeout(),
+         * which err(3)-exits on any error.  A waiter racing a fork-heavy
+         * test (proc_delete_race forks 50 children) is interrupted by
+         * SIGCHLD; EINTR is not a failure, so retry.  Real errors are
+         * recorded for stop_waiters() to die() on.
+         */
+        n = kevent(a->kqfd, NULL, 0, ret, NUM_ELEMENTS(ret), &timeout);
         if (n < 0) {
+            if (errno == EINTR)
+                continue;
             a->errors++;
             break;
         }
@@ -835,17 +844,35 @@ test_kevent_threading_proc_delete_race(struct test_context *ctx)
     ready = spawn_waiters(kqfd, waiters, wargs, N_WAITERS);
 
     for (i = 0; i < N_ITERATIONS; i++) {
-        pid_t pid = fork();
-        if (pid < 0) die("fork");
-        if (pid == 0) {
-            /* Child: exit promptly so the kernel queues a NOTE_EXIT. */
-            _exit(0);
-        }
+        pid_t pid = -1;
+        int   tries;
 
-        EV_SET(&kev, (uintptr_t) pid, EVFILT_PROC, EV_ADD,
-               NOTE_EXIT, 0, NULL);
-        if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0)
-            die("kevent (proc add)");
+        /*
+         * The child exits promptly to queue a NOTE_EXIT, so it can win
+         * the race and be gone before we attach - macOS then rejects the
+         * proc knote with ESRCH.  Re-fork and retry until we attach while
+         * the child is still alive, so the iteration exercises a real
+         * delete-race.  Bounded so a pathological scheduler can't spin
+         * forever; in practice the parent wins within a try or two.
+         */
+        for (tries = 0; tries < 1000; tries++) {
+            pid = fork();
+            if (pid < 0) die("fork");
+            if (pid == 0)
+                _exit(0);
+
+            EV_SET(&kev, (uintptr_t) pid, EVFILT_PROC, EV_ADD,
+                   NOTE_EXIT, 0, NULL);
+            if (kevent(kqfd, &kev, 1, NULL, 0, NULL) == 0)
+                break;
+            if (errno != ESRCH)
+                die("kevent (proc add)");
+
+            waitpid(pid, NULL, 0);   /* child won the race; reap and retry */
+            pid = -1;
+        }
+        if (pid < 0)
+            continue;                /* child kept winning; skip this iteration */
 
         EV_SET(&kev, (uintptr_t) pid, EVFILT_PROC, EV_DELETE, 0, 0, NULL);
         if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0 && errno != ENOENT)
@@ -1179,7 +1206,14 @@ _signal_single_delivery_fire(void *vctx)
      * the process-wide pending set; raise() targets the current thread
      * which would put it in *this thread's* pending set, where the
      * waiter threads' signalfd reads might not see it. */
-    if (kill(getpid(), fc->signum) != 0) die("kill");
+    /* NetBSD can transiently return EAGAIN from kill() when its
+     * per-process ksiginfo pool is exhausted under the soak's rapid
+     * signal churn; retry rather than treat it as fatal. */
+    while (kill(getpid(), fc->signum) != 0) {
+        if (errno == EINTR || errno == EAGAIN)
+            continue;
+        die("kill");
+    }
 }
 
 static void
