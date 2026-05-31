@@ -18,20 +18,35 @@ jobs:
     steps:
     - uses: actions/checkout@v5
 
+    # Coverity's download endpoint 404s when the project is unpublished or
+    # the token is missing/rotated.  Treat that as "scan unavailable" and
+    # skip the rest of the job (it stays green) instead of failing the run.
     - name: Download coverity tool MD5
+      id: coverity-md5
       shell: pwsh
       run: |
         $project = [uri]::EscapeDataString($env:GITHUB_REPOSITORY)
-        Invoke-WebRequest `
-          -Uri "https://scan.coverity.com/download/win64" `
-          -Method Post `
-          -ContentType "application/x-www-form-urlencoded" `
-          -Body "token=$($env:TOKEN)&project=$project&md5=1" `
-          -OutFile coverity_tool.zip.md5
+        try {
+          Invoke-WebRequest `
+            -Uri "https://scan.coverity.com/download/win64" `
+            -Method Post `
+            -ContentType "application/x-www-form-urlencoded" `
+            -Body "token=$($env:TOKEN)&project=$project&md5=1" `
+            -OutFile coverity_tool.zip.md5
+        } catch {
+          $ok = $false
+        }
+        if ((Test-Path coverity_tool.zip.md5) -and (Get-Item coverity_tool.zip.md5).Length -gt 0) {
+          "available=true" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+        } else {
+          "available=false" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          Write-Output "::warning::Coverity tool download failed; skipping scan"
+        }
       env:
         TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
 
     - name: Cache coverity tool
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       uses: actions/cache@v4
       id: cache-coverity
       with:
@@ -39,7 +54,7 @@ jobs:
         key: coverity-tool-win64-${{ hashFiles('coverity_tool.zip.md5') }}
 
     - name: Download coverity tool
-      if: steps.cache-coverity.outputs.cache-hit != 'true'
+      if: ${{ steps.coverity-md5.outputs.available == 'true' && steps.cache-coverity.outputs.cache-hit != 'true' }}
       shell: pwsh
       run: |
         $project = [uri]::EscapeDataString($env:GITHUB_REPOSITORY)
@@ -53,6 +68,7 @@ jobs:
         TOKEN: ${{ secrets.COVERITY_SCAN_TOKEN }}
 
     - name: Extract coverity tool
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       shell: pwsh
       run: |
         Expand-Archive -Path coverity_tool.zip -DestinationPath coverity_tool_stage
@@ -60,6 +76,7 @@ jobs:
         Move-Item -Path $inner.FullName -Destination coverity_tool
 
     - name: Configure build system
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       shell: pwsh
       run: |
         cmake -S . -B build_x64 -A x64 -G "Visual Studio 17 2022" `
@@ -68,6 +85,7 @@ jobs:
           -DCMAKE_VERBOSE_MAKEFILE=ON
 
     - name: Build with coverity
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       shell: pwsh
       run: |
         $env:PATH = "$(Get-Location)\coverity_tool\bin;$env:PATH"
@@ -75,11 +93,13 @@ jobs:
         cov-build --dir cov-int cmake --build build_x64 --config Debug --parallel 1
 
     - name: Display build result
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       shell: pwsh
       run: |
         Get-Content cov-int\build-log.txt
 
     - name: Submit result
+      if: ${{ steps.coverity-md5.outputs.available == 'true' }}
       shell: pwsh
       run: |
         $project = [uri]::EscapeDataString($env:GITHUB_REPOSITORY)
