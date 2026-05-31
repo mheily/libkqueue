@@ -28,11 +28,13 @@ behavioural differences between libkqueue and BSD kqueues.
 Supported Event Types
 ---------------------
 
-* vnode
+* signal
 * socket
 * proc
-* user
 * timer
+* user
+* vnode
+
 
 Installation - Linux, Solaris
 -----------------------------
