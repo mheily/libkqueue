@@ -95,15 +95,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          # libkqueue-test.exe links against libkqueue.dll, which the build
+          # places in build_x64\<config>; without it on PATH the exe fails to
+          # load (STATUS_DLL_NOT_FOUND) before main(), so --list-gated emits
+          # nothing.  The test-run steps prepend the same directory.
+          $env:PATH = "$PWD\build_x64\${{ matrix.build_type }};$env:PATH"
           $bin = ".\build_x64\test\${{ matrix.build_type }}\libkqueue-test.exe"
-          Write-Host "DIAG bin=$bin exists=$(Test-Path $bin)"
           $gated = $null
           if (Test-Path $bin) {
-            $gated = & $bin --list-gated=windows 2>&1
-            Write-Host "DIAG list-gated exit=$LASTEXITCODE count=$(@($gated).Count)"
-            Write-Host "DIAG --- raw output ---"
-            $gated | ForEach-Object { Write-Host "DIAG| $_" }
-            Write-Host "DIAG --- end ---"
+            $gated = & $bin --list-gated=windows 2>$null
             $LASTEXITCODE = 0
           }
           $lines = [System.Collections.Generic.List[string]]@(
