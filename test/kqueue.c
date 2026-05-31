@@ -866,7 +866,7 @@ const struct lkq_test_case lkq_kqueue_tests[] = {
         .desc  = "kqueue create/close cycle under lowered RLIMIT_NOFILE",
         .func  = TEST_FUNC_NEEDS_DRAIN(test_cleanup),
         .gates = TEST_GATES(
-            GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close is implemented only by the Linux backend")
+            GATE(TEST_GATE_NEEDS_DRAIN, "Linux-backend-only: exercises the monitoring thread's kqueue-fd reclamation under a lowered RLIMIT_NOFILE")
         ),
     },
     {
@@ -890,7 +890,7 @@ const struct lkq_test_case lkq_kqueue_tests[] = {
         .desc  = "fork closes all kqueue fds in the child",
         .func  = TEST_FUNC_NEEDS_DRAIN(TEST_FUNC_NEEDS_TSAN_IGNORE(test_fork)),
         .gates = TEST_GATES(
-            GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close is implemented only by the Linux backend"),
+            GATE(TEST_GATE_NEEDS_DRAIN, "Linux-backend-only: verifies the inherited kqueue fd is closed in a fork()ed child via libkqueue's atfork cleanup"),
             GATE(TEST_GATE_NEEDS_TSAN_IGNORE, "needs ANNOTATE_IGNORE for the forked-child false leak (HAVE_TSAN_IGNORE)")
         ),
     },
