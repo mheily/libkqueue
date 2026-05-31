@@ -1529,13 +1529,14 @@ const struct lkq_test_case lkq_read_tests[] = {
         .func  = test_kevent_regular_file_renamed_continues,
         .gates = read_regular_file_reactivate_gates,
     },
-#if defined(_WIN32) && _WIN32_WINNT >= 0x0A00
     {
         .name  = "test_kevent_socket_af_unix",
         .desc  = "EVFILT_READ works on AF_UNIX stream sockets",
-        .func  = test_kevent_socket_af_unix,
+        .func  = TEST_FUNC_NEEDS_WIN10(test_kevent_socket_af_unix),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_WIN10, "Windows-10+ AF_UNIX coverage (POSIX AF_UNIX is exercised by the other socket tests)")
+        ),
     },
-#endif
     { "", NULL, TEST_FUNC_NEEDS_POSIX(read_socket_reconnect), NULL },
     {
         .name  = "test_transition_from_write_to_read",

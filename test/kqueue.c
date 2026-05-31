@@ -839,39 +839,45 @@ const struct lkq_test_case lkq_kqueue_tests[] = {
         .desc  = "no stale knote fires when a watched fd number is reused",
         .func  = test_kqueue_fd_reuse_no_stale_events,
     },
-#ifdef HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE
     {
         .name  = "cleanup",
         .desc  = "kqueue create/close cycle under lowered RLIMIT_NOFILE",
-        .func  = test_cleanup,
+        .func  = TEST_FUNC_NEEDS_DRAIN(test_cleanup),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close not available (native kqueue build)")
+        ),
     },
     {
         .name  = "close_cleans_up_active_knotes",
         .desc  = "close(kqfd) without EV_DELETE reclaims all knote memory",
-        .func  = test_close_cleans_up_active_knotes,
+        .func  = TEST_FUNC_NEEDS_DRAIN(test_close_cleans_up_active_knotes),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close not available (native kqueue build)")
+        ),
     },
-#  ifdef HAVE_TSAN_IGNORE
     {
         .name  = "fork",
         .desc  = "fork closes all kqueue fds in the child",
-        .func  = test_fork,
+        .func  = TEST_FUNC_NEEDS_DRAIN(TEST_FUNC_NEEDS_TSAN_IGNORE(test_fork)),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close not available (native kqueue build)"),
+            GATE(TEST_GATE_NEEDS_TSAN_IGNORE, "needs ANNOTATE_IGNORE for the forked-child false leak (HAVE_TSAN_IGNORE)")
+        ),
     },
-#  endif
-#endif
     {
         .name  = "ev_receipt",
         .desc  = "EV_RECEIPT returns the kevent back in the output list",
         .func  = TEST_FUNC_NEEDS_POSIX(test_ev_receipt),
         .gates = gates_not_windows
     },
-#ifdef NATIVE_KQUEUE
     {
         .name  = "kqueue_deep_recursive_chain",
         .desc  = "depth-100 kqueue chain; survives or returns ELOOP cleanly",
-        .func  = test_kqueue_deep_recursive_chain,
-        .gates = gates_not_backend_native
+        .func  = TEST_FUNC_NEEDS_NATIVE_KQUEUE(test_kqueue_deep_recursive_chain),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NATIVE_KQUEUE, "kqueue-watching-kqueue recursion is exercised only on native kqueue")
+        ),
     },
-#endif
     {
         .name  = "kqueue_knote_pool_exhaustion",
         .desc  = "8192 EVFILT_USER knotes; kernel returns ENOMEM/EMFILE not panic",

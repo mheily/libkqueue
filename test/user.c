@@ -955,13 +955,14 @@ const struct lkq_test_case lkq_user_tests[] = {
         .desc  = "NOTE_TRIGGER from a separate thread wakes the kevent waiter",
         .func  = test_kevent_user_trigger_from_thread,
     },
-#if defined(_WIN32) && defined(EVFILT_USER)
     {
         .name  = "test_kevent_user_stress",
         .desc  = "concurrent EV_ADD / NOTE_TRIGGER / EV_DELETE churn does not crash",
-        .func  = test_kevent_user_stress,
+        .func  = TEST_FUNC_NEEDS_WIN32(test_kevent_user_stress),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_WIN32, "Windows-specific EVFILT_USER stress test")
+        ),
     },
-#endif
     LKQ_SUITE_END
 };
 

@@ -1655,7 +1655,6 @@ const struct lkq_test_case lkq_threading_tests[] = {
 		.func  = test_kevent_threading_close_multi,
 		.gates = threading_close_gates,
 	},
-#ifdef TEST_DROP_LOCK_WAKE
 	/*
 	 * Requires the backend to drop the kq lock across kevent_wait
 	 * (KEVENT_WAIT_DROP_LOCK).  Backends that hold the lock through the wait
@@ -1665,9 +1664,11 @@ const struct lkq_test_case lkq_threading_tests[] = {
 	{
 		.name  = "kevent_threading_user_trigger_cross_thread",
 		.desc  = "EVFILT_USER trigger from another thread wakes kevent()",
-		.func  = test_kevent_threading_user_trigger_cross_thread,
+		.func  = TEST_FUNC_NEEDS_DROP_LOCK_WAKE(test_kevent_threading_user_trigger_cross_thread),
+		.gates = TEST_GATES(
+			GATE(TEST_GATE_NEEDS_DROP_LOCK_WAKE, "backend holds the kq lock across kevent_wait (no KEVENT_WAIT_DROP_LOCK)")
+		),
 	},
-#endif
 	{
 		.name  = "kevent_threading_multi_waiter_delete_race",
 		.desc  = "EV_DELETE while multiple threads are parked in kevent()",

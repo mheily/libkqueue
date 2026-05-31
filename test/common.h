@@ -481,6 +481,70 @@ struct lkq_test_case {
 #endif
 
 /*
+ * Build-capability resolvers (same shape as the feature ones, keyed on
+ * build configuration rather than an <sys/event.h> macro).
+ */
+#ifdef NATIVE_KQUEUE
+#  define TEST_FUNC_NEEDS_NATIVE_KQUEUE(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_NATIVE_KQUEUE       0
+#  define TEST_FUNC_NEEDS_LIBKQUEUE(_fn)      NULL
+#  define TEST_GATE_NEEDS_LIBKQUEUE           LKQ_BUILD_PLATFORM
+#else
+#  define TEST_FUNC_NEEDS_NATIVE_KQUEUE(_fn)  NULL
+#  define TEST_GATE_NEEDS_NATIVE_KQUEUE       LKQ_BUILD_PLATFORM
+#  define TEST_FUNC_NEEDS_LIBKQUEUE(_fn)      (_fn)
+#  define TEST_GATE_NEEDS_LIBKQUEUE           0
+#endif
+
+#ifdef HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE
+#  define TEST_FUNC_NEEDS_DRAIN(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_DRAIN       0
+#else
+#  define TEST_FUNC_NEEDS_DRAIN(_fn)  NULL
+#  define TEST_GATE_NEEDS_DRAIN       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef HAVE_TSAN_IGNORE
+#  define TEST_FUNC_NEEDS_TSAN_IGNORE(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_TSAN_IGNORE       0
+#else
+#  define TEST_FUNC_NEEDS_TSAN_IGNORE(_fn)  NULL
+#  define TEST_GATE_NEEDS_TSAN_IGNORE       LKQ_BUILD_PLATFORM
+#endif
+
+#ifdef TEST_DROP_LOCK_WAKE
+#  define TEST_FUNC_NEEDS_DROP_LOCK_WAKE(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_DROP_LOCK_WAKE       0
+#else
+#  define TEST_FUNC_NEEDS_DROP_LOCK_WAKE(_fn)  NULL
+#  define TEST_GATE_NEEDS_DROP_LOCK_WAKE       LKQ_BUILD_PLATFORM
+#endif
+
+#if WITH_NATIVE_KQUEUE_BUGS
+#  define TEST_FUNC_NEEDS_NATIVE_KQUEUE_BUGS(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_NATIVE_KQUEUE_BUGS       0
+#else
+#  define TEST_FUNC_NEEDS_NATIVE_KQUEUE_BUGS(_fn)  NULL
+#  define TEST_GATE_NEEDS_NATIVE_KQUEUE_BUGS       LKQ_BUILD_PLATFORM
+#endif
+
+#if defined(_WIN32)
+#  define TEST_FUNC_NEEDS_WIN32(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_WIN32       0
+#else
+#  define TEST_FUNC_NEEDS_WIN32(_fn)  NULL
+#  define TEST_GATE_NEEDS_WIN32       LKQ_BUILD_PLATFORM
+#endif
+
+#if defined(_WIN32) && _WIN32_WINNT >= 0x0A00
+#  define TEST_FUNC_NEEDS_WIN10(_fn)  (_fn)
+#  define TEST_GATE_NEEDS_WIN10       0
+#else
+#  define TEST_FUNC_NEEDS_WIN10(_fn)  NULL
+#  define TEST_GATE_NEEDS_WIN10       LKQ_BUILD_PLATFORM
+#endif
+
+/*
  * Current platform bitmask, OR of one OS bit and one backend bit.
  * Defined in main.c; computed from compile-time macros.
  */

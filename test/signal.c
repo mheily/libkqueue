@@ -686,11 +686,6 @@ test_kevent_signal_delete_drains(struct test_context *ctx)
 }
 
 /* skip on native kqueue: bogus signum registers cleanly and never fires */
-static const struct lkq_test_gate signal_invalid_signum_rejected_gates[] =
-{
-    GATE(LKQ_PLATFORM_BACKEND_NATIVE, "native kqueue does not validate signum at registration"),
-    { 0, NULL }
-};
 
 /*
  * pthread_kill(self) hangs on the signalfd backends (Linux and Solaris).
@@ -742,14 +737,14 @@ const struct lkq_test_case lkq_signal_tests[] =
         .desc  = "udata round-trips through signal delivery",
         .func  = test_kevent_signal_udata_preserved,
     },
-#if !defined(NATIVE_KQUEUE)
     {
         .name  = "test_kevent_signal_invalid_signum_rejected",
         .desc  = "EV_ADD with invalid signal number returns EINVAL",
-        .func  = test_kevent_signal_invalid_signum_rejected,
-        .gates = signal_invalid_signum_rejected_gates,
+        .func  = TEST_FUNC_NEEDS_LIBKQUEUE(test_kevent_signal_invalid_signum_rejected),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_LIBKQUEUE, "native kqueue does not validate signum at registration")
+        ),
     },
-#endif
     {
         .name  = "test_kevent_signal_ev_clear_resets_data",
         .desc  = "EV_CLEAR resets kev.data to 0 after delivery",

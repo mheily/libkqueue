@@ -850,13 +850,14 @@ const struct lkq_test_case lkq_timer_tests[] =
         .desc  = "re-EV_ADD on a running timer changes its interval",
         .func  = test_kevent_timer_periodic_modify,
     },
-#if WITH_NATIVE_KQUEUE_BUGS
     {
         .name  = "test_kevent_timer_periodic_to_oneshot",
         .desc  = "modifying a periodic timer to EV_ONESHOT fires once then auto-deletes",
-        .func  = test_kevent_timer_periodic_to_oneshot,
+        .func  = TEST_FUNC_NEEDS_NATIVE_KQUEUE_BUGS(test_kevent_timer_periodic_to_oneshot),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_NATIVE_KQUEUE_BUGS, "only exercised in WITH_NATIVE_KQUEUE_BUGS builds")
+        ),
     },
-#endif
     {
         .name  = "test_kevent_timer_disable_and_enable",
         .desc  = "EV_DISABLE suppresses delivery; EV_ENABLE restores",
