@@ -33,18 +33,10 @@
 #endif
 
 /*
- * libkqueue-internal sync helper exposed for tests; see
- * src/linux/platform.c for the definition and rationale.  Lives
- * only in the Linux backend.  CMake passes
- * LIBKQUEUE_BACKEND_<NAME>=1 into the test binary; default-Linux
- * (no override) implies the linux backend, so we accept the
- * symbol there too.
+ * HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE and the libkqueue_drain_pending_close
+ * prototype are defined in common.h (before the gate resolver that needs
+ * them); see src/linux/platform.c for the function itself.
  */
-#if defined(LIBKQUEUE_BACKEND_LINUX) || \
-    (defined(__linux__) && !defined(LIBKQUEUE_BACKEND_POSIX))
-# define HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE 1
-void libkqueue_drain_pending_close(void);
-#endif
 
 /*
  * Test the method for detecting when one end of a socketpair
@@ -340,6 +332,36 @@ test_close_cleans_up_active_knotes(struct test_context *ctx)
 
     if (close(pipefd[0]) < 0) die("close pipe[0]");
     if (close(pipefd[1]) < 0) die("close pipe[1]");
+}
+
+/*
+ * Regression for issue #173.  Closing a kqueue that still has an active
+ * EVFILT_SIGNAL knote makes the monitoring thread free the kq via
+ * kqueue_free -> filter_unregister_all.  That used to run the signal
+ * filter's kf_destroy (which frees the sig_filter_state) before
+ * knote_delete_all (which dereferences it), so freeing the closed kq
+ * either crashed on the freed state or hung when kf_destroy's
+ * dispatch-thread join ran with live knotes still registered.  Drain so
+ * the teardown runs in-test rather than at exit.
+ */
+static void
+test_close_kq_with_signal_knote(struct test_context *ctx)
+{
+    struct kevent kev;
+    int           kqfd;
+
+    (void) ctx;
+
+    kqfd = kqueue();
+    if (kqfd < 0) die("kqueue");
+
+    EV_SET(&kev, SIGUSR1, EVFILT_SIGNAL, EV_ADD, 0, 0, NULL);
+    if (kevent(kqfd, &kev, 1, NULL, 0, NULL) < 0) die("kevent (signal add)");
+
+    /* Close without EV_DELETE; the monitoring thread frees the kq. */
+    if (close(kqfd) < 0) die("close kqfd");
+
+    libkqueue_drain_pending_close();
 }
 #endif
 
@@ -851,6 +873,14 @@ const struct lkq_test_case lkq_kqueue_tests[] = {
         .name  = "close_cleans_up_active_knotes",
         .desc  = "close(kqfd) without EV_DELETE reclaims all knote memory",
         .func  = TEST_FUNC_NEEDS_DRAIN(test_close_cleans_up_active_knotes),
+        .gates = TEST_GATES(
+            GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close is implemented only by the Linux backend")
+        ),
+    },
+    {
+        .name  = "close_kq_with_signal_knote",
+        .desc  = "close(kqfd) with an active EVFILT_SIGNAL knote tears down without UAF (issue #173)",
+        .func  = TEST_FUNC_NEEDS_DRAIN(test_close_kq_with_signal_knote),
         .gates = TEST_GATES(
             GATE(TEST_GATE_NEEDS_DRAIN, "libkqueue_drain_pending_close is implemented only by the Linux backend")
         ),

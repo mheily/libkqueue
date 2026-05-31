@@ -143,10 +143,20 @@ filter_unregister_all(struct kqueue *kq)
         if (filt->kf_id == 0)
             continue;
 
+        /*
+         * Delete the knotes before destroying the filter.  kf_destroy
+         * frees the filter's per-filter state - EVFILT_SIGNAL frees the
+         * sig_filter_state whose array holds the per-signal list heads
+         * the knotes are linked onto, and NULLs filt->kf_state - so a
+         * kn_delete running afterwards walks freed memory: it crashed
+         * dereferencing the freed signal state, or hung when
+         * kf_destroy's dispatch-thread join ran with live knotes still
+         * registered (issue #173).
+         */
+        knote_delete_all(filt);
+
         if (filt->kf_destroy != NULL)
             filt->kf_destroy(&kq->kq_filt[i]);
-
-        knote_delete_all(filt);
 
         if (kqops.filter_free != NULL)
             kqops.filter_free(kq, filt);

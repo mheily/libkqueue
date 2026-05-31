@@ -496,6 +496,19 @@ struct lkq_test_case {
 #  define TEST_GATE_NEEDS_LIBKQUEUE           0
 #endif
 
+/*
+ * libkqueue_drain_pending_close() is a Linux-backend-only entry point.
+ * Define the availability macro here, before the resolver below uses it
+ * - if it were only #defined in kqueue.c (after this header is included)
+ * the resolver would always see it undefined and gate every drain test
+ * on every platform.
+ */
+#if defined(LIBKQUEUE_BACKEND_LINUX) || \
+    (defined(__linux__) && !defined(LIBKQUEUE_BACKEND_POSIX))
+#  define HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE 1
+void libkqueue_drain_pending_close(void);
+#endif
+
 #ifdef HAVE_LIBKQUEUE_DRAIN_PENDING_CLOSE
 #  define TEST_FUNC_NEEDS_DRAIN(_fn)  (_fn)
 #  define TEST_GATE_NEEDS_DRAIN       0
