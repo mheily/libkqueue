@@ -28,8 +28,9 @@ behavioural differences between libkqueue and BSD kqueues.
 Supported Event Types
 ---------------------
 
+* read
+* write
 * signal
-* socket
 * proc
 * timer
 * user
