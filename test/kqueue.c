@@ -28,7 +28,7 @@
 #  include <sys/mman.h>
 #endif
 
-#if defined(__linux__) || defined(__FreeBSD__)
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__DragonFly__)
 #include <sys/resource.h>
 #endif
 
@@ -220,8 +220,8 @@ test_ev_receipt(struct test_context *ctx)
 
     kevent_rv_cmp(1, kevent(ctx->kqfd, &kev, 1, &buf, 1, NULL));
 
-#if defined(__FreeBSD__)
-    kev.flags &= ~EV_RECEIPT;           /* FreeBSD drops EV_RECEIPT but keeps EV_ADD */
+#if defined(__FreeBSD__) || defined(__DragonFly__)
+    kev.flags &= ~EV_RECEIPT;           /* FreeBSD/DragonFly drop EV_RECEIPT but keep EV_ADD */
 #elif defined(__OpenBSD__) || defined(__NetBSD__)
     kev.flags &= ~(EV_ADD | EV_RECEIPT); /* OpenBSD/NetBSD keep only EV_ERROR */
 #endif

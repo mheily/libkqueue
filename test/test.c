@@ -246,6 +246,8 @@ testing_end(void)
 
 lkq_platform_t lkq_current_platform;
 
+bool lkq_show_skips;
+
 static int
 test_case_is_gated(const struct lkq_test_case *tc, lkq_platform_t plat,
                    const char **reason_out)
@@ -284,8 +286,9 @@ run_test_suite(struct test_context *ctx, const struct lkq_test_case *cases)
         {
             const char *reason = NULL;
             if (test_case_is_gated(tc, lkq_current_platform, &reason)) {
-                printf("%d: SKIP %s -- %s\n",
-                       ctx->test->ut_num, tc->name, reason);
+                if (lkq_show_skips)
+                    printf("%d: SKIP %s -- %s\n",
+                           ctx->test->ut_num, tc->name, reason);
                 ctx->test->ut_num++;
                 continue;
             }

@@ -105,12 +105,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #if !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__DragonFly__)
 #  include "config.h"
 #endif
 
-#if defined(__FreeBSD__)
+#if defined(__FreeBSD__) || defined(__DragonFly__)
 #  include <netinet/in.h>
 #endif
 
@@ -258,11 +259,12 @@ typedef unsigned int lkq_platform_t;
     (LKQ_PLATFORM_BACKEND_ANY & ~LKQ_PLATFORM_BACKEND_LINUX)
 
 /*
- * Native kqueue on non-FreeBSD platforms (macOS, OpenBSD, NetBSD).
+ * Native kqueue on non-FreeBSD platforms (macOS, OpenBSD, NetBSD, DragonFly).
  * Used when a gap affects those but not FreeBSD's native kqueue.
  */
 #define LKQ_PLATFORM_NATIVE_NOT_FREEBSD \
-    (LKQ_PLATFORM_OS_MACOS | LKQ_PLATFORM_OS_NETBSD | LKQ_PLATFORM_OS_OPENBSD)
+    (LKQ_PLATFORM_OS_MACOS | LKQ_PLATFORM_OS_NETBSD | LKQ_PLATFORM_OS_OPENBSD | \
+     LKQ_PLATFORM_OS_DRAGONFLY)
 
 /*
  * Compile-time bitmask for the platform this binary targets - the same
@@ -566,6 +568,13 @@ void libkqueue_drain_pending_close(void);
  * Defined in main.c; computed from compile-time macros.
  */
 extern lkq_platform_t lkq_current_platform;
+
+/*
+ * When set, run_test_suite() prints the per-test "SKIP ... -- reason"
+ * line for gated tests.  Off by default (gated tests are silent); set by
+ * --show-skips.  Use --list-gated for the full gated set without a run.
+ */
+extern bool lkq_show_skips;
 
 /*
  * Iterate a null-terminated lkq_test_case array, evaluating gates and

@@ -148,7 +148,7 @@ endif()
 # libSystem.
 #
 set(_test_use_libkqueue ON)
-if("${CMAKE_SYSTEM_NAME}" MATCHES "(Darwin|FreeBSD|OpenBSD|NetBSD)" AND
+if("${CMAKE_SYSTEM_NAME}" MATCHES "(Darwin|DragonFly|FreeBSD|OpenBSD|NetBSD)" AND
    NOT "${LIBKQUEUE_BACKEND_RESOLVED}" STREQUAL "posix")
   set(_test_use_libkqueue OFF)
 endif()
@@ -158,7 +158,7 @@ if(_test_use_libkqueue)
                         PRIVATE
                         kqueue
                         Threads::Threads)
-elseif("${CMAKE_SYSTEM_NAME}" MATCHES "(FreeBSD|OpenBSD|NetBSD)")
+elseif("${CMAKE_SYSTEM_NAME}" MATCHES "(DragonFly|FreeBSD|OpenBSD|NetBSD)")
   set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
   set(THREADS_PREFER_PTHREAD_FLAG TRUE)
   find_package(Threads REQUIRED)

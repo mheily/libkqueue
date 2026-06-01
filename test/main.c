@@ -23,7 +23,7 @@
 #include <crtdbg.h>
 #endif
 
-#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__sun) || defined(__APPLE__)
+#ifndef _WIN32  /* sys/time.h + sys/resource.h: every target but Windows */
 #include <sys/time.h>
 #include <sys/resource.h>
 #endif
@@ -714,7 +714,11 @@ usage(void)
            "                            for PLATFORM (or current build if omitted).\n"
            "                            Output: suite TAB test TAB reason\n"
            "                            Known names: windows linux linux-posix\n"
-           "                            freebsd netbsd openbsd macos solaris posix\n"
+           "                            freebsd dragonfly netbsd openbsd macos\n"
+           "                            solaris posix\n"
+           " --show-skips               Print a per-test SKIP line for each gated\n"
+           "                            test (off by default; use --list-gated\n"
+           "                            to see the gated set without a run).\n"
            " testclass[:<num>|:<start>-<end>] Tests suites to run:\n"
            "           ["
            "kqueue "
@@ -913,6 +917,7 @@ main(int argc, char **argv)
             OPT_TMPDIR,
             OPT_LIST_GATED,
             OPT_LOG_FILE,
+            OPT_SHOW_SKIPS,
         };
         static const struct option long_opts[] = {
             { "watchdog-timeout", required_argument, NULL, OPT_WATCHDOG_TIMEOUT },
@@ -920,6 +925,7 @@ main(int argc, char **argv)
             { "tmpdir",           required_argument, NULL, OPT_TMPDIR           },
             { "list-gated",       optional_argument, NULL, OPT_LIST_GATED       },
             { "log-file",         required_argument, NULL, OPT_LOG_FILE         },
+            { "show-skips",       no_argument,       NULL, OPT_SHOW_SKIPS       },
             { NULL,               0,                 NULL, 0                    },
         };
         while ((c = getopt_long(argc, argv, "hn:", long_opts, NULL)) != -1) {
@@ -945,6 +951,9 @@ main(int argc, char **argv)
                     break;
                 case OPT_LOG_FILE:
                     test_log_set_template(optarg);
+                    break;
+                case OPT_SHOW_SKIPS:
+                    lkq_show_skips = true;
                     break;
                 case OPT_LIST_GATED: {
                     lkq_platform_t target = lkq_current_platform;
@@ -989,6 +998,8 @@ main(int argc, char **argv)
             watchdog_parse_cmd(a + 15);
         } else if (strncmp(a, "--log-file=", 11) == 0) {
             test_log_set_template(a + 11);
+        } else if (strcmp(a, "--show-skips") == 0) {
+            lkq_show_skips = true;
         } else if (strncmp(a, "--list-gated", 12) == 0) {
             lkq_platform_t target = lkq_current_platform;
             const char *eq = strchr(a, '=');
