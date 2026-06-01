@@ -213,10 +213,12 @@ test_kevent_vnode_note_write(struct test_context *ctx)
     testfile_write(ctx->testfile);
 
     /*
-     * macOS 11.5.2 does not add NOTE_EXTEND,
-     * BSD kqueue does, as does libkqueue.
+     * macOS 11.5.2 does not add NOTE_EXTEND, most BSD kqueues do, as does
+     * libkqueue.  DragonFly also omits it here: its tmpfs fires NOTE_WRITE
+     * but not NOTE_EXTEND on a growing write (it does fire NOTE_EXTEND on
+     * ftruncate-up).  See the gate on kevent_vnode_note_extend.
      */
-#ifndef __APPLE__
+#if !defined(__APPLE__) && !defined(__DragonFly__)
     kev.fflags |= NOTE_EXTEND;
 #endif
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
@@ -1000,8 +1002,17 @@ test_kevent_vnode_non_file_rejected(struct test_context *ctx)
            NOTE_ATTRIB | NOTE_DELETE, 0, NULL);
     rv = kevent(ctx->kqfd, &kev, 1, NULL, 0, NULL);
     if (rv == 0)
-        die("EVFILT_VNODE on pipe accepted; expected EINVAL");
-    if (errno != EINVAL)
+        die("EVFILT_VNODE on pipe accepted; expected rejection");
+    /*
+     * The rejection errno is implementation-defined.  Most return EINVAL;
+     * DragonFly's pipe_kqfilter returns EOPNOTSUPP from its default case for
+     * any filter other than EVFILT_READ/WRITE.  Both correctly reject.
+     */
+    if (errno != EINVAL
+#ifdef __DragonFly__
+        && errno != EOPNOTSUPP
+#endif
+        )
         die("EVFILT_VNODE on pipe failed with errno=%d (%s); expected EINVAL",
             errno, strerror(errno));
 
@@ -1176,6 +1187,10 @@ test_kevent_vnode_receipt_preserved(struct test_context *ctx)
 static const struct lkq_test_gate vnode_gate_rename_overwrite[] =
 {
     GATE(LKQ_PLATFORM_OS_WINDOWS, "NtSetInformationFile rename-over hits STATUS_ACCESS_DENIED on Windows (issue #172)"),
+    /* DragonFly tmpfs_nrename fires NOTE_DELETE on the to-directory vnode, not
+     * on the overwritten file, so a watcher on that file never sees it and the
+     * test blocks.  Same tmpfs bug as kevent_vnode_rename_overwrite_ordering. */
+    GATE(LKQ_PLATFORM_OS_DRAGONFLY, "DragonFly tmpfs fires NOTE_DELETE on the directory, not the overwritten file, on a rename-overwrite"),
     { 0, NULL }
 };
 
@@ -1270,7 +1285,12 @@ const struct lkq_test_case lkq_vnode_tests[] =
         .desc  = "NOTE_EXTEND fires on file size growth via write",
         .func  = TEST_FUNC_NEEDS_NOTE_EXTEND(test_kevent_vnode_note_extend),
         .gates = TEST_GATES(
-            GATE(TEST_GATE_NEEDS_NOTE_EXTEND, "NOTE_EXTEND undefined in this build's <sys/event.h>")
+            GATE(TEST_GATE_NEEDS_NOTE_EXTEND, "NOTE_EXTEND undefined in this build's <sys/event.h>"),
+            /* DragonFly tmpfs fires NOTE_WRITE but not NOTE_EXTEND on a growing
+             * write (verified: append -> NOTE_WRITE only, ftruncate-up ->
+             * NOTE_WRITE|NOTE_EXTEND).  tmpfs_vnops.c:788 has the code to set it
+             * on write-grow but it does not fire; the test would block waiting. */
+            GATE(LKQ_PLATFORM_OS_DRAGONFLY, "DragonFly tmpfs does not fire NOTE_EXTEND on a growing write (only on ftruncate)")
         ),
     },
     {
@@ -1308,7 +1328,12 @@ const struct lkq_test_case lkq_vnode_tests[] =
         .func  = TEST_FUNC_NEEDS_NOTE_RENAME(test_kevent_vnode_rename_overwrite_ordering),
         .gates = TEST_GATES(
             GATE(TEST_GATE_NEEDS_NOTE_RENAME, "NOTE_RENAME undefined in this build's <sys/event.h>"),
-            GATE(LKQ_PLATFORM_OS_WINDOWS, "NtSetInformationFile rename-over hits STATUS_ACCESS_DENIED on Windows (issue #172)")
+            GATE(LKQ_PLATFORM_OS_WINDOWS, "NtSetInformationFile rename-over hits STATUS_ACCESS_DENIED on Windows (issue #172)"),
+            /* DragonFly tmpfs_nrename fires NOTE_DELETE on the to-directory vnode
+             * (tmpfs_vnops.c:1414), not on the overwritten target file, so a
+             * watcher on that file never sees NOTE_DELETE; only the source's
+             * NOTE_RENAME fires.  Real tmpfs bug. */
+            GATE(LKQ_PLATFORM_OS_DRAGONFLY, "DragonFly tmpfs fires NOTE_DELETE on the directory, not the overwritten file, on a rename-overwrite")
         ),
     },
     {

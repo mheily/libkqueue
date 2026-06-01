@@ -1520,14 +1520,17 @@ test_kevent_threading_write_single_delivery(struct test_context *ctx)
  */
 struct fd_reuse_args {
     int           kqfd;
-    atomic_int    stop;
+    int           cycles;   /* fixed open/close+register cycles per recycler */
+    atomic_int    active;   /* recyclers still running; 0 => the drain can stop */
 };
 
 static void *
 _fd_reuse_recycler(void *arg)
 {
     struct fd_reuse_args *a = arg;
-    while (!atomic_load(&a->stop)) {
+    int i;
+
+    for (i = 0; i < a->cycles; i++) {
         int p[2];
         if (pipe(p) < 0) continue;
         struct kevent kev;
@@ -1538,33 +1541,44 @@ _fd_reuse_recycler(void *arg)
         close(p[0]);
         close(p[1]);
     }
+    atomic_fetch_sub(&a->active, 1);
     return NULL;
 }
 
 static void
 test_kevent_threading_fd_reuse_stress(struct test_context *ctx)
 {
-    enum { N_THREADS = 4, N_ITERATIONS = 5000 };
+    enum { N_THREADS = 4, N_CYCLES = 2000 };
     pthread_t            th[N_THREADS];
-    struct fd_reuse_args args = { .kqfd = ctx->kqfd };
+    struct fd_reuse_args args = { .kqfd = ctx->kqfd, .cycles = N_CYCLES };
     int                  i;
 
-    atomic_init(&args.stop, 0);
+    atomic_init(&args.active, N_THREADS);
     for (i = 0; i < N_THREADS; i++) {
         if (pthread_create(&th[i], NULL, _fd_reuse_recycler, &args) != 0)
             die("pthread_create");
     }
 
-    /* Drain in main thread. */
-    for (i = 0; i < N_ITERATIONS; i++) {
+    /*
+     * Drain concurrently with the recyclers so kevent() runs against the fd
+     * churn (the race under test).  Stop when every recycler has finished its
+     * fixed batch of cycles: a deterministic work bound, not a blind fixed
+     * poll count whose wall time balloons under kqueue lock contention.
+     */
+    while (atomic_load(&args.active) > 0) {
         struct kevent ret[16];
         struct timespec poll = { 0, 100 * 1000 };  /* 100us */
         (void) kevent(ctx->kqfd, NULL, 0, ret, NUM_ELEMENTS(ret), &poll);
     }
 
-    atomic_store(&args.stop, 1);
-    for (i = 0; i < N_THREADS; i++) {
+    for (i = 0; i < N_THREADS; i++)
         pthread_join(th[i], NULL);
+
+    /* Final non-blocking sweep of any residual events. */
+    {
+        struct kevent ret[16];
+        struct timespec poll = { 0, 0 };
+        (void) kevent(ctx->kqfd, NULL, 0, ret, NUM_ELEMENTS(ret), &poll);
     }
 }
 
@@ -1651,6 +1665,7 @@ test_kevent_threading_user_trigger_delete_race(struct test_context *ctx)
  */
 static const struct lkq_test_gate threading_close_gates[] = {
 	GATE(LKQ_PLATFORM_OS_FREEBSD,        "native kqueue doesn't wake parked threads on kq close"),
+	GATE(LKQ_PLATFORM_OS_DRAGONFLY,      "native kqueue doesn't wake parked threads on kq close"),
 	GATE(LKQ_PLATFORM_BACKEND_POSIX,     "POSIX pselect backend has no close-wake plumbing"),
 	{ 0, NULL }
 };

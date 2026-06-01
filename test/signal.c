@@ -616,9 +616,10 @@ test_kevent_signal_fires_while_blocked(struct test_context *ctx)
 
 /*
  * EVFILT_SIGNAL fires on SIGCONT just like any normal signal.
- * BSD's KNOTE() runs in the signal-generation path before the
- * stop/cont special-case, so even signals the kernel handles
- * specially still notify kqueue.
+ * On FreeBSD and macOS, KNOTE() runs in the signal-generation path
+ * before the stop/cont special-case, so even signals the kernel
+ * handles specially still notify kqueue.  DragonFly differs and is
+ * gated (see the gate reason on test_kevent_signal_sigcont).
  */
 static void
 test_kevent_signal_sigcont(struct test_context *ctx)
@@ -775,6 +776,9 @@ const struct lkq_test_case lkq_signal_tests[] =
         .name  = "test_kevent_signal_sigcont",
         .desc  = "EVFILT_SIGNAL fires on SIGCONT",
         .func  = test_kevent_signal_sigcont,
+        .gates = TEST_GATES(
+            GATE(LKQ_PLATFORM_OS_DRAGONFLY, "DragonFly keeps SIGCONT out of p_sigignore and discards an ignored or default-action CONT before the kqueue KNOTE, so EVFILT_SIGNAL never fires for an ignored SIGCONT (kern_sig.c)")
+        ),
     },
     {
         .name  = "test_kevent_signal_get",

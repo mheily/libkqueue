@@ -233,6 +233,9 @@ kevent_fflags_dump(struct kevent *kev)
 #ifdef NOTE_RENAME
         KEVFFL_DUMP(NOTE_RENAME);
 #endif
+#ifdef NOTE_REVOKE
+        KEVFFL_DUMP(NOTE_REVOKE);
+#endif
         break;
 #endif
 #ifdef EVFILT_USER
@@ -313,6 +316,24 @@ kevent_flags_dump(struct kevent *kev)
 #endif
 #ifdef EV_RECEIPT
     KEVFL_DUMP(EV_RECEIPT);
+#endif
+#ifdef EV_FLAG0
+    KEVFL_DUMP(EV_FLAG0);
+#endif
+#ifdef EV_FLAG1
+    KEVFL_DUMP(EV_FLAG1);
+#endif
+#ifdef EV_OOBAND
+    KEVFL_DUMP(EV_OOBAND);
+#endif
+#ifdef EV_VANISHED
+    KEVFL_DUMP(EV_VANISHED);
+#endif
+#ifdef EV_NODATA
+    KEVFL_DUMP(EV_NODATA);
+#endif
+#ifdef EV_HUP
+    KEVFL_DUMP(EV_HUP);
 #endif
     buf[strlen(buf) - 1] = ')';
 
@@ -416,7 +437,7 @@ _kevent_add_with_receipt(int kqfd, struct kevent *kev,
      * Adjust expected flags to match the platform before comparing, then
      * restore them so callers can use kev for subsequent comparisons.
      */
-#if defined(__FreeBSD__)
+#if defined(__FreeBSD__) || defined(__DragonFly__)
     kev->flags &= ~EV_RECEIPT;
 #elif defined(__OpenBSD__) || defined(__NetBSD__)
     kev->flags &= ~(EV_ADD | EV_RECEIPT);
@@ -426,7 +447,7 @@ _kevent_add_with_receipt(int kqfd, struct kevent *kev,
     _kevent_cmp(kev, &receipt, file, line);
     kev->flags ^= EV_ERROR;
 
-#if defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#if defined(__FreeBSD__) || defined(__DragonFly__) || defined(__OpenBSD__) || defined(__NetBSD__)
     kev->flags |= EV_RECEIPT;
 #endif
 #if defined(__OpenBSD__) || defined(__NetBSD__)
@@ -440,7 +461,7 @@ _kevent_cmp(struct kevent *expected, struct kevent *got, const char *file, int l
 /* XXX-
    Workaround for inconsistent implementation of kevent(2)
  */
-#if defined (__FreeBSD_kernel__) || defined (__FreeBSD__)
+#if defined (__FreeBSD_kernel__) || defined (__FreeBSD__) || defined(__DragonFly__)
     if (expected->flags & EV_ADD)
         got->flags |= EV_ADD;
 #endif

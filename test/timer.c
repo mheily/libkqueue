@@ -253,7 +253,7 @@ test_kevent_timer_dispatch(struct test_context *ctx)
     usleep(500000); /* 500 ms */
     test_no_kevents(ctx->kqfd);
 
-#if WITH_NATIVE_KQUEUE_BUGS || !defined(__FreeBSD__)
+#if WITH_NATIVE_KQUEUE_BUGS || (!defined(__FreeBSD__) && !defined(__DragonFly__))
     /*
      * macOS and FreeBSD both share the same bug.
      *
@@ -262,6 +262,11 @@ test_kevent_timer_dispatch(struct test_context *ctx)
      * returned event the timer filter behaves as if
      * EV_DISPATCH it's not set and will fire multiple
      * times.
+     *
+     * DragonFly is excluded: filt_timerexpire increments kn_data on every
+     * fire regardless of EV_DISABLE and never stops the callout, so
+     * re-enabling immediately surfaces the ticks accumulated while disabled.
+     * That breaks this block's "no event right after re-enable" assumption.
      */
 
     /* Enable the knote and make sure no events are pending */
@@ -298,6 +303,8 @@ test_kevent_timer_dispatch(struct test_context *ctx)
  * deliberately huge - what we care about is "the kernel programmed
  * a timer that fires in finite time", not "it fired in 50ms".
  */
+#if defined(NOTE_USECONDS) || defined(NOTE_NSECONDS) || \
+    defined(NOTE_SECONDS) || defined(NOTE_ABSOLUTE)
 static void
 _timer_unit_check(struct test_context *ctx, intptr_t data,
                   uint32_t fflags, const char *label)
@@ -323,14 +330,18 @@ _timer_unit_check(struct test_context *ctx, intptr_t data,
      * delivery, and the libkqueue test helper that asserts success
      * would trip on the resulting ENOENT. */
 }
+#endif /* any NOTE_* timer unit */
 
+#ifdef NOTE_USECONDS
 static void
 test_kevent_timer_note_useconds(struct test_context *ctx)
 {
     /* 50ms = 50,000us */
     _timer_unit_check(ctx, 50000L, NOTE_USECONDS, "NOTE_USECONDS");
 }
+#endif
 
+#ifdef NOTE_NSECONDS
 static void
 test_kevent_timer_note_nseconds(struct test_context *ctx)
 {
@@ -338,13 +349,16 @@ test_kevent_timer_note_nseconds(struct test_context *ctx)
     _timer_unit_check(ctx, 50L * 1000L * 1000L, NOTE_NSECONDS,
                       "NOTE_NSECONDS");
 }
+#endif
 
+#ifdef NOTE_SECONDS
 static void
 test_kevent_timer_note_seconds(struct test_context *ctx)
 {
     /* Min granularity in this unit is 1s; budget 5s. */
     _timer_unit_check(ctx, 1L, NOTE_SECONDS, "NOTE_SECONDS");
 }
+#endif
 
 #ifdef NOTE_ABSOLUTE
 static void
@@ -730,7 +744,7 @@ test_kevent_timer_ev_clear_resets_data(struct test_context *ctx)
 
 static const struct lkq_test_gate timer_negative_interval_gates[] = {
     GATE(LKQ_PLATFORM_NATIVE_NOT_FREEBSD,
-         "native kqueue on macOS/OpenBSD/NetBSD accepts negative intervals silently"),
+         "native kqueue on macOS/OpenBSD/NetBSD/DragonFly accepts negative intervals silently"),
     { 0, NULL }
 };
 
@@ -744,10 +758,17 @@ static const struct lkq_test_gate timer_negative_interval_gates[] = {
 #endif
 
 static const struct lkq_test_gate timer_modify_preserves_ev_receipt_gates[] = {
-    /* NetBSD filt_timermodify does kn->kn_flags = kev->flags, losing EV_RECEIPT
-     * from the original EV_ADD (github.com/NetBSD/src sys/kern/kern_event.c:1536). */
+    /* NetBSD filt_timertouch (EVENT_REGISTER) does kn->kn_flags = kev->flags, losing
+     * EV_RECEIPT from the original EV_ADD.
+     * github.com/NetBSD/src/blob/c50077c76fdd101568fb8d6a822493bc7d46ac55/sys/kern/kern_event.c#L1536 */
     GATE(LKQ_PLATFORM_OS_NETBSD,
-         "NetBSD filt_timermodify replaces kn_flags entirely, losing EV_RECEIPT"),
+         "NetBSD filt_timertouch replaces kn_flags entirely, losing EV_RECEIPT"),
+    /* DragonFly never reschedules the in-flight callout on a re-EV_ADD modify, so
+     * the 1h->100ms modify here never fires within the wait (pre-D15778 FreeBSD
+     * timer-update bug, unfixed). Same root cause as periodic_modify.
+     * reviews.freebsd.org/D15778, FreeBSD PR 214987. */
+    GATE(LKQ_PLATFORM_OS_DRAGONFLY,
+         "DragonFly re-EV_ADD does not reschedule a running EVFILT_TIMER callout, so the modified timer never fires (pre-D15778 timer-update bug, unfixed)"),
     { 0, NULL }
 };
 
@@ -849,6 +870,15 @@ const struct lkq_test_case lkq_timer_tests[] =
         .name  = "test_kevent_timer_periodic_modify",
         .desc  = "re-EV_ADD on a running timer changes its interval",
         .func  = test_kevent_timer_periodic_modify,
+        .gates = TEST_GATES(
+            /* DragonFly's kqueue_register modify path updates kn_sdata but never
+             * reschedules the in-flight callout, so a re-EV_ADD period change only
+             * takes effect after the next fire.  This is the pre-D15778 FreeBSD
+             * EVFILT_TIMER-update bug, unfixed on DragonFly.
+             * reviews.freebsd.org/D15778, FreeBSD PR 214987. */
+            GATE(LKQ_PLATFORM_OS_DRAGONFLY,
+                 "DragonFly re-EV_ADD does not reschedule a running EVFILT_TIMER callout (pre-D15778 FreeBSD timer-update bug, unfixed)")
+        ),
     },
     {
         .name  = "test_kevent_timer_periodic_to_oneshot",
@@ -925,6 +955,14 @@ const struct lkq_test_case lkq_timer_tests[] =
         .name  = "test_kevent_timer_modify_clobbers_udata",
         .desc  = "re-EV_ADD replaces udata on a timer knote",
         .func  = test_kevent_timer_modify_clobbers_udata,
+        .gates = TEST_GATES(
+            /* Same pre-D15778 EVFILT_TIMER-update bug as periodic_modify: DragonFly
+             * never reschedules the in-flight callout on re-EV_ADD, so the 1h->50ms
+             * modify never fires within the wait.
+             * reviews.freebsd.org/D15778, FreeBSD PR 214987. */
+            GATE(LKQ_PLATFORM_OS_DRAGONFLY,
+                 "DragonFly re-EV_ADD does not reschedule a running EVFILT_TIMER callout, so the modified timer never fires (pre-D15778 timer-update bug, unfixed)")
+        ),
     },
     LKQ_SUITE_END
 };

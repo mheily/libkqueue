@@ -19,6 +19,17 @@
 #include <sys/wait.h>
 #include <limits.h>
 
+/*
+ * DragonFly's filt_proc sets EV_EOF | EV_NODATA | EV_ONESHOT on a NOTE_EXIT
+ * event (kern_event.c); the other kqueue kernels omit EV_NODATA.  Add it to
+ * the expected mask on DragonFly only.
+ */
+#ifdef __DragonFly__
+#  define PROC_EXIT_EXTRA_FLAGS  EV_NODATA
+#else
+#  define PROC_EXIT_EXTRA_FLAGS  0
+#endif
+
 static int sigusr1_caught = 0;
 static pid_t pid;
 
@@ -91,7 +102,7 @@ test_kevent_proc_get(struct test_context *ctx)
     kevent_get(buf, NUM_ELEMENTS(buf), ctx->kqfd, 1);
 
     kev.data = SIGKILL; /* What we expected the process exit code to be */
-    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF;
+    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF | PROC_EXIT_EXTRA_FLAGS;
 
     kevent_cmp(&kev, buf);
     test_no_kevents(ctx->kqfd);
@@ -143,7 +154,7 @@ test_kevent_proc_exit_status_ok(struct test_context *ctx)
     kevent_get(buf, NUM_ELEMENTS(buf), ctx->kqfd, 1);
 
     kev.data = 0; /* What we expected the process exit code to be */
-    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF;
+    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF | PROC_EXIT_EXTRA_FLAGS;
 
     kevent_cmp(&kev, buf);
     test_no_kevents(ctx->kqfd);
@@ -194,7 +205,7 @@ test_kevent_proc_exit_status_error(struct test_context *ctx)
     kevent_get(buf, NUM_ELEMENTS(buf), ctx->kqfd, 1);
 
     kev.data = 64 << 8; /* What we expected the process exit code to be */
-    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF;
+    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF | PROC_EXIT_EXTRA_FLAGS;
 
     kevent_cmp(&kev, buf);
     test_no_kevents(ctx->kqfd);
@@ -476,7 +487,7 @@ test_kevent_proc_modify_arms_late(struct test_context *ctx)
     kevent_get(buf, NUM_ELEMENTS(buf), ctx->kqfd, 1);
 
     kev.data = 0;
-    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF;
+    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF | PROC_EXIT_EXTRA_FLAGS;
     kevent_cmp(&kev, buf);
     test_no_kevents(ctx->kqfd);
 }
@@ -550,7 +561,7 @@ test_kevent_proc_already_exited(struct test_context *ctx)
     kevent_get(buf, NUM_ELEMENTS(buf), ctx->kqfd, 1);
 
     kev.data = 0;
-    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF;
+    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF | PROC_EXIT_EXTRA_FLAGS;
     kevent_cmp(&kev, buf);
 #endif
 
@@ -697,7 +708,7 @@ test_kevent_proc_multiple_kqueue(struct test_context *ctx)
     }
 
     kev.data = 64 << 8; /* What we expected the process exit code to be */
-    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF;
+    kev.flags = EV_ADD | EV_ONESHOT | EV_CLEAR | EV_EOF | PROC_EXIT_EXTRA_FLAGS;
 
     kevent_cmp(&kev, buf_a);
     kevent_cmp(&kev, buf_b);
@@ -1151,14 +1162,19 @@ test_kevent_proc_fork_storm(struct test_context *ctx)
 
 static const struct lkq_test_gate proc_modify_disarms_gates[] =
 {
-    /* OpenBSD/NetBSD filt_proc() unconditionally activates the knote on NOTE_EXIT
-     * regardless of kn_sfflags, so clearing fflags via re-EV_ADD can't prevent it.
-     * OpenBSD: github.com/openbsd/src sys/kern/kern_event.c:463-470.
-     * NetBSD: github.com/NetBSD/src sys/kern/kern_event.c:1296. */
+    /* OpenBSD/NetBSD/DragonFly filt_proc() unconditionally activates the knote on
+     * NOTE_EXIT regardless of kn_sfflags, so clearing fflags via re-EV_ADD can't
+     * prevent it.  FreeBSD/macOS set EV_DROP when kn_fflags == 0 at exit, which is
+     * what lets the disarm work there.
+     * OpenBSD: github.com/openbsd/src/blob/d6f52495177180cd4908e5d7b8d1f988980ef560/sys/kern/kern_event.c#L463-L473
+     * NetBSD: github.com/NetBSD/src/blob/c50077c76fdd101568fb8d6a822493bc7d46ac55/sys/kern/kern_event.c#L1296
+     * DragonFly: github.com/DragonFlyBSD/DragonFlyBSD/blob/cc8e70bd591c943565dd618d131dcee0027ded02/sys/kern/kern_event.c#L381-L391 (no EV_DROP path) */
     GATE(LKQ_PLATFORM_OS_OPENBSD,
          "OpenBSD filt_proc unconditionally fires NOTE_EXIT regardless of kn_sfflags"),
     GATE(LKQ_PLATFORM_OS_NETBSD,
          "NetBSD filt_proc unconditionally fires NOTE_EXIT regardless of kn_sfflags"),
+    GATE(LKQ_PLATFORM_OS_DRAGONFLY,
+         "DragonFly filt_proc unconditionally fires NOTE_EXIT regardless of kn_sfflags (no EV_DROP path)"),
     { 0, NULL }
 };
 

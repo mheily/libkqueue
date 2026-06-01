@@ -17,6 +17,21 @@
 
 #include "common.h"
 
+/*
+ * DragonFly's filt_soread/filt_piperead raise extra EOF sub-flags that the
+ * other kqueue kernels don't.  At EOF (SS_CANTRCVMORE / PIPE_REOF) it sets
+ * EV_NODATA when the receive buffer is empty.  For pipes it also sets EV_HUP
+ * once the peer fd is fully closed (close() on the write end, not a
+ * half-shutdown).  Sockets here only see a peer FIN, so EV_HUP stays clear.
+ * The EOF tests below close with no buffered data, so expect these flags.
+ */
+#ifdef __DragonFly__
+#  define EOF_SOCK_EXTRA_FLAGS  EV_NODATA
+#  define EOF_PIPE_EXTRA_FLAGS  (EV_NODATA | EV_HUP)
+#else
+#  define EOF_SOCK_EXTRA_FLAGS  0
+#  define EOF_PIPE_EXTRA_FLAGS  0
+#endif
 
 /*
  * Create a connected TCP socket.
@@ -380,7 +395,7 @@ test_kevent_socket_eof_clear(struct test_context *ctx)
     if (closesock(ctx->server_fd) < 0)
         die("close(2)");
 
-    kev.flags |= EV_EOF;
+    kev.flags |= EV_EOF | EOF_SOCK_EXTRA_FLAGS;
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1); /* edge triggered means no more events */
     kevent_cmp(&kev, ret);
 
@@ -412,7 +427,7 @@ test_kevent_socket_eof(struct test_context *ctx)
     if (shutdown(ctx->server_fd, SHUT_RDWR) < 0)
         die("shutdown(2)");
 
-    kev.flags |= EV_EOF;
+    kev.flags |= EV_EOF | EOF_SOCK_EXTRA_FLAGS;
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
     kevent_cmp(&kev, ret);
 
@@ -432,7 +447,7 @@ test_kevent_socket_eof(struct test_context *ctx)
     kevent_add(ctx->kqfd, &kev, ctx->client_fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, &ctx->client_fd);
 
     kev.flags |= EV_RECEIPT;
-    kev.flags |= EV_EOF;
+    kev.flags |= EV_EOF | EOF_SOCK_EXTRA_FLAGS;
     kev.flags ^= EV_CLEAR;
 
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
@@ -600,7 +615,7 @@ test_kevent_pipe_eof(struct test_context *ctx)
         die("close(2)");
     pipefd[1] = -1;     /* avoid double-close on the trailing cleanup pair */
 
-    kev.flags |= EV_EOF;
+    kev.flags |= EV_EOF | EOF_PIPE_EXTRA_FLAGS;
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
     kevent_cmp(&kev, ret);
 
@@ -620,7 +635,7 @@ test_kevent_pipe_eof(struct test_context *ctx)
     kevent_add(ctx->kqfd, &kev, pipefd[0], EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, &pipefd[0]);
 
     kev.flags |= EV_RECEIPT;
-    kev.flags |= EV_EOF;
+    kev.flags |= EV_EOF | EOF_PIPE_EXTRA_FLAGS;
     kev.flags ^= EV_CLEAR;
 
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 1);
@@ -656,7 +671,7 @@ test_kevent_pipe_eof_multi(struct test_context *ctx)
         die("close(2)");
     pipefd_b[1] = -1;
 
-    kev.flags |= EV_EOF;
+    kev.flags |= EV_EOF | EOF_PIPE_EXTRA_FLAGS;
     kevent_get(ret, NUM_ELEMENTS(ret), ctx->kqfd, 2);
 
     kev.ident = ret[0].ident;
