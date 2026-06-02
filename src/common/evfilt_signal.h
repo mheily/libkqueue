@@ -301,6 +301,17 @@ sig_dispatch_start(void)
         dbg_perror("fcntl(sig_pipe[0], O_NONBLOCK)");
     if (fcntl(sig_pipe[1], F_SETFL, O_NONBLOCK) < 0)
         dbg_perror("fcntl(sig_pipe[1], O_NONBLOCK)");
+    /*
+     * FD_CLOEXEC so the ends don't leak into fork+exec'd children: a
+     * surviving child copy of the write end stops the read end ever seeing
+     * POLLHUP/EOF on the parent's close, hanging the dispatch thread's poll
+     * and deadlocking the shutdown join (#173).  SOCK_CLOEXEC would be
+     * atomic but macOS lacks it, so set it via fcntl like posix_self_pipe.
+     */
+    if (fcntl(sig_pipe[0], F_SETFD, FD_CLOEXEC) < 0)
+        dbg_perror("fcntl(sig_pipe[0], FD_CLOEXEC)");
+    if (fcntl(sig_pipe[1], F_SETFD, FD_CLOEXEC) < 0)
+        dbg_perror("fcntl(sig_pipe[1], FD_CLOEXEC)");
 
     if (sig_platform_init() < 0) {
         close(sig_pipe[0]);
@@ -433,6 +444,18 @@ evfilt_signal_reset_after_fork(void)
     sig_dispatch_started        = false;
     /* coverity[missing_lock] */
     sig_filter_count            = 0;
+    /*
+     * Close the inherited socketpair ends, don't just forget them.  A
+     * bare fork() (no exec, so SOCK_CLOEXEC hasn't fired) leaves the child
+     * holding a copy of the write end; if it isn't closed here, the
+     * parent's close(sig_pipe[1]) at shutdown never yields POLLHUP/EOF on
+     * the read end, so the dispatch thread's poll never wakes and the
+     * pthread_join deadlocks under kq_mtx.
+     */
+    if (sig_pipe[0] >= 0)
+        close(sig_pipe[0]);
+    if (sig_pipe[1] >= 0)
+        close(sig_pipe[1]);
     sig_pipe[0] = sig_pipe[1]   = -1;
 }
 

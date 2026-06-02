@@ -133,7 +133,7 @@ evfilt_write_knote_create(struct filter *filt, struct knote *kn)
             kn->epoll_events |= EPOLLONESHOT;
 
         kn->kn_epollfd = filter_epoll_fd(filt);
-        evfd = eventfd(0, 0);
+        evfd = eventfd(0, EFD_CLOEXEC);
         if (evfd < 0) {
             dbg_perror("eventfd(2)");
             return (-1);
