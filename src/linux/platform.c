@@ -116,7 +116,7 @@ linux_kqueue_interrupt(struct kqueue *kq);
 static void
 monitoring_thread_cleanup(void *arg)
 {
-    enum thread_exit_state state = *(enum thread_exit_state *)arg;
+    enum thread_exit_state state = *(volatile enum thread_exit_state *)arg;
     struct kqueue *kq, *kq_tmp;
 
     if ((state == THREAD_EXIT_STATE_CANCEL_LOCKED) ||
@@ -223,7 +223,7 @@ monitoring_thread_loop(UNUSED void *arg)
     int res = 0;
     pid_t my_tid;
     sigset_t all;
-    enum thread_exit_state state;
+    volatile enum thread_exit_state state;
 
     /* Set the thread's name to something descriptive so it shows up in gdb,
      * etc. glibc >= 2.1.2 supports pthread_setname_np, but this is a safer way
@@ -255,7 +255,7 @@ monitoring_thread_loop(UNUSED void *arg)
     (void) pthread_mutex_unlock(&monitoring_thread_mtx);
 
     state = THREAD_EXIT_STATE_CANCEL_UNLOCKED;
-    pthread_cleanup_push(monitoring_thread_cleanup, &state)
+    pthread_cleanup_push(monitoring_thread_cleanup, (void*)&state)
     while (true) {
         struct epoll_event events[MONITORING_MAX_EVENTS];
         bool drain_req = false;
