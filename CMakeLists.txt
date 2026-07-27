@@ -15,7 +15,9 @@
 # OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 #
 
-set(PROJECT_VERSION 2.6.3)
+# Version used when git cannot supply one, such as a build from a source
+# tarball. Update to match the tag when cutting a release.
+set(PROJECT_VERSION 2.7.0)
 
 option(ENABLE_STATIC "Build static library" ON)
 option(ENABLE_SHARED "Build shared library" ON)
@@ -40,14 +42,29 @@ if(LIBKQUEUE_VERSION_COMMIT STREQUAL "")
 	unset(LIBKQUEUE_VERSION_COMMIT)
 endif()
 
-# The version may be overridden when building packages by defining
-# VERSION_OVERRIDE. Otherwise try to pull the number of commits
-# since last tag from git to get a unique version number.
+# Packagers can set VERSION_OVERRIDE to choose the version by hand.
+# Otherwise the version comes from the most recent release tag, and the
+# release number from how many commits have landed since the tag, so
+# every build between releases gets its own increasing version.
 if(VERSION_OVERRIDE)
   MESSAGE("Version ${VERSION_OVERRIDE} (${LIBKQUEUE_VERSION_COMMIT}) [override]")
   set(PROJECT_VERSION "${VERSION_OVERRIDE}")
   set(CPACK_PACKAGE_VERSION "${VERSION_OVERRIDE}")
 else()
+  # Ask git for the name of the most recent release tag on its own,
+  # without the trailing commit count and hash. Works even when only
+  # part of the history was downloaded, so long as the tag came too.
+  # If git reports nothing, the version above stands.
+  execute_process(COMMAND git describe --tags --abbrev=0 --match v*
+                  OUTPUT_VARIABLE PROJECT_VERSION_TAG
+                  OUTPUT_STRIP_TRAILING_WHITESPACE
+                  ERROR_QUIET
+                  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+  if(NOT PROJECT_VERSION_TAG STREQUAL "")
+    string(REGEX REPLACE "^v" "" PROJECT_VERSION "${PROJECT_VERSION_TAG}")
+  endif()
+
   execute_process(COMMAND sh -c "git describe --tags --match 'v*' | grep '-' | cut -d- -f2"
                   OUTPUT_VARIABLE PROJECT_VERSION_RELEASE
                   OUTPUT_STRIP_TRAILING_WHITESPACE
